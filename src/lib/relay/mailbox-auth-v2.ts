@@ -148,7 +148,7 @@ export async function verifyOwnerRequestV2(
   mailboxId: string,
   now: number,
   envelopeIds?: string[],
-  deps: { mlDsaVerify?: (sig: Uint8Array, msg: Uint8Array, pub: Uint8Array) => boolean } = {},
+  deps: { mlDsaVerify?: (sig: Uint8Array, msg: Uint8Array, pub: Uint8Array) => boolean | Promise<boolean> } = {},
 ): Promise<boolean> {
   try {
     if (!OPS.has(op) || !isMailboxIdV2(mailboxId)) return false;
@@ -172,7 +172,8 @@ export async function verifyOwnerRequestV2(
     // (5) the process-wide budget for the expensive step (throws OwnerVerifyBusyError → the route's uniform 503).
     takeOwnerVerifyToken(now);
     if (!claimOwnerNonce(mailboxId, b.nonce, b.ts + mailboxConfig().ownerAuthWindowMs, now)) return false;
-    return (deps.mlDsaVerify ?? ((s, m, k) => ml_dsa87.verify(s, m, k)))(pq, msg, pub.dsaPublicKey);
+    // The server routes inject the off-event-loop pool (mldsa-verify-pool.server.ts); without it (tests, other callers) it runs inline.
+    return (await (deps.mlDsaVerify ?? ((s, m, k) => ml_dsa87.verify(s, m, k)))(pq, msg, pub.dsaPublicKey)) === true;
   } catch (e) {
     if (e instanceof OwnerVerifyBusyError) throw e; // the one thing a verifier throws: "shed", not "refused"
     return false;

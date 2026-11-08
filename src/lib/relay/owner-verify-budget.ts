@@ -4,11 +4,13 @@
 // Ed25519 signature over their own key plus a garbage pq_sig still forces a full ML-DSA verify. So the per-IP budget and the replay
 // cache are not enough: N addresses at the per-IP ceiling can pin the core.
 //
-// This token bucket caps expensive verifies per second for the whole process. With the defaults (10/s sustained, burst 20) relay
-// verification can use at most ~22% of the event loop, so svrnty.is stays responsive however hard the relay is hit. Past the cap a
-// request is shed with a uniform 503 BEFORE the expensive step; a client treats it like any refused poll ("Could not check right
-// now.") and its next tick signs fresh. Under a sustained flood the RELAY degrades, the site does not. Moving verification to a
-// worker pool (more throughput, same isolation) is a follow-up.
+// This token bucket caps expensive verifies per second for the whole process: a LAST-RESORT shed sized from capacity (default
+// 120/s, burst 240 ≈ 4 pool workers × ~40/s minus headroom), not a per-user quota: every owner verify spends it, legit ones too.
+// The isolation that keeps svrnty.is responsive is the ML-DSA worker pool (mldsa-verify-pool.server.ts), which moves the ~20 ms
+// verify off the event loop and sheds when its bounded queue is full. Past either limit a request gets a uniform 503 BEFORE the
+// expensive step; a client treats it like any refused poll ("Could not check right now.") and its next tick signs fresh. Honest
+// bound: enough addresses, each under its per-IP budget, can still use up total verify capacity; only edge rate limiting (in
+// front of the box) closes that.
 //
 // Order inside a verifier: cheap checks → replay check → THIS → (v2: record nonce) → expensive verify. A replay never spends budget.
 

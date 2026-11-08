@@ -14,6 +14,7 @@ import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { isMailboxClaimed } from '@/lib/relay/claim-registry';
 import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
 import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
+import { verifyMlDsaPooled } from '@/lib/relay/mldsa-verify-pool.server';
 
 // The single uniform non-owner response — computed WITHOUT touching the store, so its latency and
 // bytes are independent of any mailbox's state. It never contains a stored blob.
@@ -35,7 +36,7 @@ export async function GET(request: Request) {
     // #721: a v2 (mbx2_) id is verified ONLY by its own auth key (no fingerprint, no identity key); a v1 id ONLY by v1. A bundle of the
     // other version fails here, on the same uniform path.
     const isOwner = isMailboxIdV2(mailboxId)
-      ? await verifyOwnerRequestV2(request, 'poll', mailboxId, Date.now())
+      ? await verifyOwnerRequestV2(request, 'poll', mailboxId, Date.now(), undefined, { mlDsaVerify: verifyMlDsaPooled })
       : await verifyMailboxPollAuth(request, mailboxId, Date.now());
     if (!isOwner) return nonOwner();
 

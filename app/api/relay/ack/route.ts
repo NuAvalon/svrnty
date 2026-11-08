@@ -11,6 +11,7 @@ import { verifyMailboxAckAuth } from '@/lib/relay/mailbox-auth';
 import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
 import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
 import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
+import { verifyMlDsaPooled } from '@/lib/relay/mldsa-verify-pool.server';
 
 function nonOwner() {
   return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -31,7 +32,7 @@ export async function POST(request: Request) {
     const now = Date.now();
     // #721: version by the id itself; the other version's bundle fails on the uniform path.
     const isOwner = isMailboxIdV2(mailboxId)
-      ? await verifyOwnerRequestV2(request, 'ack', mailboxId, now, envelopeIds)
+      ? await verifyOwnerRequestV2(request, 'ack', mailboxId, now, envelopeIds, { mlDsaVerify: verifyMlDsaPooled })
       : await verifyMailboxAckAuth(request, mailboxId, envelopeIds, now);
     if (!isOwner) return nonOwner();
 

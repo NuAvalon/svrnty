@@ -46,7 +46,11 @@ export interface MailboxConfig {
   ownerRateLimitIpCap: number;
   /** Most live (mailbox_id, nonce) entries in the owner replay cache; when full (after a sweep) the one-time check is skipped and logged. */
   replayCacheMax: number;
-  /** Process-wide budget for the EXPENSIVE owner-auth step (ML-DSA / key parse + verify, ~22 ms each): sustained per second, and burst. */
+  /**
+   * Process-wide LAST-RESORT budget for the expensive owner-auth step, sized from capacity, not from a guess at legit load: every
+   * owner verify spends it, legit ones included, so it must sit above launch-scale polling (an active tab ≈ 0.67 polls/s). Default
+   * 120/s ≈ 4 pool workers × ~40 verifies/s, minus headroom. The ML-DSA pool (mldsa-verify-pool.server.ts) is the real isolation.
+   */
   ownerVerifyPerSec: number;
   ownerVerifyBurst: number;
   /**
@@ -70,8 +74,8 @@ export function mailboxConfig(): MailboxConfig {
     ownerRateLimitWindowMs: intEnv('RELAY_OWNER_RATE_LIMIT_WINDOW_MS', 60_000),
     ownerRateLimitIpCap: intEnv('RELAY_OWNER_RATE_LIMIT_IP_CAP', 50_000),
     replayCacheMax: intEnv('RELAY_REPLAY_CACHE_MAX', 100_000),
-    ownerVerifyPerSec: intEnv('RELAY_OWNER_VERIFY_PER_SEC', 10),
-    ownerVerifyBurst: intEnv('RELAY_OWNER_VERIFY_BURST', 20),
+    ownerVerifyPerSec: intEnv('RELAY_OWNER_VERIFY_PER_SEC', 120),
+    ownerVerifyBurst: intEnv('RELAY_OWNER_VERIFY_BURST', 240),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
   };
 }
