@@ -7,6 +7,7 @@ BYTES: a poll before the completing deposit must equal "no match" (13b), and eve
 fixed byte string whatever failed (no N-exists oracle).
 """
 import json
+import random
 import os
 import shutil
 import sqlite3
@@ -327,3 +328,47 @@ def test_refusal_bytes_are_literal_not_built_by_the_function_under_test():
     assert bc.refused("wire") == b'{"status":"refused","reason":"wire"}'
     assert bc.refused("not-a-reason") == b'{"status":"refused","reason":"internal"}'
     assert (bc.MATCH, bc.NONE, bc.WITHDRAWN) == (b'{"status":"match"}', b'{"status":"none"}', b'{"status":"withdrawn"}')
+
+
+# ---- the per-epoch counter: it has to equal the real count whatever happens ----
+def counts_agree(c):
+    assert dict(rows(c, "SELECT epoch, n FROM beacon_epoch_counts")) == dict(rows(c, "SELECT epoch, count(*) FROM beacon_deposits GROUP BY epoch"))
+
+
+def dep_at(c, epoch, slot, n, k):
+    return c.deposit(json.dumps({"_t": {"ok": True, "e": str(epoch), "H_e": slot, "N": n, "K": k}}).encode(), "10.0.0.1")
+
+
+def test_the_counter_equals_the_real_count_after_a_random_mix_of_everything(cen, keys, monkeypatch):
+    rng = random.Random(588)
+    cen.per_epoch_cap = 10_000
+    seen = []
+    def boom(*a, **k):
+        raise RuntimeError("after the insert, before the commit")
+    for i in range(120):
+        op = rng.choice(["new", "new", "new", "other-epoch", "replay", "withdraw", "pair", "third", "rollback"])
+        if op == "new":
+            seen.append((str(10_000 + i), str(20_000 + i)))
+            assert dep(cen, seen[-1][0], seen[-1][1], keys["A"]) == bc.ACCEPTED
+        elif op == "other-epoch":
+            assert dep_at(cen, int(EPOCH) + 1, str(90_000 + i), str(91_000 + i), keys["A"]) == bc.ACCEPTED
+        elif op == "replay" and seen:
+            dep(cen, *rng.choice(seen), keys["A"])
+        elif op == "withdraw" and seen:
+            call(cen, "withdraw", SEED_A, *rng.choice(seen))
+        elif op == "pair" and seen:
+            dep(cen, rng.choice(seen)[0], str(30_000 + i), keys["B"])
+        elif op == "third" and seen:
+            slot = rng.choice(seen)[0]
+            dep(cen, slot, str(40_000 + i), keys["B"])
+            dep(cen, slot, str(50_000 + i), keys["X"])
+        elif op == "rollback":
+            slot = str(60_000 + i)
+            dep(cen, slot, str(70_000 + i), keys["A"])
+            with monkeypatch.context() as m:
+                m.setattr(bc, "_insert_match", boom)
+                with pytest.raises(RuntimeError):
+                    dep(cen, slot, str(80_000 + i), keys["B"])
+        counts_agree(cen)
+    assert rows(cen, "SELECT count(*) FROM beacon_security_alarms")[0][0] > 0        # the mix did reach the alarm path
+    assert len(rows(cen, "SELECT DISTINCT epoch FROM beacon_epoch_counts")) == 2

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -34,6 +35,9 @@ from pathlib import Path
 FLAG_ENV = "BEACON_CENTURION"
 EPOCH_SECONDS = 604800          # copy of beacon-wire.mjs's (the one definition); pinned equal by a test
 GRACE_SECONDS = 600
+EPOCH_CAP_MAX, EPOCH_CAP_MIN = 1_000_000, 10_000
+BYTES_PER_DEPOSIT = 500          # measured with real-length values, indexes included
+_POSITIVE = re.compile(r"[1-9][0-9]{0,9}")
 MAX_BODY_BYTES = 16 * 1024
 VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"
 AUTH_JS = Path(__file__).resolve().parent / "beacon-verifier" / "auth.mjs"
@@ -57,6 +61,7 @@ CREATE TABLE IF NOT EXISTS beacon_deposits (
     epoch INTEGER NOT NULL, slot TEXT NOT NULL, n TEXT NOT NULL, k TEXT NOT NULL, accepted_at TEXT NOT NULL,
     withdrawn_at TEXT, PRIMARY KEY (slot, n));
 CREATE INDEX IF NOT EXISTS beacon_deposits_epoch ON beacon_deposits (epoch);
+CREATE TABLE IF NOT EXISTS beacon_epoch_counts (epoch INTEGER PRIMARY KEY, n INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS beacon_matches (
     epoch INTEGER NOT NULL, slot TEXT PRIMARY KEY, n1 TEXT NOT NULL, n2 TEXT NOT NULL, formed_at TEXT NOT NULL,
     released_at TEXT, polled_n1 INTEGER NOT NULL DEFAULT 0, polled_n2 INTEGER NOT NULL DEFAULT 0);
@@ -150,6 +155,19 @@ def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: 
                (epoch, slot, n1, n2, at, at))
 
 
+def default_epoch_cap(db_path: str, *, environ=os.environ, disk_usage=shutil.disk_usage) -> int:
+    """BEACON_PER_EPOCH_CAP if set, else what one full epoch can take of a tenth of this disk's free space. Between EPOCH_CAP_MIN and
+    EPOCH_CAP_MAX; an unreadable disk gets the maximum. Read once, at mount."""
+    raw = environ.get("BEACON_PER_EPOCH_CAP", "")
+    if _POSITIVE.fullmatch(raw):
+        return int(raw)
+    try:
+        free = disk_usage(os.path.dirname(db_path) or ".").free
+    except OSError:
+        return EPOCH_CAP_MAX
+    return min(EPOCH_CAP_MAX, max(EPOCH_CAP_MIN, free // (10 * BYTES_PER_DEPOSIT)))
+
+
 class Centurion:
     def __init__(self, db_path: str, *, vkey_path: str | None = None, node: str = "node", verify_cmd: list[str] | None = None,
                  verifier=None, clock=time.time, timeout_s: float = 10.0, per_epoch_cap: int = 100_000,
@@ -178,6 +196,11 @@ class Centurion:
         self._lock = threading.Lock()
         with closing(self._db()) as db:
             db.executescript(SCHEMA)
+            # The rows are the truth, so the counter is rebuilt from them at every start. That also covers a database older than it.
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM beacon_epoch_counts")
+            db.execute("INSERT INTO beacon_epoch_counts (epoch, n) SELECT epoch, count(*) FROM beacon_deposits GROUP BY epoch")
+            db.execute("COMMIT")
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
@@ -217,7 +240,7 @@ class Centurion:
 
     def _open_count(self, db: sqlite3.Connection, now: float) -> int:
         eps = open_epochs(now)
-        return db.execute(f"SELECT count(*) FROM beacon_deposits WHERE epoch IN ({','.join('?' * len(eps))})", eps).fetchone()[0]
+        return db.execute(f"SELECT COALESCE(SUM(n), 0) FROM beacon_epoch_counts WHERE epoch IN ({','.join('?' * len(eps))})", eps).fetchone()[0]
 
     def _verify(self, raw: bytes, now: float) -> dict:
         if self.verifier is not None:
@@ -276,6 +299,7 @@ class Centurion:
                 return ACCEPTED
             db.execute("INSERT INTO beacon_deposits (epoch, slot, n, k, accepted_at) VALUES (?, ?, ?, ?, ?)",
                        (epoch, slot, n, k, at))
+            db.execute("INSERT INTO beacon_epoch_counts (epoch, n) VALUES (?, 1) ON CONFLICT(epoch) DO UPDATE SET n = n + 1", (epoch,))
             others = [r[0] for r in db.execute(
                 "SELECT n FROM beacon_deposits WHERE slot = ? AND n != ? AND withdrawn_at IS NULL", (slot, n))]
             if len(others) == 1:

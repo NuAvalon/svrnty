@@ -613,3 +613,14 @@ def test_no_rate_limit_prefix_covers_the_beacon_routes(tmp_path):
 def test_flag_on_with_the_module_missing_from_the_image_the_satellite_still_serves(tmp_path):
     out = run_sat(BROKEN, "1", tmp_path)
     assert "RESULT True 200" in out and "[beacon] NOT mounted: import" in out
+
+
+def test_a_real_mount_takes_its_cap_from_the_disk(world, monkeypatch):
+    seen = {}
+    def fake(db, **k):
+        seen.update(k, db=db)
+        return world["stub"]
+    monkeypatch.setattr(bc, "default_epoch_cap", lambda db: 7)
+    monkeypatch.setattr(bc, "Centurion", fake)
+    do_mount(world, stub=False)
+    assert seen["per_epoch_cap"] == 7

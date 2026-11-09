@@ -125,7 +125,7 @@ def mount(app, data_dir, mode: str, client_ip: Callable[[Request], str], *, make
     node = os.environ.get("BEACON_NODE") or shutil.which("node") or "node"
     if not _verifiers_load(node, vkey_path, sha):
         return _refuse("verifier")
-    make = make_centurion or (lambda db, vkey, n: bc.Centurion(db, vkey_path=vkey, node=n))
+    make = make_centurion or (lambda db, vkey, n: bc.Centurion(db, vkey_path=vkey, node=n, per_epoch_cap=bc.default_epoch_cap(db)))
     db_path = str(Path(data_dir) / "beacon.db")
     try:
         centurion = make(db_path, vkey_path, node)
