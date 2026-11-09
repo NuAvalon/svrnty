@@ -4216,6 +4216,22 @@ async def _retention_cleanup_loop(interval_s: int, first_delay_s: float):
         await asyncio.sleep(interval_s)
 
 
+# ── #588 mutual-trust beacon ──────────────────────────────
+# DARK: off unless BEACON_CENTURION is exactly "1"; when off, neither beacon module is even imported. When on, beacon_routes.mount
+# registers the routes only if every precondition holds. A beacon problem must never take the satellite down.
+beacon_mount = None
+if os.environ.get("BEACON_CENTURION") == "1":
+    try:
+        import beacon_routes
+        beacon_mount = beacon_routes.mount(
+            app, DATA_DIR, SATELLITE_MODE,
+            lambda request: client_ip_for(request.client.host if request.client else "unknown", request.headers.get("x-forwarded-for")),
+        )
+    except Exception as e:
+        # No detail from the exception: it can carry paths. Which stage failed is enough to start looking.
+        print(f"[beacon] NOT mounted: {'import' if isinstance(e, ImportError) else 'mount'}", flush=True)
+
+
 if __name__ == "__main__":
     import uvicorn
     # access_log=False: linkable ids ride in URL paths; suppress the
