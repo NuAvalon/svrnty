@@ -39,9 +39,9 @@ VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"
 AUTH_JS = Path(__file__).resolve().parent / "beacon-verifier" / "auth.mjs"
 MAX_AUTH_BYTES = 1024
 _NONCE_TAG = b"svrnty:588:nonce:v1"
-_HEX = {"pk": re.compile(r"^[0-9a-f]{64}$"), "sig": re.compile(r"^[0-9a-f]{128}$"), "nonce": re.compile(r"^[0-9a-f]{64}$")}
+_HEX = {"pk": re.compile(r"[0-9a-f]{64}"), "sig": re.compile(r"[0-9a-f]{128}"), "nonce": re.compile(r"[0-9a-f]{64}")}  # always fullmatch: `$` also matches before a trailing newline
 
-_CANON = re.compile(r"^(0|[1-9][0-9]{0,76})$")
+_CANON = re.compile(r"0|[1-9][0-9]{0,76}")
 ACCEPTED = b'{"status":"accepted"}'
 ALREADY = b'{"status":"already"}'
 MATCH = b'{"status":"match"}'
@@ -116,7 +116,7 @@ def parse_verifier_output(code: int, out: bytes) -> dict:
         return {"ok": False, "reason": res["reason"]}
     if code != 0 or set(res) != {"ok", "e", "H_e", "N", "K"} or res["ok"] is not True:
         return bad
-    if not all(isinstance(res[k], str) and _CANON.match(res[k]) for k in ("e", "H_e", "N", "K")):
+    if not all(isinstance(res[k], str) and _CANON.fullmatch(res[k]) for k in ("e", "H_e", "N", "K")):
         return bad
     return res
 
@@ -128,7 +128,7 @@ def parse_auth_output(code: int, out: bytes) -> bool:
 
 def _field(v) -> int | None:
     """A canonical decimal that fits 32 bytes (auth.mjs re-checks < r), or None."""
-    if not isinstance(v, str) or not _CANON.match(v):
+    if not isinstance(v, str) or not _CANON.fullmatch(v):
         return None
     x = int(v)
     return x if x < 2 ** 256 else None
@@ -263,9 +263,10 @@ class Centurion:
             if self._open_count(db, now) >= self.per_epoch_cap:          # re-checked inside the transaction (no race)
                 db.execute("ROLLBACK")
                 return refused("full")
-            if db.execute("SELECT 1 FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone():
+            held = db.execute("SELECT withdrawn_at FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone()
+            if held:
                 db.execute("ROLLBACK")
-                return ALREADY
+                return WITHDRAWN if held[0] is not None else ALREADY   # `already` always means standing; a withdrawn row can't match this epoch
             # Two rows at a slot (a match, or one side withdrawn) is all two honest owners can ever make: a third N is an alarm.
             if db.execute("SELECT count(*) FROM beacon_deposits WHERE slot = ?", (slot,)).fetchone()[0] >= 2:
                 db.execute("INSERT INTO beacon_security_alarms (at, epoch, slot, n, raw) VALUES (?, ?, ?, ?, ?)",
@@ -331,7 +332,7 @@ class Centurion:
 
     def _authenticated_call(self, op: str, raw: bytes, ip: str) -> bytes:
         o = _strict_obj(raw, {"H_e", "N", "pk", "sig", "nonce"})
-        if o is None or not all(isinstance(o[k], str) and _HEX[k].match(o[k]) for k in _HEX):
+        if o is None or not all(isinstance(o[k], str) and _HEX[k].fullmatch(o[k]) for k in _HEX):
             return refused("wire")
         slot_i, n_i = _field(o["H_e"]), _field(o["N"])
         if slot_i is None or n_i is None:

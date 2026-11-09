@@ -182,6 +182,7 @@ def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
     (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}\n{"ok":true}\n', 0),            # two lines
     (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3","x":1}\n', 0),                   # extra key
     (b'{"ok":true,"e":"2900","H_e":"1","N":"007","K":"3"}\n', 0),                       # non-canonical N
+    (b'{"ok":true,"e":"2900","H_e":"1\\n","N":"2","K":"3"}\n', 0),                      # a trailing newline inside a field
     (b'{"ok":"yes","e":"2900","H_e":"1","N":"2","K":"3"}\n', 0),                        # ok not exactly true
     (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}\n', 2),                         # right line, wrong exit code
 ])

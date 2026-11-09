@@ -214,7 +214,35 @@ def test_withdraw_a_lone_deposit_marks_it_without_deleting_and_it_can_no_longer_
     assert call(cen, "poll", SEED_B, SLOT, N_B) == bc.NONE
     assert call(cen, "poll", SEED_A, SLOT, N_A) == bc.NONE
     assert call(cen, "withdraw", SEED_A, SLOT, N_A) == bc.WITHDRAWN                 # idempotent
-    assert dep(cen, SLOT, N_A, keys["A"]) == bc.ALREADY                             # first K wins for the epoch
+    assert dep(cen, SLOT, N_A, keys["A"]) == bc.WITHDRAWN                           # dead for the epoch, and the reply says so
+
+
+def test_a_redeposit_after_withdraw_answers_withdrawn_and_cannot_come_back(cen, keys):
+    dep(cen, SLOT, N_A, keys["A"])
+    call(cen, "withdraw", SEED_A, SLOT, N_A)
+    assert dep(cen, SLOT, N_A, keys["A"]) == bc.WITHDRAWN
+    assert rows(cen, "SELECT count(*), sum(withdrawn_at IS NOT NULL) FROM beacon_deposits") == [(1, 1)]
+    assert dep(cen, SLOT, N_B, keys["B"]) == bc.ACCEPTED
+    assert rows(cen, "SELECT count(*) FROM beacon_matches") == [(0,)]
+
+
+def test_a_redeposit_of_a_standing_deposit_still_answers_already(cen, keys):
+    dep(cen, SLOT, N_A, keys["A"])
+    assert dep(cen, SLOT, N_A, keys["A"]) == bc.ALREADY
+
+
+def test_a_redeposit_after_a_match_still_answers_already(cen, keys):
+    dep(cen, SLOT, N_A, keys["A"])
+    dep(cen, SLOT, N_B, keys["B"])
+    assert dep(cen, SLOT, N_A, keys["A"]) == bc.ALREADY
+
+
+@pytest.mark.parametrize("field", ["pk", "sig", "nonce", "H_e", "N"])
+@pytest.mark.parametrize("op", ["poll", "withdraw"])
+def test_a_trailing_newline_is_refused_as_wire_here_and_not_left_to_the_verifier(cen, field, op):
+    good = {"H_e": str(SLOT), "N": str(N_A), "pk": "a" * 64, "sig": "b" * 128, "nonce": "c" * 64}
+    good[field] += "\n"
+    assert getattr(cen, op)(json.dumps(good).encode(), "198.51.100.77") == bc.refused("wire")
 
 
 def test_withdraw_after_a_match_is_inert_and_answers_match(cen, keys):
