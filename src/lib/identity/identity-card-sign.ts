@@ -21,6 +21,7 @@ import type { IdentityCard } from '../format/envelope';
 import { DOMAIN_IDENTITY_CARD, identityCardSigningInput } from '../format/envelope';
 import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf } from '../crypto/sign-envelope';
 import { fingerprintMatchesKey } from './fingerprint';
+import { canonicalAuthorityPin } from './authority-pin';
 // piece-2 device-mailbox: validate the seal-target the card carries. extractValidMailboxFromCard is the
 // shape/content-fp gate ON TOP of the card signature (the mailbox fields live under identity.* so the
 // signature already covers them); validateMailboxPublic re-checks the owner's own cached block on send.
@@ -238,10 +239,8 @@ export interface ImportDisposition {
   authorityPin: string | null;
 }
 
-/** The card's pin if it is canonical 64 lowercase hex, else null. */
-export function canonicalAuthorityPin(v: unknown): string | null {
-  return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : null;
-}
+// The pin format check lives in its own import-free module (the storage layer imports it without taking this file's signing code); re-exported here.
+export { canonicalAuthorityPin };
 
 /**
  * Classify a parsed identity-exchange card into its fail-closed import disposition.

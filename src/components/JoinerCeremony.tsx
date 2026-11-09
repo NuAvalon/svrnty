@@ -42,6 +42,7 @@ import {
   initSessionKey,
   lockSession,
   enqueueGateArrival,
+  getGateArrival,
   getAllContacts,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
@@ -53,7 +54,7 @@ import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
-import { clampArrivalName } from '@/lib/trust/grow-gate';
+import { clampArrivalName, mergeArrivalPin } from '@/lib/trust/grow-gate';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -281,6 +282,12 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         // holding-room gate pipeline (GateArrival → admit) yet — a gated joiner lands WITHOUT a mailbox
         // until a re-exchange back-fills it (safe: emit under-reveals, fail-closed). Threading the gate
         // pipeline is a tracked fast-follow (co-owned with Apollo's emit UI work).
+        // First write wins at the Gate too: someone already waiting here under a DIFFERENT pin is loud and changes nothing (same rule and words as Contacts import).
+        const pinMerge = mergeArrivalPin(await getGateArrival(ownerFp, peer.fingerprint), peer.authorityPin);
+        if (pinMerge.conflict) {
+          setError(authorityPinConflictMessage(peer.name));
+          return;
+        }
         await enqueueGateArrival(ownerFp, {
           fingerprint: peer.fingerprint,
           displayName: clampArrivalName(peer.name),
@@ -293,6 +300,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           ...(peer.pq
             ? { pqKemPublicKey: peer.pq.pq_kem_public_key, pqSigPublicKey: peer.pq.pq_sig_public_key }
             : {}),
+          ...(pinMerge.pin ? { nextAuthorityCommitment: pinMerge.pin } : {}),
         });
         emitContactChange({ ids: [], reason: 'ui-edit' });
       }
