@@ -3,6 +3,7 @@
 import { sendNoteToPeer, NoteSendError, type NoteSendFailureKind } from '@/lib/messaging/transport';
 import { loadOwnerRatchetIdentity, peerRatchetFromCard } from '@/lib/messaging/ratchet-keys';
 import { NOTES_COPY } from './notes-copy';
+import type { RecipientGate } from '@/lib/sync/contact-update-gate';
 import type { OwnerNoteSender } from './notes-keys';
 
 export type SendNoteResult =
@@ -16,6 +17,7 @@ const FAILURE_COPY: Record<NoteSendFailureKind, string> = {
   refused: NOTES_COPY.sendRefused,
   unconfirmed: NOTES_COPY.sendUnconfirmed,
   'sent-not-saved': NOTES_COPY.sentNotSaved,
+  blocked: NOTES_COPY.sendBlocked,
 };
 
 export async function sendNoteFromInbox(args: {
@@ -27,12 +29,15 @@ export async function sendNoteFromInbox(args: {
   peerPqKemPublicKey?: string;
   /** Recipient's ML-DSA-87 pubkey (base64): with the KEM key it binds the canonical fingerprint (isCanonicalNoteSender). */
   peerPqSigPublicKey?: string;
+  /** Required: reads the address book when Send runs. Inside this function's try, so a failed read is shown as not sent. */
+  loadRecipientGate: () => Promise<RecipientGate>;
   body: string;
   threadId?: string;
   /** Test seam. */
   send?: typeof sendNoteToPeer;
 }): Promise<SendNoteResult> {
   try {
+    const admit = await args.loadRecipientGate();
     const [ownerRatchet, peerRatchet] = await Promise.all([
       args.ownerIdentity
         ? loadOwnerRatchetIdentity(args.sender.fingerprint, args.ownerIdentity)
@@ -53,6 +58,7 @@ export async function sendNoteFromInbox(args: {
       peerFingerprint: args.peerFingerprint,
       peerPublicKeyArmored: args.peerPublicKeyArmored,
       peerPqKemPublicKey: args.peerPqKemPublicKey,
+      admit,
       body: args.body,
       threadId: args.threadId,
       ownerRatchet: ownerRatchet ?? undefined,

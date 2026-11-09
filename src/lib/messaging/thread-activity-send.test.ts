@@ -31,7 +31,7 @@ async function flow() {
   const puts: NoteThread[] = [];
   const okFetch = (async () => new Response('{"ok":true}', { status: 200 })) as unknown as typeof fetch;
   // A send without a threadId starts a NEW thread, so the second send of each test names the first one's thread.
-  const send = (threadId?: string) => sendNoteToPeer({
+  const send = (threadId?: string) => sendNoteToPeer({ admit: () => true,
     sender: { fingerprint: idOf(sender).fingerprint, participant_kind: 'human' },
     senderPublicKeyArmored: idOf(sender).public_key,
     senderPrivateKeyArmored: sender.secret_material.classicalPrivateKey,

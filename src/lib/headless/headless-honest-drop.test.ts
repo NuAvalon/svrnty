@@ -11,7 +11,8 @@ import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { signNoteWire } from '@/lib/messaging/note-auth';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 
 const RELAY = 'http://relay.test/api/relay';
 type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
