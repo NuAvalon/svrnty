@@ -17,7 +17,7 @@ test('shown only on the home page, and only when set to exactly "on"', () => {
 
 test('the setting is read on the server, per request, so toggling needs no rebuild', () => {
   const layout = src('app/layout.tsx');
-  assert.match(layout, /showNotLiveBanner\(requestHeaders\.get\('x-svrnty-path'\), process\.env\.SVRNTY_NOT_LIVE_BANNER\)/);
+  assert.match(layout, /showNotLiveBanner\(\(await headers\(\)\)\.get\('x-svrnty-path'\), process\.env\.SVRNTY_NOT_LIVE_BANNER\)/);
   assert.match(layout, /\{notLive && <NotLiveBanner \/>\}/);
   assert.match(layout, /export const dynamic = 'force-dynamic'/);
   assert.doesNotMatch(layout + src('src/lib/not-live-banner.ts'), /NEXT_PUBLIC_SVRNTY_NOT_LIVE/);

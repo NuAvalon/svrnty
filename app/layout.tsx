@@ -84,9 +84,8 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const requestHeaders = await headers()
-  const nonce = requestHeaders.get('x-nonce') ?? undefined
-  const notLive = showNotLiveBanner(requestHeaders.get('x-svrnty-path'), process.env.SVRNTY_NOT_LIVE_BANNER)
+  const nonce = (await headers()).get('x-nonce') ?? undefined
+  const notLive = showNotLiveBanner((await headers()).get('x-svrnty-path'), process.env.SVRNTY_NOT_LIVE_BANNER)
 
   return (
     <html
