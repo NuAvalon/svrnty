@@ -4,6 +4,9 @@ import { seedAliceWithBob } from './fixtures/deposit-note';
 import { resetCountLine, resetExplainer, resetButtonLabel, namedRow } from '../src/components/notes/ratchet-rows';
 import { RESET_UNAVAILABLE_HINT_HELD, RESET_UNAVAILABLE_HINT_RECORDED } from '../src/components/notes/ratchet-reset-copy';
 
+// These specs inject a test harness with addScriptTag, which the page's script policy refuses, as it should.
+test.use({ bypassCSP: true });
+
 /**
  * #720 the thread half of reliable receive, in a REAL browser: the named rows for a contact whose frames did not open, the
  * user-initiated "Reset message session" dialog (Cancel is the default focus; nothing resets on a cancel), and what a confirmed reset

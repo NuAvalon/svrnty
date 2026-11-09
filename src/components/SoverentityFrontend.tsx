@@ -9,6 +9,7 @@ import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdent
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
+import { saveOwnerEmail } from '@/lib/identity/save-owner-email';
 import { recipientGateFromBook } from '@/lib/sync/contact-update-gate';
 import { admitContact } from '@/lib/trust/admit-contact';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
@@ -1802,6 +1803,7 @@ export function SoverentityFrontend({
     const bumped = { ...fresh, card_version: nextVersion };
     await storeIdentity(fp, bumped); // persist BEFORE the deposit — crash-safety
     setIdentity(bumped);
+    onIdentityUpdate?.(bumped); // the parent's copy replaces ours on a remount, so it has to carry the new version too
 
     const owner = {
       fingerprint: fp,
@@ -1980,11 +1982,7 @@ export function SoverentityFrontend({
           onLocalSave={async (kind, value) => {
             const fp = identity.identity.fingerprint as string;
             if (kind === 'email') {
-              const next = {
-                ...identity,
-                identity: { ...identity.identity, email: value },
-              };
-              await storeIdentity(fp, next);
+              const next = await saveOwnerEmail(fp, value, identity, { load: loadIdentity, store: storeIdentity });
               setIdentity(next);
               onIdentityUpdate?.(next);
               return;
@@ -2051,11 +2049,7 @@ export function SoverentityFrontend({
             onBagChange={setOwnerBag}
             onEmailChange={async (value) => {
               const fp = identity.identity.fingerprint as string;
-              const next = {
-                ...identity,
-                identity: { ...identity.identity, email: value },
-              };
-              await storeIdentity(fp, next);
+              const next = await saveOwnerEmail(fp, value, identity, { load: loadIdentity, store: storeIdentity });
               setIdentity(next);
               onIdentityUpdate?.(next);
             }}

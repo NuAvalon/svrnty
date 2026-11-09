@@ -6,12 +6,13 @@
 // many refusals arrive (a flood of the cheapest 429 path must not become a flood of log writes). `count` is the running total
 // for that reason, `since_last` the refusals folded into this line. Both are per process and start at 0 on restart.
 
-export type Deposit429Reason = 'rate_limit' | 'mailbox_cap' | 'disk_full' | 'owner_rate_limit' | 'replay_cache_full';
+export type Deposit429Reason = 'rate_limit' | 'mailbox_cap' | 'disk_full' | 'global_budget' | 'owner_rate_limit' | 'replay_cache_full';
 // The line names what happened, per reason: the deposit lines are unchanged; the owner routes (queue/ack/claim) say so.
 const LINE_PREFIX: Record<Deposit429Reason, string> = {
   rate_limit: 'relay deposit 429',
   mailbox_cap: 'relay deposit 429',
   disk_full: 'relay deposit 429',
+  global_budget: 'relay deposit 429',
   owner_rate_limit: 'relay owner 429',
   replay_cache_full: 'relay owner replay-cache full (one-time check skipped)',
 };

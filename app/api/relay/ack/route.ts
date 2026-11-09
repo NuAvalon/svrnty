@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
 import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { ackDelete } from '@/lib/relay/mailbox-store';
+import { readJsonCapped } from '@/lib/relay/read-body-capped';
 import { verifyMailboxAckAuth } from '@/lib/relay/mailbox-auth';
 import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
 
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
   const gated = ownerRouteGate(request);
   if (gated) return gated;
   try {
-    const body = await request.json().catch(() => null);
+    const body = await readJsonCapped(request, mailboxConfig().maxPayloadBytes);
     const mailboxId = typeof body?.mailbox_id === 'string' ? body.mailbox_id : '';
     const envelopeIds: string[] = Array.isArray(body?.envelope_ids) ? body.envelope_ids : [];
 

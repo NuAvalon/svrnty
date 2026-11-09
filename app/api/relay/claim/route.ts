@@ -10,6 +10,8 @@ import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
 import { deriveMailboxId, verifyMailboxClaimAuth } from '@/lib/relay/mailbox-auth';
 import { decodeBetaAccessToken, verifyBetaAccessToken, type PinnedIssuer } from '@/lib/relay/beta-access';
 import { isJtiRedeemed, recordClaim } from '@/lib/relay/claim-registry';
+import { mailboxConfig } from '@/lib/relay/mailbox-config';
+import { readJsonCapped } from '@/lib/relay/read-body-capped';
 
 // Uniform reject — identical for every verify failure (bad token / bad issuer / bad owner-auth /
 // claims-disabled). An attacker can't tell which gate rejected. 200 only on a resolved claim.
@@ -46,7 +48,7 @@ export async function POST(request: Request) {
     const issuer = pinnedIssuer();
     if (!issuer) return reject(); // no issuer pinned → beta-claims disabled, fail-closed
 
-    const body = await request.json().catch(() => null);
+    const body = await readJsonCapped(request, mailboxConfig().maxPayloadBytes);
     const wire = typeof body?.token === 'string' ? body.token : '';
     const token = decodeBetaAccessToken(wire);
     if (!token) return reject(); // malformed token
