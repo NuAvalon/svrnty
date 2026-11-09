@@ -134,6 +134,7 @@ If you don't schedule it, old messages stay on the server.
   300 owner requests a minute (`RELAY_RATE_LIMIT_MAX`, `RELAY_OWNER_RATE_LIMIT_MAX`). If your proxy
   passes through a value the client sent, clients can choose their own bucket. (Caddy as shipped
   sets this header from the address connected to it.) This setup hasn't been tested end to end.
+- **Deposit limits.** A deposit body is capped at 64 KiB, a mailbox at 1000 messages and 16 MiB, and all deposits together at a byte budget per minute. By default the budget comes from your own disk: the room left before the disk guard, divided by the minutes in one retention period, between 64 KiB and 24 MiB. The derived number is what protects a small disk; the 24 MiB ceiling is only a setting. Set `RELAY_GLOBAL_DEPOSIT_BYTES_PER_WINDOW` or `RELAY_MAILBOX_BYTES_CAP` to change them. Under a sustained flood the budget runs out early in each minute, so honest deposits are refused for as long as the flood lasts. It ends when the flood ends, instead of lasting until stored messages expire. If you replace Caddy, cap `/api/relay/*` request bodies at your proxy too.
 - **If you put a CDN or load balancer in front of Caddy,** the address connected to Caddy is the
   CDN's, not your user's. Users behind the same edge then share a bucket, and one sender gets a
   fresh budget on every edge. To fix it, list only your CDN's published address ranges under

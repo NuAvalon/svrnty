@@ -36,6 +36,20 @@ export function usedFraction(path: string, statfs: Statfs = statfsSync): number 
   }
 }
 
+/** Bytes that can still be written before the watermark, by the same measure as usedFraction, or null if the disk can't be read. */
+export function roomToWatermarkBytes(path: string, statfs: Statfs = statfsSync): number | null {
+  try {
+    const s = statfs(dirname(path));
+    const blocks = Number(s.blocks);
+    const avail = Number(s.bavail);
+    const bsize = Number(s.bsize);
+    if (!(blocks > 0) || !(avail >= 0) || !(bsize > 0)) return null;
+    return Math.max(0, (mailboxConfig().diskWatermarkPct / 100 - (1 - avail / blocks)) * blocks * bsize);
+  } catch {
+    return null;
+  }
+}
+
 /** True when new deposits must be refused. `path` = the relay's SQLite file. */
 export function relayDiskFull(path: string, now: number, statfs: Statfs = statfsSync): boolean {
   if (path === ':memory:') return false;
