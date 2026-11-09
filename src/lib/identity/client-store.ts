@@ -13,6 +13,7 @@ import type { VaultContents } from '../sync/vault';
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
+import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
@@ -569,6 +570,38 @@ export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAff
   if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
   const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
   await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── #588 piece B: one-time BEACON deposit seeds (DARK; nothing calls these yet) ────────────────────────────────
+// The one-time Ed25519 seeds the client needs to sign a later poll/withdraw for a deposit it made. A seed is a secret: encrypted at rest through the
+// SAME AAD-bound path as the records above (a reserved id, so a blob can't be transplanted onto a contact row or another owner), owner-local, never on
+// the wire, NOT in the .svrnty backup (packVault takes an explicit contents object; after a restore the client re-deposits).
+const BEACON_SEEDS_RECORD_ID = 'piece588:beacon-seeds'; // reserved AAD id
+function beaconSeedsSettingKey(ownerFingerprint: string): string {
+  return `beacon_seeds:${ownerFingerprint}`;
+}
+
+/** Read the seed map. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). A caller treats null as "no seeds held". */
+export async function getBeaconSeeds(ownerFingerprint: string): Promise<BeaconSeeds | null> {
+  if (!_sessionKey) return null;
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', beaconSeedsSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null;
+    const map = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value);
+    return isBeaconSeeds(map) ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the seed map, encrypted at rest (fail-closed: throws if locked, never writes a plaintext seed). */
+export async function setBeaconSeeds(ownerFingerprint: string, map: BeaconSeeds): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store beacon seeds unencrypted (fail-closed)');
+  if (!isBeaconSeeds(map)) throw new Error('refusing to store a malformed beacon seed map');
+  const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, map);
+  await txPut('settings', { key: beaconSeedsSettingKey(ownerFingerprint), value: payload });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {

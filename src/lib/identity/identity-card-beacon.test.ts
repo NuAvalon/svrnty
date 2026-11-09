@@ -47,9 +47,9 @@ const wrapper = (id: CanonId) => ({
 let alice: CanonId, KEY_A: string, KEY_B: string, KEY_OWN: string;
 before(async () => {
   alice = await makeCanonicalId('alice');
-  KEY_A = await beaconPublicKey(111111n);
-  KEY_B = await beaconPublicKey(222222n);
-  KEY_OWN = await beaconPublicKey(333333n);
+  KEY_A = await beaconPublicKey(BigInt('111111'));
+  KEY_B = await beaconPublicKey(BigInt('222222'));
+  KEY_OWN = await beaconPublicKey(BigInt('333333'));
 });
 
 const signed = (over: Record<string, unknown>) => signIdentityCard(card(alice, over), alice.privateKey, alice.passphrase);
