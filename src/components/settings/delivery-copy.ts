@@ -1,7 +1,7 @@
-/** Delivery receipt copy: the lines Hypatia wrote. Do not paraphrase. */
+/** Delivery receipt copy: the agreed lines. Do not paraphrase. */
 
 export const DELIVERY_COPY = {
-  title: 'Delivery',
+  title: 'Delivery receipts',
   globalLine: 'Lets people see that your device received their notes, and roughly when you were online.',
   contactLine: 'Lets this person see that your device received their note, and roughly when you were online.',
   on: 'On',
