@@ -10,7 +10,7 @@ import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
-import { base64ToUint8 } from '@/lib/crypto/pq';
+import { pqSigningSecretForSend } from '@/lib/identity/pq-signing-secret';
 import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
 import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
@@ -1773,7 +1773,9 @@ export function SoverentityFrontend({
     let pqSigningSecretKey: Uint8Array | undefined;
     try {
       const pq = await loadPQKeys(fp);
-      if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+      // ⚠ This is undefined for every normal identity TODAY (see pq-signing-secret.ts), so updates go out CLASSICAL and receivers apply them.
+      // Do NOT make it read the nested PQ key until receivers map pq_sig_public_key (the receiver-mapping change; verifiers first), or every update is dropped.
+      pqSigningSecretKey = pqSigningSecretForSend(pq);
     } catch {
       /* classical-only if the PQ half can't be read — never block the send on it */
     }
