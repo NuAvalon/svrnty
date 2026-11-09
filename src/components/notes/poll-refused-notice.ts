@@ -10,6 +10,8 @@ export const POLL_REFUSED_COPY = {
   hint: "If your device's date and time are wrong, fixing them may help.",
   unreadableSince: (time: string) => `Couldn't check for new messages since ${time}. The relay's reply couldn't be read.`,
   unreadableNever: "Couldn't check for new messages. The relay's reply couldn't be read.",
+  relayErrorSince: (time: string) => `Couldn't check for new messages since ${time}. The relay ran into a problem. Trying again automatically.`,
+  relayErrorNever: "Couldn't check for new messages. The relay ran into a problem. Trying again automatically.",
   busy: 'Could not check right now.',
 } as const;
 
@@ -23,6 +25,7 @@ export function pollRefusedNotice(
   if (report.kind === 'refused-auth') {
     return { text: since ? POLL_REFUSED_COPY.since(since) : POLL_REFUSED_COPY.never, hint: POLL_REFUSED_COPY.hint };
   }
+  if (report.kind === 'relay-error') return { text: since ? POLL_REFUSED_COPY.relayErrorSince(since) : POLL_REFUSED_COPY.relayErrorNever };
   if (report.kind === 'refused') return { text: since ? POLL_REFUSED_COPY.since(since) : POLL_REFUSED_COPY.never };
   return { text: since ? POLL_REFUSED_COPY.unreadableSince(since) : POLL_REFUSED_COPY.unreadableNever };
 }
