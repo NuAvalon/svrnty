@@ -37,7 +37,7 @@ WORKDIR /app
 # liboqs (built with OpenSSL) dynamically links libcrypto at runtime — install the
 # RUNTIME OpenSSL lib EXPLICITLY (hardening pt1: libssl-dev above is build-time
 # headers only; don't rely on the base image happening to carry libssl3).
-RUN apt-get update && apt-get install -y --no-install-recommends libssl3 \
+RUN apt-get update && apt-get install -y --no-install-recommends libssl3 tini \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=oqs-builder /opt/oqs/lib/ /usr/local/lib/
 RUN ldconfig
@@ -87,4 +87,8 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 # PATHS, so uvicorn's default access log would RECORD exactly the correlation data the K1 blinding
 # hides (deposit-route-X ↔ poll-route-X, mailbox_fp↔IP). A blind relay must be unable to
 # deanonymize its own traffic BY CONSTRUCTION — the relay operator is untrusted in federation.
+#
+# tini as PID 1: a verifier killed on timeout can leave orphans, and without an init they stay zombies forever, each holding a PID
+# slot. Timeouts are what hostile deposits cause, so this can't depend on the verifier's npm tree never forking.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "satellite:app", "--host", "0.0.0.0", "--port", "8101", "--no-access-log"]

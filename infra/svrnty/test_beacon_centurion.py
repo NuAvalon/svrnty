@@ -154,14 +154,6 @@ def test_a_failure_inside_the_transaction_leaves_no_rows(cen, monkeypatch):
     assert rows(cen, "beacon_deposits") == 1 and rows(cen, "beacon_matches") == 0     # the 2nd deposit rolled back too
 
 
-def _is_zombie(pid: int) -> bool:
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except (OSError, IndexError):
-        return False
-
-
 def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
     marker = tmp_path / "grandchild.pid"
     hang = ("import os, subprocess, sys, time;"
@@ -177,8 +169,6 @@ def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
         try:
             os.kill(gpid, 0)
         except ProcessLookupError:
-            break
-        if _is_zombie(gpid):                                   # dead, just unreaped: in a container with no init, nobody reaps orphans
             break
         time.sleep(0.1)
     else:
