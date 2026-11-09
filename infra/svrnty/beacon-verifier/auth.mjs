@@ -6,8 +6,9 @@
 //
 // Authenticated means ALL of: pk is a canonical Ed25519 point and not of small order; Poseidon(DS_K, pk_lo, pk_hi) == K (the
 // inputs come from the ONE shared module the client imports, pinned by the KAT vector); S < L; and node:crypto verifies the
-// signature over authMessage(op, H_e, N, nonce), which names the op. Every check runs whatever the others say, and any failure
-// is the single reason "auth", so neither the reason nor the work done says which check failed.
+// signature over authMessage(op, H_e, N, nonce), which names the op. Every check runs whatever the others say, except that the
+// small-order check needs a key that decoded (its inputs are public). Any failure is the single reason "auth", so the reason
+// doesn't say which check failed.
 // OpenSSL checks S < L but NOT the order of A (the identity as pk verifies a message-independent signature), hence the explicit
 // small-order check. Mixed-order keys (prime-order point + torsion) are NOT refused: a standard key is never one, and only the
 // key's owner can sign under it. No state, no network: nonce single-use and TTL are the caller's (one transaction with the action).

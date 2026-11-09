@@ -58,6 +58,8 @@ test('points: generators pass; off-curve G1, identity and an on-curve G2 point o
     await checkPoints({ pi_a: g1, pi_b: g2, pi_c: g1 }, curve);                          // passes
     const reason = async (p) => checkPoints(p, curve).then(() => 'accepted', (e) => e.reason);
     assert.equal(await reason({ pi_a: [1n, 3n], pi_b: g2, pi_c: g1 }), 'point:pi_a:off-curve');
+    assert.equal(await reason({ pi_a: g1, pi_b: g2, pi_c: [1n, 3n] }), 'point:pi_c:off-curve');
+    assert.equal(await reason({ pi_a: g1, pi_b: [[1n, 0n], [1n, 0n]], pi_c: g1 }), 'point:pi_b:off-curve');
     assert.equal(await reason({ pi_a: g1, pi_b: g2, pi_c: [0n, 0n] }), 'point:pi_c:identity');      // (0,0) = affine identity
     assert.equal(await reason({ pi_a: g1, pi_b: rogue, pi_c: g1 }), 'point:pi_b:not-in-subgroup');
   } finally {
