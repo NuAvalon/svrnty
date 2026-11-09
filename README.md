@@ -2,7 +2,7 @@
 
 *Trust that lives on your device. Not on a server. Not on a blockchain. Yours.*
 
-**svrnty is the trust layer that depends on no one. Your identity, your contacts, and your trust graph live on your device, encrypted, controlled by you alone.**
+**svrnty is the trust layer that depends on no one. Your identity, your contacts, and your trust graph live on your device, controlled by you alone, with your contacts and private keys encrypted.**
 
 Read the [Manifesto](./MANIFESTO.md).
 
@@ -16,7 +16,7 @@ svrnty answers it differently: the network can help two people find each other w
 
 ## It stays yours
 
-svrnty is built so you can't be locked in or shut out — and that's true today, not a promise for later. Your identity, contacts, and trust graph are yours: an encrypted file you can export whole and take anywhere, built on standard, audited crypto (AES-256-GCM, Argon2id) with no proprietary lock, and your contacts export to the vCard standard. Because the code is open source, you can always read your own data back. So even if svrnty.is vanished tomorrow, you'd still hold everything that matters and the software to run it — nothing you build here can be taken from you. And you can already run the whole thing yourself — point one line of config at your own domain and bring it up — so the network keeps working for you and the people you reach on your own infrastructure, not ours. We'd rather you be free to leave than stay because you can't.
+svrnty is built so you can't be locked in or shut out — and that's true today, not a promise for later. Your identity, contacts, and trust graph are yours: an encrypted file you can export whole and take anywhere, built on standard, widely reviewed algorithms (AES-256-GCM, Argon2id) with no proprietary lock, and your contacts export to the vCard standard. Because the code is open source, you can always read your own data back. So even if svrnty.is vanished tomorrow, you'd still hold everything that matters and the software to run it — nothing you build here can be taken from you. And you can already run the whole thing yourself — point one line of config at your own domain and bring it up — so the network keeps working for you and the people you reach on your own infrastructure, not ours. (Separate instances can't reach each other yet; see below.) We'd rather you be free to leave than stay because you can't.
 
 ## What it is
 
@@ -71,13 +71,13 @@ Your actions — trust someone, introduce two people, rotate your key, revoke, g
 
 ## How svrnty reaches people
 
-svrnty's relays are deliberately dumb: they move sealed, opaque blobs and never learn who you are or what you say. (Hiding the *pattern* of who talks to whom from the relay itself is the blind-relay transport below — built, not yet live.)
+svrnty's relays are deliberately dumb: they move sealed, opaque blobs and can't read what you say or see your name. They do see network addresses and timing. (Hiding the *pattern* of who talks to whom from the relay itself is the blind-relay transport below — built, not yet live.)
 
 - **Sharing your card (live).** Your card rides a dead-drop — an encrypted blob behind a short 6-character code that expires in 7 days, and the key to open it lives only in the link you share, never on the server. Anyone you give the link to can join from it.
 - **Receiving updates (live, in testing).** Your mailbox takes sealed blobs addressed to you; the relay sees only opaque ciphertext — no sender attached, and it keeps no list of your contacts. The sender's identity and signature travel *inside* the sealed message and are checked by you, the recipient, never by the relay. Today this runs single-node (one server, in-memory); making it durable across many servers is next.
 - **Hiding the metadata too (coming).** The blind-relay transport — onion-sealed and uniform-framed, so a relay can't tell one kind of message from another or map who talks to whom — is built and unit-tested but not yet wired live. Until it's on, we don't claim metadata privacy.
 
-**Run your own relay (live, as of today).** You can host the whole thing — copy the example config, set your own domain in it, then bring it up (`cp .env.example .env`, point `NEXT_PUBLIC_SVRNTY_DOMAIN` at your domain, then `docker compose up -d --build`). That stands up the app, automatic HTTPS, and the backend, with your share-links pointing at your domain — no code fork. Setting your domain is required, not optional polish: it's compiled in at build, so if you leave the default your links point back at svrnty.is and won't resolve for the people you send them to (change it later and you rebuild). The only piece that stays with svrnty.is is the global vanity-name registry, and it degrades gracefully without it. "Delete us, fork it, run your own" is shipped fact now, not a promise — the last piece of "it stays yours."
+**Run your own relay (early: one instance, on its own).** You can host the whole thing — copy the example config, set your own domain in it, then bring it up (`cp .env.example .env`, point `NEXT_PUBLIC_SVRNTY_DOMAIN` at your domain, then `docker compose up -d --build`). That stands up the app, automatic HTTPS, and the backend, with your share-links pointing at your domain — no code fork. Setting your domain is required, not optional polish: it's compiled in at build, so if you leave the default your links point back at svrnty.is and won't resolve for the people you send them to (change it later and you rebuild). The only piece that stays with svrnty.is is the global vanity-name registry, and it degrades gracefully without it. A fresh install from these steps has been brought up in a test sandbox; automatic HTTPS, contact updates, and backup and restore on a self-hosted instance haven't been tested yet. Instances are separate for now: people on different instances can't reach each other yet, and moving to another host while keeping your connections isn't wired. Details and limits: [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
 
 **Moving relays is yours.** Your identity lives in your keys, not in any relay — so you can switch to another relay, or your own, without becoming someone new. Today you share your updated card the way you first connected (a fresh link or QR); having your contacts pick up your new address automatically when you move is on the roadmap.
 
@@ -87,7 +87,7 @@ A trust layer has to have honest answers for the bad days — a lost device, a c
 
 **Share your recovery with people you trust (live).** You can split your recovery into pieces (Shamir shares) and hand them to people you trust, so no single one of them can rebuild you but a chosen few together can. Handing out the shares is live today. Collecting them back to rebuild your identity in one step is built but not yet wired into the app — on the near roadmap, as is changing who holds your pieces.
 
-**If a contact turns hostile (live).** You can break trust and block, right on your device, effective going forward: a de-trusted or blocked person stops receiving your updates. That direct protection is live today. (The quieter protection — stopping a blocked person from reaching you even through the people you both know — is built and unit-verified but not yet wired live, as the trust model notes.)
+**If a contact turns hostile (live).** You can break trust and block, right on your device, effective going forward. A block is local: they leave your Galaxy and offers from them stay quiet on this device, and the relay isn't told. Stopping your contact updates from going to a blocked person is built and rolling out. (The quieter protection — stopping a blocked person from reaching you even through the people you both know — is built and unit-verified but not yet wired live, as the trust model notes.)
 
 **If a key is compromised (coming).** Rotating a compromised key or seed is built and cryptographically signed in the protocol, but its in-app send isn't wired yet — so today you can't complete a rotation end-to-end. We say so plainly, because a rotation you believe worked but didn't is worse than knowing it isn't ready.
 
@@ -97,18 +97,18 @@ We don't print protections we haven't wired.
 
 A trust protocol is infrastructure that should measure in decades, and harvest-now-decrypt-later is a real attack. So every identity carries a post-quantum signing key (ML-DSA-87, FIPS 204) and a post-quantum encryption key (ML-KEM-1024, FIPS 203) from the very first keypair, bound into the identity. We advertise exactly what's wired and what isn't, because a trust protocol is something people stake real safety on:
 
-- **Signatures.** ED25519 is live. ML-DSA-87 hybrid-signing (FIPS 204, Cat 5) is live for contact-update trust-signals — hybrid ED25519+ML-DSA-87 when the identity carries its post-quantum signing key, with a classical-only fallback — and on messages sealed with the encrypt-to-a-contact tool (both schemes are checked, so if one breaks the other holds). Identity cards advertise a post-quantum signing key, fingerprint-bound, with post-quantum card-signing being wired in (cards are classical-signed today).
+- **Signatures.** ED25519 is live, and it's what receivers check today. ML-DSA-87 hybrid-signing (FIPS 204, Cat 5) is built but not switched on end to end: identity cards and contact updates are classical-signed today, while receivers learn to check the post-quantum half. Identity cards advertise a post-quantum signing key, fingerprint-bound.
 - **Encryption.** Messages are sealed with hybrid X25519 + ML-KEM-1024 (FIPS 203, Cat 5), and the app refuses to send a message to a contact whose card has no post-quantum encryption key. Contact updates, and the reply your app sends when someone joins with your card, are sealed the same way. Receiving still accepts classical envelopes for compatibility.
 
 ## Status
 
 svrnty is pre-release. Here's what's live today, what's rolling out, and what's still ahead.
 
-**Live today:** your identity; the trust graph (Know / Verify / Trust); your living address book — contacts, device-local groups, and the Galaxy view; vault encryption and backup; a local encrypt/decrypt tool (encrypt to a contact, copy the ciphertext in and out, no wire); card sharing via dead-drop and your single-node mailbox; splitting your recovery across trusted contacts (Shamir shares); direct blocking; and **running your own relay** (turnkey — a one-line domain config, then `docker compose up`). Sharing signed updates works over clipboard, QR, and share sheets. The UI is usable and unfinished.
+**Live today:** your identity; the trust graph (Know / Verify / Trust marks; the mutual reveal is rolling out); your living address book — contacts, device-local groups, and the Galaxy view; vault encryption and backup; a local encrypt/decrypt tool (encrypt to a contact, copy the ciphertext in and out, no wire); card sharing via dead-drop and your single-node mailbox; splitting your recovery across trusted contacts (Shamir shares); direct blocking; and **running your own relay** as a single, separate instance (a one-line domain config, then `docker compose up`). Sharing signed updates works over clipboard, QR, and share sheets. The UI is usable and unfinished.
 
 **Rolling out:** private mutual discovery — the blind match (you and a mutual find each other without any server holding the graph) is built and live in internal testing, hardening for public release. Transitive mutual-block — stopping a blocked person from reaching you even through the people you both know, and holding across key rotation, rebuild, and transfer — its spine is built and unit-verified, with the live transport the remaining step; today's blocking is direct-only. The blind relay transport (onion-sealed, uniform-framed, blind-routed, so a relay can't tell one kind of signal from another or map who talks to whom) is built and gate-verified; the post-quantum message envelope is built and tested but not yet on the wire (the envelope is classical today). End-to-end wiring is the remaining step. And a background-worker fix so backing up or restoring a large vault no longer briefly freezes the UI while your key is derived.
 
-**On the roadmap:** recovering your identity from your circle's shares as a single step in the app (and rotating who holds them); rotating a compromised key or seed end-to-end in-app; having your contacts pick up your new address automatically when you move relays; the post-quantum signature enforced on identity cards (contact-update trust-signals are already hybrid-signed); and cloud backup where the file is encrypted before it leaves your device.
+**On the roadmap:** recovering your identity from your circle's shares as a single step in the app (and rotating who holds them); rotating a compromised key or seed end-to-end in-app; having your contacts pick up your new address automatically when you move relays; receivers checking post-quantum signatures on identity cards and contact updates; and cloud backup where the file is encrypted before it leaves your device.
 
 ## Why this matters for AI
 
@@ -146,7 +146,7 @@ This stands up the app, automatic HTTPS, and the backend; with your domain set, 
 └─────────────────────────────────────────┘
 ```
 
-Everything below the UI is framework-agnostic TypeScript. The crypto layer uses audited libraries (`openpgp`, `@noble/curves`, `@noble/post-quantum`, `@noble/hashes`), with AES-256-GCM via the platform WebCrypto. No custom cryptographic primitives.
+Everything below the UI is framework-agnostic TypeScript. The crypto layer uses well-known open-source libraries: `openpgp`, `@noble/curves` and `@noble/hashes` have been independently audited (earlier versions); `@noble/post-quantum` has not yet. AES-256-GCM is via the platform WebCrypto. No custom cryptographic primitives.
 
 ## License
 
