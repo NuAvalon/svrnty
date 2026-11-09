@@ -81,10 +81,13 @@ test('BR6 [static] the record lives under its own reserved AAD id, distinct from
 
 test('BR7 [static] getBeaconKeyRecord returns null on any doubt; ensureBeaconKeyRecord creates with an ATOMIC add (not get-then-put) and adopts the winner on a conflict; nothing is stored unencrypted', () => {
   const s = store();
-  const get = s.slice(s.indexOf('export async function getBeaconKeyRecord'), s.indexOf('export async function ensureBeaconKeyRecord'));
-  assert.match(get, /if \(!_sessionKey\) return null/);
-  assert.match(get, /isBeaconKeyRecord\(/);
-  assert.match(get, /catch \{\s*return null/);
+  const get = s.slice(s.indexOf('export async function readBeaconKeyRecord'), s.indexOf('export async function ensureBeaconKeyRecord'));
+  // readBeaconKeyRecord: 'unreadable' on ANY doubt, 'none' only for an absent row; getBeaconKeyRecord stays fail-closed (null unless a record is HELD).
+  assert.match(get, /if \(!_sessionKey\) return \{ state: 'unreadable' \}/);
+  assert.match(get, /if \(!row\?\.value\) return \{ state: 'none' \}/);
+  assert.match(get, /isBeaconKeyRecord\(rec\) \? \{ state: 'held', record: rec \} : \{ state: 'unreadable' \}/);
+  assert.match(get, /catch \{\s*return \{ state: 'unreadable' \}/);
+  assert.match(get, /return r\.state === 'held' \? r\.record : null/);
   const ens = s.slice(s.indexOf('export async function ensureBeaconKeyRecord'), s.indexOf('export async function importBeaconKeyRecord'));
   assert.match(ens, /if \(!_sessionKey\) throw new Error\(/);
   assert.match(ens, /encryptContactRecord\(_sessionKey, BEACON_KEY_RECORD_ID/);

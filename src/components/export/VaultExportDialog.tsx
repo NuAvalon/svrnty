@@ -4,7 +4,7 @@
 // Fleet crypto only: createVaultContents + packVault + downloadVault.
 // ⛔ Does NOT invent KDF/encrypt — packVault is team-owned (v4 dual-envelope).
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -22,6 +22,12 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { ExportAuthGate } from './ExportAuthGate';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/crypto/kdf';
 import { PASSPHRASE_LOSS_NOTICE_BACKUP } from '@/lib/identity/passphrase-loss-notice';
+
+// #588 (Flint's SHOULD b; Hypatia's words): shown BEFORE the file is saved, only when a trust key may be held but cannot be read, because then the backup
+// silently lacks it. It does not appear when no trust key exists yet (nothing is lost) and it does not block the export.
+export const BEACON_KEY_UNREADABLE_NOTICE =
+  "This backup doesn't include your trust key, because it couldn't be read on this device. Your contacts are included. "
+  + "If you restore from this backup, the trusts you've made would need to be made again.";
 
 export interface VaultExportDialogProps {
   open: boolean;
@@ -48,6 +54,7 @@ export function VaultExportDialog({
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [beaconUnreadable, setBeaconUnreadable] = useState(false);
 
   const match = password === confirm;
   const strongEnough = password.length >= MIN_PASSPHRASE_LENGTH;
@@ -59,12 +66,24 @@ export function VaultExportDialog({
     setShow(false);
     setLoading(false);
     setError(null);
+    setBeaconUnreadable(false);
   };
 
   const handleClose = () => {
     reset();
     onClose();
   };
+
+  // Look once the passphrase step is showing (the file is not saved until Export is pressed). A failed look is doubt, so it shows the notice.
+  useEffect(() => {
+    if (step !== 'passphrase' || !fingerprint) return;
+    let cancelled = false;
+    import('@/lib/identity/client-store')
+      .then((m) => m.readBeaconKeyRecord(fingerprint))
+      .then((r) => { if (!cancelled) setBeaconUnreadable(r.state === 'unreadable'); })
+      .catch(() => { if (!cancelled) setBeaconUnreadable(true); });
+    return () => { cancelled = true; };
+  }, [step, fingerprint]);
 
   const handleExport = async () => {
     if (!fingerprint || !strongEnough || !match) return;
@@ -181,6 +200,13 @@ export function VaultExportDialog({
 
         {step === 'passphrase' && (
           <div className="space-y-4 py-2">
+            {beaconUnreadable && (
+              <Alert data-testid="beacon-key-unreadable-notice" style={{ borderColor: E.borderLit }}>
+                <AlertDescription className="text-sm" style={{ color: E.text }}>
+                  {BEACON_KEY_UNREADABLE_NOTICE}
+                </AlertDescription>
+              </Alert>
+            )}
             <Alert
               style={{
                 background: 'color-mix(in srgb, var(--se-accent) 10%, var(--se-surface-solid))',

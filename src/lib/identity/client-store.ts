@@ -631,19 +631,29 @@ function beaconKeySettingKey(ownerFingerprint: string): string {
   return `beacon_key:${ownerFingerprint}`;
 }
 
-/** Read the record. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). */
-export async function getBeaconKeyRecord(ownerFingerprint: string): Promise<BeaconKeyRecord | null> {
-  if (!_sessionKey) return null;
+/** What a read of the record found. 'none' = nothing is held (no trust key was ever needed). 'unreadable' = something may be held, or we cannot tell (locked,
+ * storage error, decrypt-fail, malformed): the honest answer on ANY doubt. Only 'held' carries a record. */
+export type BeaconKeyRead = { state: 'none' } | { state: 'held'; record: BeaconKeyRecord } | { state: 'unreadable' };
+
+export async function readBeaconKeyRecord(ownerFingerprint: string): Promise<BeaconKeyRead> {
+  if (!_sessionKey) return { state: 'unreadable' };
   try {
     const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
       'settings', beaconKeySettingKey(ownerFingerprint),
     );
-    if (!row?.value) return null;
+    if (!row?.value) return { state: 'none' };
     const rec = await decryptContactRecord<unknown>(_sessionKey, BEACON_KEY_RECORD_ID, ownerFingerprint, row.value);
-    return isBeaconKeyRecord(rec) ? rec : null;
+    return isBeaconKeyRecord(rec) ? { state: 'held', record: rec } : { state: 'unreadable' };
   } catch {
-    return null;
+    return { state: 'unreadable' };
   }
+}
+
+/** Read the record. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). Callers that must tell "absent" from "unreadable" (the
+ * backup export) use readBeaconKeyRecord. */
+export async function getBeaconKeyRecord(ownerFingerprint: string): Promise<BeaconKeyRecord | null> {
+  const r = await readBeaconKeyRecord(ownerFingerprint);
+  return r.state === 'held' ? r.record : null;
 }
 
 /** The record, creating it if (and only if) none is held. Atomic: two tabs racing both end up with the SAME record. Throws when locked, and when a record
