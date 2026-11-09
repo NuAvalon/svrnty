@@ -117,6 +117,7 @@ If you don't schedule it, old messages stay on the server.
   survive restarts and rebuilds. It's one file for one `app` container: do **not** run
   multiple `app` replicas behind a load balancer; they would each have their own mailbox.
 - **Updating:** `git pull && docker compose up -d --build`.
+- **Keep the `Caddyfile` current when you update.** The app sets its own script policy (`Content-Security-Policy`) on every page. A `Content-Security-Policy` line in an older or hand-edited `Caddyfile` replaces that header, which turns the protection off with no warning. `scripts/selfhost_smoke.sh` fails if that happens.
 - **Backups:** see [Backups](#backups) below.
 - **Logs:** `docker compose logs -f app` (or `registration`, `caddy`).
 
