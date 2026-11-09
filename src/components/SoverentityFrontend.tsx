@@ -5,7 +5,8 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
@@ -640,6 +641,10 @@ export function SoverentityFrontend({
       setRestorePath('passphrase');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
+      if (isRestoreDomainRefusal(err)) {
+        setRestoreError(msg);
+        return;
+      }
       // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
       // DO-SECOND honest error (seed-only path).
       if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
@@ -824,6 +829,7 @@ export function SoverentityFrontend({
           const keyData = JSON.parse(new TextDecoder().decode(decrypted));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
+          await assertRestoreKeepsOwnerDomain(fp, vaultPassphrase, 'keeps-open-session');
           // 3a-pure (Blocker-C): keys must be encrypted at rest. Establish the session key from the
           // export password the user just entered (unless a session is already open — don't clobber
           // it). storeKey is fail-closed, so this guarantees no plaintext-at-rest window.
@@ -886,6 +892,10 @@ export function SoverentityFrontend({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
+      if (isRestoreDomainRefusal(err)) {
+        setRestoreError(msg);
+        return;
+      }
       const looksLikeDecryptFail =
         /decrypt|OperationError|passphrase|password|could not open vault/i.test(msg) ||
         (err instanceof DOMException && err.name === 'OperationError');
