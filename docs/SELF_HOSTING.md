@@ -127,9 +127,20 @@ If you don't schedule it, old messages stay on the server.
 - **Run behind Caddy as shipped.** The image already runs as a non-root `nextjs` user on an
   internal port; only Caddy publishes 80/443. Don't expose the app's port 3000 publicly —
   the TLS + header discipline lives at the Caddy edge.
-- **If you replace Caddy with your own proxy,** it must replace any `X-Forwarded-For` header a
-  client sends; otherwise clients can choose their own rate-limit bucket. (Caddy as shipped
-  already does this.)
+- **If you replace Caddy with your own proxy,** it must set the `X-Svrnty-Client-IP` header to
+  the real client address on every request to the app, overwriting anything the client sent. The
+  app's per-client rate limits read that header and nothing else. If your proxy doesn't set it,
+  nothing visibly fails: every user shares one bucket, so the whole instance gets 10 deposits and
+  300 owner requests a minute (`RELAY_RATE_LIMIT_MAX`, `RELAY_OWNER_RATE_LIMIT_MAX`). If your proxy
+  passes through a value the client sent, clients can choose their own bucket. (Caddy as shipped
+  sets this header from the address connected to it.) This setup hasn't been tested end to end.
+- **If you put a CDN or load balancer in front of Caddy,** the address connected to Caddy is the
+  CDN's, not your user's. Users behind the same edge then share a bucket, and one sender gets a
+  fresh budget on every edge. To fix it, list only your CDN's published address ranges under
+  Caddy's `trusted_proxies`, set `client_ip_headers` to the header your CDN uses for the client
+  address, and change `{remote_host}` to `{client_ip}` on the `X-Svrnty-Client-IP` line in
+  `Caddyfile`. Never trust that CDN header without `trusted_proxies`, or anyone can forge it. This
+  setup hasn't been tested end to end either.
 - **Secrets stay server-side.** Any operator secret must never
   be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
   secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
