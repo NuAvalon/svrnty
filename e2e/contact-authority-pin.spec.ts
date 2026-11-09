@@ -129,7 +129,7 @@ test('FIRST WRITE WINS: a legacy card stores no pin; the same identity with a pi
   expect(await storedPin(A, /zedcontact/i, testInfo, 'e0'), 'control: a legacy (empty-pin) card stores no pin').toBeUndefined();
   await pasteCard(A, await zed.signed(PIN1), /key material is now stored|updated/i);
   expect(await storedPin(A, /zedcontact/i, testInfo, 'e1'), 'the same identity with a pin back-fills it').toBe(PIN1);
-  await pasteCard(A, await zed.signed(PIN2), /different identity pin/i);
+  await pasteCard(A, await zed.signed(PIN2), /doesn't match the one you already have/i);
   expect(await storedPin(A, /zedcontact/i, testInfo, 'e2'), 'a different pin on a valid card leaves the first pin alone').toBe(PIN1);
   await ctx.close();
 });

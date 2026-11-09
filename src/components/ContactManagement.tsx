@@ -62,6 +62,7 @@ import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safe
 import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
@@ -701,7 +702,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
           setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
         } else if (d.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== d.authorityPin) {
           // #787: first write wins. A DIFFERENT pin on a valid card is loud and changes nothing.
-          setExchangeResult({ success: false, message: `A card for "${displayName}" carries a different identity pin than the one you already hold — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure channel.` });
+          setExchangeResult({ success: false, message: authorityPinConflictMessage(displayName) });
         } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment)) {
           // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held).
           await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField) });

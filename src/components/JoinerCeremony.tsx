@@ -46,6 +46,7 @@ import {
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { clampArrivalName } from '@/lib/trust/grow-gate';
@@ -251,6 +252,11 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         ? await getContactByFingerprint(ownerFp, peer.fingerprint)
         : null;
       if (existing) {
+        if (peer.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== peer.authorityPin) {
+          // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import)
+          setError(authorityPinConflictMessage(peer.name));
+          return;
+        }
         if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox) || (peer.authorityPin && !existing.next_authority_commitment)) {
           await updateContact(existing.id, {
             ...(peer.pq
