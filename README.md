@@ -71,7 +71,7 @@ Your actions — trust someone, introduce two people, rotate your key, revoke, g
 
 ## How svrnty reaches people
 
-svrnty's relays are deliberately dumb: they move sealed, opaque blobs and can't read what you say or see your name. They do see network addresses and timing. (Hiding the *pattern* of who talks to whom from the relay itself is the blind-relay transport below — built, not yet live.)
+svrnty's relays are deliberately dumb: they move sealed, opaque blobs and can't read what you say or see your name. They do see network addresses, timing, and which mailbox each blob is for. (Hiding the *pattern* of who talks to whom from the relay itself is the blind-relay transport below — built, not yet live.)
 
 - **Sharing your card (live).** Your card rides a dead-drop — an encrypted blob behind a short 6-character code that expires in 7 days, and the key to open it lives only in the link you share, never on the server. Anyone you give the link to can join from it.
 - **Receiving updates (live, in testing).** Your mailbox takes sealed blobs addressed to you; the relay sees only opaque ciphertext — no sender attached, and it keeps no list of your contacts. The sender's identity and signature travel *inside* the sealed message and are checked by you, the recipient, never by the relay. Today this runs single-node (one server, in-memory); making it durable across many servers is next.
