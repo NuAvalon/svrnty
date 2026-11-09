@@ -697,11 +697,26 @@ export async function readDeliveryDefaultMigrating(ownerFingerprint: string): Pr
   const first = await readDeliveryDefault(ownerFingerprint);
   if (first.state !== 'absent') return first;
   try {
-    await writeDeliveryDefaultIfAbsent(ownerFingerprint, { v: 1, value: 'on', notice_pending: true });
+    // A restore path that could not seal a marker (no session yet) left the plaintext flag: that identity was restored here, so its choice is unknown.
+    const restored = await txGet<{ key: string; value: string }>('settings', deliveryRestoredFlagKey(ownerFingerprint));
+    await writeDeliveryDefaultIfAbsent(ownerFingerprint, restored ? { v: 1, value: 'unknown' } : { v: 1, value: 'on', notice_pending: true });
+    if (restored) await txDelete('settings', deliveryRestoredFlagKey(ownerFingerprint)).catch(() => {});
   } catch {
     return { state: 'unreadable' };
   }
   return readDeliveryDefault(ownerFingerprint);
+}
+
+function deliveryRestoredFlagKey(ownerFingerprint: string): string {
+  return `delivery_receipts_restored:${ownerFingerprint}`;
+}
+
+/**
+ * For a restore path that has NO session key to seal with: leave a plaintext flag ("this identity was restored on this device", nothing
+ * secret in it). The first send's migration reads it and records 'unknown' instead of 'on'. Never throws on a locked session.
+ */
+export async function markDeliveryRestored(ownerFingerprint: string): Promise<void> {
+  await txPut('settings', { key: deliveryRestoredFlagKey(ownerFingerprint), value: '1' });
 }
 
 /** A restore's marker: the choice is not known on this device, so the owner is asked once and nothing is sent until they answer. */

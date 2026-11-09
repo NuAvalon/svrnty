@@ -5,7 +5,7 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
@@ -805,6 +805,7 @@ export function SoverentityFrontend({
           if (contactsReport.kept + contactsReport.skipped > 0) {
             setPlaintextImportNote(formatPlaintextImportReport(contactsReport));
           }
+          await markDeliveryRestored(fp); // task #714 R2a: a restore, the Delivery-receipt choice is unknown here
           await setActiveFingerprint(fp);
           const existingIdentity = await loadIdentity(fp);
           if (existingIdentity) {
@@ -854,6 +855,7 @@ export function SoverentityFrontend({
           if (keyData.privateKey) {
             await storeKey(fp, keyData.privateKey, keyData.passphrase || '');
           }
+          await markDeliveryRestored(fp); // task #714 R2a: a restore, the Delivery-receipt choice is unknown here
           await setActiveFingerprint(fp);
           const existingIdentity = await loadIdentity(fp);
           if (existingIdentity) {
@@ -865,6 +867,7 @@ export function SoverentityFrontend({
           const fp = data.fingerprint;
           const wrappedIdentity = data.identity ? { identity: data } : { identity: { fingerprint: fp, ...data } };
           await storeIdentity(fp, wrappedIdentity);
+          await markDeliveryRestored(fp); // task #714 R2a: a restore, the Delivery-receipt choice is unknown here
           await setActiveFingerprint(fp);
           setIdentity(wrappedIdentity);
           onIdentityUpdate?.(wrappedIdentity);
