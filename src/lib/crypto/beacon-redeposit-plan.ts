@@ -14,7 +14,7 @@ export interface PlanInput {
   trusts: string[];
   /** depositKey(trustId, epoch) for deposits already made. */
   done: ReadonlySet<string>;
-  /** 32 bytes, per device, secret: the only source of the jitter. */
+  /** 32 bytes, secret, IDENTITY state (one per identity, carried in the backup; not minted per device): the only source of the jitter. */
   seed: Uint8Array;
 }
 export interface DueDeposit { trustId: string; epoch: number; dueAtMs: number }

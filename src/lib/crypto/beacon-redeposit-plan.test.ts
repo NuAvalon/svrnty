@@ -1,5 +1,5 @@
 // src/lib/crypto/beacon-redeposit-plan.test.ts
-// #588 piece D (pure planning half): WHEN is each pending trust's weekly deposit due? Jitter is derived from a per-device secret, trust id and epoch, so
+// #588 piece D (pure planning half): WHEN is each pending trust's weekly deposit due? Jitter is derived from the identity's secret (identity state, not per device), trust id and epoch, so
 // a reload does not re-roll the time (and a restart burst would be a timing signal). Run: npx tsx --test src/lib/crypto/beacon-redeposit-plan.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -8,6 +8,7 @@
 /** 2026-11-01T00:00:00Z, in seconds. A generation below it is 'past': no honest clock produced it. */
 export const GENERATION_FLOOR = 1793491200;
 export const FUTURE_SLACK_SECONDS = 86400;
+/** 2^31 - 1 = 2038-01-19T03:14:07Z: the last second the generation can name; past it generationFromClock throws and generationProblem answers 'generation'. */
 export const MAX_KEY_GENERATION = 2 ** 31 - 1;
 
 export type GenerationProblem = 'generation' | 'past' | 'future';

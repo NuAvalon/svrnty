@@ -4,7 +4,7 @@
 // drops the KEY only, so every check returns a result and none throws.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateBeaconSecret, beaconPublicKey, checkBeaconPublicKey, BEACON_KEY_BYTES } from './beacon-key';
+import { generateBeaconSecret, beaconPublicKey, checkBeaconPublicKey, makeCurveLoader, BEACON_KEY_BYTES } from './beacon-key';
 
 const L = BigInt('2736030358979909402780800718157159386076813972158567259200215660948447373041');
 const P_FIELD = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
@@ -191,9 +191,35 @@ test('K12 reject my own key', async () => {
 });
 
 test('K13 the checks never throw and never echo the input in a reason (reason codes are fixed words)', async () => {
-  const reasons = new Set(['encoding', 'off-curve', 'identity', 'small-order', 'not-in-subgroup', 'own-key']);
+  const reasons = new Set(['encoding', 'off-curve', 'identity', 'small-order', 'not-in-subgroup', 'own-key', 'unavailable']);
   for (const input of ['', 'x'.repeat(100), await pack([BigInt('0'), BigInt('1')]), await pack([BigInt('0'), P_FIELD - BigInt('1')])]) {
     const r = await checkBeaconPublicKey(input);
     if (!r.ok) assert.ok(reasons.has(r.reason), r.reason);
   }
+});
+
+// Flint's SHOULD (a) on the branch review: a failed curve-library load must not be cached forever, must not be blamed on the sender's key ('encoding'), and
+// a curve operation that throws after the load must still return a reason (the function's contract is: never throws).
+test('K14 a failed curve load is reported as unavailable (not encoding) and is NOT cached: the next call retries and succeeds', async () => {
+  const bj = await curve();
+  const good = await beaconPublicKey(BigInt('31337'));
+  let calls = 0;
+  const load = makeCurveLoader(async () => { calls++; if (calls === 1) throw new Error('chunk failed to load'); return bj; });
+  assert.deepEqual(await checkBeaconPublicKey(good, undefined, load), { ok: false, reason: 'unavailable' }, 'the load failure is its own word');
+  const second = await checkBeaconPublicKey(good, undefined, load);
+  assert.equal(second.ok, true, 'a transient load failure must not poison every later check');
+  assert.equal(calls, 2, 'the loader ran again after the failure');
+  await checkBeaconPublicKey(good, undefined, load);
+  assert.equal(calls, 2, 'a successful load IS cached (no reload per check)');
+});
+
+test('K15 a curve operation that throws after the load returns unavailable and never throws out of the check', async () => {
+  const bj = await curve();
+  const good = await beaconPublicKey(BigInt('31337'));
+  const boom = Object.create(bj);
+  boom.mulPointEscalar = () => { throw new Error('curve op failed'); };
+  const r = await checkBeaconPublicKey(good, undefined, async () => boom);
+  assert.deepEqual(r, { ok: false, reason: 'unavailable' });
+  const asText = JSON.stringify(r);
+  assert.ok(!asText.includes('curve op failed'), 'the thrown message is never echoed');
 });

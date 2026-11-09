@@ -20,11 +20,23 @@ const FIELD_P = BigInt('21888242871839275222246405745257275088548364400416034343
 const HALF = (FIELD_P - ONE) / BigInt(2);
 const CURVE_A = BigInt(168700), CURVE_D = BigInt(168696);
 
-export type BeaconKeyReason = 'encoding' | 'off-curve' | 'identity' | 'small-order' | 'not-in-subgroup' | 'own-key';
+// 'unavailable' = the check could not run (the curve library failed to load, or a curve operation threw): NOT a verdict on the key, so it is not 'encoding'.
+export type BeaconKeyReason = 'encoding' | 'off-curve' | 'identity' | 'small-order' | 'not-in-subgroup' | 'own-key' | 'unavailable';
 export type BeaconKeyCheck = { ok: true; point: readonly [bigint, bigint] } | { ok: false; reason: BeaconKeyReason };
 
-let curve: Promise<any> | undefined;
-const loadCurve = () => (curve ??= import('circomlibjs').then((m: any) => m.buildBabyjub()));
+/** Caches a SUCCESSFUL load and forgets a failed one: with `??=` alone a single failed import() stayed cached and failed every later check. */
+export function makeCurveLoader(load: () => Promise<any>): () => Promise<any> {
+  let cached: Promise<any> | undefined;
+  return () => {
+    if (!cached) {
+      const p = Promise.resolve().then(load);
+      cached = p;
+      p.catch(() => { if (cached === p) cached = undefined; });
+    }
+    return cached;
+  };
+}
+const loadCurve = makeCurveLoader(() => import('circomlibjs').then((m: any) => m.buildBabyjub()));
 
 function defaultRandomBytes(n: number): Uint8Array {
   const c: Crypto | undefined = (globalThis as any).crypto;
@@ -78,11 +90,17 @@ function decode32(s: unknown): Uint8Array | null {
 
 /** The receiver's checks, in the ruled order: canonical decode, on the curve, not the identity, not of small order, in the prime-order
  * subgroup (l*Y = O), not my own key. NEVER throws and returns a fixed reason word, never the input. A failure drops the KEY only (the card is kept). */
-export async function checkBeaconPublicKey(b64: unknown, ownPublicKey?: string): Promise<BeaconKeyCheck> {
+export async function checkBeaconPublicKey(b64: unknown, ownPublicKey?: string, loader: () => Promise<any> = loadCurve): Promise<BeaconKeyCheck> {
   const bytes = decode32(b64);
   if (!bytes) return { ok: false, reason: 'encoding' };
-  let bj: any;
-  try { bj = await loadCurve(); } catch { return { ok: false, reason: 'encoding' }; }
+  try {
+    return checkOnCurve(await loader(), bytes, b64 as string, ownPublicKey);
+  } catch {
+    return { ok: false, reason: 'unavailable' }; // a fixed word: the thrown error (which could carry anything) is dropped
+  }
+}
+
+function checkOnCurve(bj: any, bytes: Uint8Array, b64: string, ownPublicKey?: string): BeaconKeyCheck {
   const sign = (bytes[31] & 0x80) !== 0;
   let y = ZERO;
   for (let j = 31; j >= 0; j--) y = (y << EIGHT) | BigInt(j === 31 ? bytes[j] & 0x7f : bytes[j]);
