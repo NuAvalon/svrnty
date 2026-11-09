@@ -6,7 +6,7 @@
 // Read AT SEND, never at accept: turning it off between the two must stop the receipt. Off means nothing leaves; it never means "later".
 // Pure: no storage, no clock. The record itself is read and written in client-store.ts.
 //
-// Fail-closed: an unreadable record is not a choice, so nothing is sent. An ABSENT record is migrated before it is read (client-store.ts), so by
+// Fail-closed: an unreadable record is not a choice, so nothing is sent; neither is an UNKNOWN one (see mayEmitReceipt). An ABSENT record is migrated before it is read (client-store.ts), so by
 // the time a send asks it is either a real value or 'unknown' (a restore: the owner is asked once, and no receipts go out until they answer).
 
 export type DeliveryValue = 'on' | 'off';
@@ -39,6 +39,9 @@ export function parseDeliveryDefault(raw: unknown): DeliveryDefaultRead {
 export function mayEmitReceipt(i: { admitted: boolean; perContact: unknown; global: DeliveryDefaultRead }): boolean {
   if (!i.admitted) return false;
   if (i.global.state === 'unreadable') return false; // an unreadable record is not a choice
+  // UNKNOWN (a restore the owner has not answered yet): nothing goes out, a per-contact 'on' included, so "no receipts until you choose" is simply true.
+  // A past per-contact choice comes back the moment the one prompt is answered.
+  if (i.global.state === 'ok' && i.global.rec.value === 'unknown') return false;
   if (i.perContact === 'off') return false;
   if (i.perContact === 'on') return true; // a per-contact choice wins over the global
   return i.global.state === 'ok' && i.global.rec.value === 'on';

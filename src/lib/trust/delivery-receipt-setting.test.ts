@@ -17,7 +17,11 @@ test('D1 the global default decides when the contact has no setting: on sends; o
 test('D2 a per-contact setting WINS over the global, both ways', () => {
   assert.equal(mayEmitReceipt({ admitted: true, perContact: 'off', global: ok('on') }), false);
   assert.equal(mayEmitReceipt({ admitted: true, perContact: 'on', global: ok('off') }), true);
-  assert.equal(mayEmitReceipt({ admitted: true, perContact: 'on', global: ok('unknown') }), true, 'an explicit per-contact choice stands while the global is unanswered');
+});
+test('D2b while the global is UNKNOWN (a restore, not yet answered) NOTHING goes out, not even a per-contact "on": "no receipts until you choose" is simply true', () => {
+  for (const perContact of ['on', 'off', undefined, 'junk']) assert.equal(mayEmitReceipt({ admitted: true, perContact, global: ok('unknown') }), false, String(perContact));
+  assert.equal(mayEmitReceipt({ admitted: true, perContact: 'on', global: ok('on') }), true, 'control: once answered On, a per-contact on still sends');
+  assert.equal(mayEmitReceipt({ admitted: true, perContact: 'on', global: ok('off') }), true, 'control: a per-contact on still beats a global Off');
 });
 test('D3 an UNREADABLE global means no send, even when the contact says on (a record that cannot be read is not a choice)', () => {
   assert.equal(mayEmitReceipt({ admitted: true, perContact: 'on', global: unreadable }), false);

@@ -26,6 +26,9 @@ test('A2 a per-contact value wins over the global, both ways', async () => {
   assert.equal(await receiptAllowedNow(OWNER, FP, io({ ...admitted, delivery_receipts: 'off' }, ok('on'))), false);
   assert.equal(await receiptAllowedNow(OWNER, FP, io({ ...admitted, delivery_receipts: 'on' }, ok('off'))), true);
 });
+test('A2b an UNKNOWN global blocks a per-contact "on" too (nothing goes out until the one prompt is answered)', async () => {
+  assert.equal(await receiptAllowedNow(OWNER, FP, io({ ...admitted, delivery_receipts: 'on' }, ok('unknown'))), false);
+});
 test('A3 a blocked or missing contact never gets a receipt, whatever the settings say', async () => {
   assert.equal(await receiptAllowedNow(OWNER, FP, io(blocked, ok('on'))), false);
   assert.equal(await receiptAllowedNow(OWNER, FP, io({ ...blocked, delivery_receipts: 'on' }, ok('on'))), false);
