@@ -46,6 +46,7 @@ import {
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { clampArrivalName } from '@/lib/trust/grow-gate';
@@ -73,6 +74,8 @@ interface PeerCard {
   // piece-2: authenticated device-mailbox (onion seal-target), non-null ONLY under a valid signature
   // (classifyImportedCard branch 4). Threaded into the direct persist paths exactly like pq.
   deviceMailbox: DeviceMailboxPublic | null;
+  // #787: the card's authority pin, non-null ONLY under a valid signature (branch 4). Kept on an already-known contact that holds none (first write wins).
+  authorityPin: string | null;
   alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
@@ -209,6 +212,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           email: p.email || '',
           pq: d.pq,
           deviceMailbox: d.deviceMailbox,
+          authorityPin: d.authorityPin,
           alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
         });
         setPhase('card');
@@ -248,12 +252,18 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         ? await getContactByFingerprint(ownerFp, peer.fingerprint)
         : null;
       if (existing) {
-        if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox)) {
+        if (peer.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== peer.authorityPin) {
+          // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import)
+          setError(authorityPinConflictMessage(peer.name));
+          return;
+        }
+        if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox) || (peer.authorityPin && !existing.next_authority_commitment)) {
           await updateContact(existing.id, {
             ...(peer.pq
               ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
               : {}),
             ...(peer.deviceMailbox ? { device_mailbox: peer.deviceMailbox } : {}),
+            ...(peer.authorityPin && !existing.next_authority_commitment ? { next_authority_commitment: peer.authorityPin } : {}),
           });
         }
         setAlreadyKnown(true);

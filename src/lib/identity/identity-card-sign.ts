@@ -230,6 +230,17 @@ export interface ImportDisposition {
    * sub-disposition: a valid signer may carry a mailbox but no pq (and vice-versa).
    */
   deviceMailbox: DeviceMailboxPublic | null;
+  /**
+   * #787: the card's authority pin (next_authority_commitment), 64 lowercase hex, to STORE on the contact, or null. Non-null ONLY under a VALID
+   * signature (4a/4b/4c) and only when it is canonical (an empty string is a legacy card; anything else malformed is dropped). Branches 1/2/3 always
+   * drop it, like deviceMailbox. First write wins is the CALLER's job (it knows what is already stored).
+   */
+  authorityPin: string | null;
+}
+
+/** The card's pin if it is canonical 64 lowercase hex, else null. */
+export function canonicalAuthorityPin(v: unknown): string | null {
+  return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : null;
 }
 
 /**
@@ -253,7 +264,7 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     typeof id.public_key !== 'string' || id.public_key.length === 0 ||
     typeof id.fingerprint !== 'string' || id.fingerprint.length === 0
   ) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null };
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null, authorityPin: null };
   }
   // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
   // never calls verify, and this decides classical-import for every branch.
@@ -261,34 +272,35 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     kem_public_key: id.pq_kem_public_key,
     sig_public_key: id.pq_sig_public_key,
   }))) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null };
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null, authorityPin: null };
   }
   // fp↔key OK → the classical contact imports for branches 2/3/4.
   const hasSig = typeof card.signature === 'string' && card.signature.length > 0;
   // BRANCH 2: no signature → classical-only, quiet. Must NOT alarm (benign transition-era peer).
   if (!hasSig) {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2, deviceMailbox: null };
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2, deviceMailbox: null, authorityPin: null };
   }
   // Signature present → verify (re-checks fp↔key internally; keeps verify self-contained).
   const valid = await verifySignedIdentityCard(card as SignedIdentityCard);
   // BRANCH 3: present but invalid → classical-only, LOUD. Reserve the tamper alarm for THIS only.
   if (!valid) {
-    return { importClassical: true, pq: null, alarm: 'loud', branch: 3, deviceMailbox: null };
+    return { importClassical: true, pq: null, alarm: 'loud', branch: 3, deviceMailbox: null, authorityPin: null };
   }
   // BRANCH 4: valid signature. The seal-target (device-mailbox) is now authenticated under identity.* —
   // extract + content-fp-validate it ONCE here (orthogonal to the pq suite decision below). Absent/invalid
   // → null (emit under-reveals). Dropped by construction in branches 1/2/3 above (no valid signature).
   const deviceMailbox = extractValidMailboxFromCard(id);
+  const authorityPin = canonicalAuthorityPin(id.next_authority_commitment); // valid signature only: branches 1/2/3 returned above
   // pq sub-disposition:
   const kem = typeof id.pq_kem_public_key === 'string' ? id.pq_kem_public_key : '';
   // 4a: absent/empty pq_kem under a valid sig → legit v1/no-PQ signer. Quiet, no pq.
   if (kem === '') {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a', deviceMailbox };
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a', deviceMailbox, authorityPin };
   }
   const suite = suiteFromKemLength(kem);
   // 4c: valid sig, unsupported/malformed suite length → sender bug, NOT tampering. Soft-info, no pq.
   if (!suite) {
-    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c', deviceMailbox };
+    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c', deviceMailbox, authorityPin };
   }
   // 4b: valid sig + supported suite → STORE the authenticated pq (both keys, as carried).
   const sig = typeof id.pq_sig_public_key === 'string' ? id.pq_sig_public_key : '';
@@ -299,5 +311,6 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     branch: '4b',
     suite,
     deviceMailbox,
+    authorityPin,
   };
 }

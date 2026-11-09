@@ -298,6 +298,11 @@ export interface ContactRecord {
   // whose signature VERIFIED (classifyImportedCard branch 4) — a seal-target is as MITM-sensitive as
   // pq_kem, so a no/invalid-signature card drops it (emit under-reveals). Read via peerDeviceMailbox().
   device_mailbox?: DeviceMailboxPublic;
+  // ── #787 the contact's authority pin ────────────────────────────────────────────────────────────────────────────────
+  // The 64-hex next_authority_commitment the contact's signed card carried at import. Stored ONLY from a card whose signature VERIFIED
+  // (classifyImportedCard branch 4), and FIRST WRITE WINS: a later card with a different pin never replaces it (the import raises the loud
+  // alarm instead). Nothing reads it yet: it is kept so a later relay move or key rotation can be checked against it.
+  next_authority_commitment?: string;
   trust_level: string;
   added_at: string;
   metadata?: any;
