@@ -1,3 +1,5 @@
+import { NotLiveBanner } from '@/components/NotLiveBanner'
+import { showNotLiveBanner } from '@/lib/not-live-banner'
 import './globals.css'
 import { headers } from 'next/headers'
 import localFont from 'next/font/local'
@@ -82,7 +84,9 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const nonce = (await headers()).get('x-nonce') ?? undefined
+  const requestHeaders = await headers()
+  const nonce = requestHeaders.get('x-nonce') ?? undefined
+  const notLive = showNotLiveBanner(requestHeaders.get('x-svrnty-path'), process.env.SVRNTY_NOT_LIVE_BANNER)
 
   return (
     <html
@@ -103,6 +107,7 @@ export default async function RootLayout({
       </head>
       <body>
         <div className="stars" />
+        {notLive && <NotLiveBanner />}
         <AppearanceProvider>{children}</AppearanceProvider>
         <script
           nonce={nonce}
