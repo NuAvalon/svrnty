@@ -496,6 +496,56 @@ test('N9 (C3) the emit path re-checks admitContact itself: a candidate from a st
   }
 });
 
+// ── #714 R2a: the Delivery setting is read AT SEND on the headless path too ──
+async function storedCandidate() {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  const bs = b.open();
+  bs.upsertContact(asContact(A));
+  await send(A, B, new HeadlessStore(), relay.fetchImpl, 'from A');
+  const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+  const accept = deps.note!.accept;
+  let wire: NoteWireV0 | undefined;
+  deps.note!.accept = async (w) => ((wire = w), accept(w));
+  await consumeInboundContactUpdates(deps);
+  const emit = () => sendHeadlessReceipts(bs, new Map([[`${A.fp}:${wire!.note_id}`, wire!]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+  return { A, bs, b, relay, emit };
+}
+
+test('N-D1 (#714 R2a) the global default is On when nothing was set; turning it Off AFTER the note was stored but BEFORE the send stops the receipt', async () => {
+  const { A, bs, b, relay, emit } = await storedCandidate();
+  try {
+    bs.setDeliveryDefault('off'); // between accept and send
+    assert.deepEqual(await emit(), { sent: 0, skipped: 1, failed: 0, capped: 0 });
+    assert.equal((await inbox(relay, A)).length, 0, 'nothing left the device');
+  } finally { b.done(); }
+});
+
+test('N-D2 (#714 R2a) a per-contact setting wins over the global both ways: contact Off beats global On; contact On beats global Off', async () => {
+  for (const [contact, global, sent] of [['off', 'on', 0], ['on', 'off', 1]] as const) {
+    const { A, bs, b, relay, emit } = await storedCandidate();
+    try {
+      bs.setDeliveryDefault(global);
+      bs.updateContact(asContact(A).id, { delivery_receipts: contact });
+      assert.equal((await emit()).sent, sent, `contact ${contact} / global ${global}`);
+      assert.equal((await inbox(relay, A)).length, sent);
+    } finally { b.done(); }
+  }
+});
+
+test('N-D3 (#714 R2a) the control: with nothing set, the receipt goes (default On), and the choice survives a reopen of the book', async () => {
+  const { A, bs, b, relay, emit } = await storedCandidate();
+  try {
+    assert.equal(bs.getDeliveryDefault().state, 'ok');
+    bs.setDeliveryDefault('off');
+    assert.deepEqual(b.open().getDeliveryDefault(), { state: 'ok', rec: { v: 1, value: 'off' } }, 'written to the book, not kept in memory');
+    bs.setDeliveryDefault('on');
+    assert.equal((await emit()).sent, 1);
+    assert.equal((await inbox(relay, A)).length, 1);
+  } finally { b.done(); }
+});
+
 test('N10 a FWW refusal (\'kept\') never becomes a receipt CANDIDATE: asserted on the candidate set itself, not only on "nothing sent"', async () => {
   // N8 sees "receipts_sent 0" for a rewrite, but that also holds if 'kept' became a candidate and the durable re-check dropped it
   // (the rewritten body != the stored one). This pins the earlier gate: a refused rewrite is never collected (skipped stays 0).

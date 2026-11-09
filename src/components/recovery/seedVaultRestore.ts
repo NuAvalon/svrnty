@@ -11,6 +11,7 @@ import { extractRecoveryVault } from '@/lib/sync/vault';
 import { recoverFromSeedPhrase, seedPhraseToMasterSecret } from '@/lib/crypto/recovery';
 import {
   storeIdentity,
+  markDeliveryDefaultUnknown,
   storeKey,
   storeVault,
   setActiveFingerprint,
@@ -159,6 +160,8 @@ export async function restoreIdentityFromSeedVault(
   await storeKey(fingerprint, bundle.classical_private_key, bundle.classical_passphrase);
   await storeVault(fingerprint, kv);
   await storeIdentity(fingerprint, identity);
+  // task #714 R2a: a seed-only restore does not carry the delivery-receipt choice, so it is UNKNOWN here: the owner is asked once and no receipts go out until they answer.
+  await markDeliveryDefaultUnknown(fingerprint);
   await setActiveFingerprint(fingerprint);
 
   // PQ: PrivateKeyBundle returns secrets only; serializeKeypairBundle needs public halves.
