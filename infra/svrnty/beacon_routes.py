@@ -8,8 +8,9 @@ The routes live under /trust/beacon because the edge already sends /api/trust/* 
 on prod and dev, with the client address in X-Forwarded-For. The browser's base URL is /api/trust. The app's /api/satellite/*
 proxies are no use here: on prod they default to the registration service, which has no satellite routes.
 
-Every answer is the centurion's fixed bytes with status 200, including refusals, so the status line carries nothing. The handler
-runs off the event loop because it can sit in a node subprocess for its whole timeout; on the loop, one hostile deposit would
+Every answer from these routes is the centurion's fixed bytes with status 200, including refusals, so the status line carries
+nothing. Layers outside them can still answer on their own (the edge, or the generic rate limiter if a RATE_LIMITS prefix ever
+covers this path; none does today), and the client treats 429 and 503 as busy. The handler runs off the event loop because it can sit in a node subprocess for its whole timeout; on the loop, one hostile deposit would
 stall every route on this satellite. Nothing about a request is logged. The operator view is /admin/beacon/health, counts only.
 
 THE VKEY. Only a vkey whose sha256 is pinned here can verify deposits. FINAL_VKEY_SHA256 is set by a reviewed commit after the
@@ -40,7 +41,7 @@ OPS = ("deposit", "nonce", "poll", "withdraw")
 FINAL_VKEY_SHA256 = ""            # empty until the ceremony's final vkey is pinned by a reviewed commit (plan H7)
 LOW_DISK_BYTES = 1024 ** 3
 SMOKE_TIMEOUT_S = 30
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 _WIRE_REFUSAL = b'{"ok":false,"reason":"wire"}\n'
 _MAX_LENGTH_DIGITS = 6            # far above the cap; int() of a huge digit string is itself an error path
 
@@ -96,7 +97,7 @@ def _vkey_kind(sha: str) -> Optional[str]:
     if FINAL_VKEY_SHA256:
         return "final" if hmac.compare_digest(sha, FINAL_VKEY_SHA256) else None
     pin = os.environ.get("BEACON_REHEARSAL_VKEY_SHA256", "")
-    return "rehearsal" if _HEX64.match(pin) and hmac.compare_digest(sha, pin) else None
+    return "rehearsal" if _HEX64.fullmatch(pin) and hmac.compare_digest(sha, pin) else None
 
 
 def _refuse(code: str) -> None:

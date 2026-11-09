@@ -4223,13 +4223,13 @@ beacon_mount = None
 if os.environ.get("BEACON_CENTURION") == "1":
     try:
         import beacon_routes
-    except Exception:
-        print("[beacon] NOT mounted: import", flush=True)
-    else:
         beacon_mount = beacon_routes.mount(
             app, DATA_DIR, SATELLITE_MODE,
             lambda request: client_ip_for(request.client.host if request.client else "unknown", request.headers.get("x-forwarded-for")),
         )
+    except Exception as e:
+        # No detail from the exception: it can carry paths. Which stage failed is enough to start looking.
+        print(f"[beacon] NOT mounted: {'import' if isinstance(e, ImportError) else 'mount'}", flush=True)
 
 
 if __name__ == "__main__":

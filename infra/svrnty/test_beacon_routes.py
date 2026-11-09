@@ -572,6 +572,29 @@ print('RESULT', satellite.beacon_mount is None, TestClient(satellite.app).get('/
 """
 
 
+RAISING = """
+import beacon_routes
+def boom(*a, **k):
+    raise RuntimeError('secret-path-detail')
+beacon_routes.mount = boom
+from fastapi.testclient import TestClient
+import satellite
+satellite.init_db()
+print('RESULT', satellite.beacon_mount is None, TestClient(satellite.app).get('/health').status_code)
+"""
+
+
+def test_flag_on_a_mount_that_raises_leaves_the_satellite_serving_and_names_no_detail(tmp_path):
+    out = run_sat(RAISING, "1", tmp_path)
+    assert "RESULT True 200" in out and "[beacon] NOT mounted: mount" in out and "secret-path-detail" not in out
+
+
+def test_no_rate_limit_prefix_covers_the_beacon_routes(tmp_path):
+    """The 200-only claim in the module docstring leans on this: the generic limiter never answers on these paths."""
+    import satellite
+    assert not [p for p in satellite.RATE_LIMITS if br.ROUTE_PREFIX.startswith(p) or p.startswith(br.ROUTE_PREFIX)]
+
+
 def test_flag_on_with_the_module_missing_from_the_image_the_satellite_still_serves(tmp_path):
     out = run_sat(BROKEN, "1", tmp_path)
     assert "RESULT True 200" in out and "[beacon] NOT mounted: import" in out
