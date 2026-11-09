@@ -1,10 +1,10 @@
 // src/lib/relay/client-ip.ts
-// #707 "client-ip v1" (Flint ruling lane:svrnty #1329; task #707). The relay sits behind Cloudflare → Caddy, and Caddy trusts no proxy
-// today, so the leftmost X-Forwarded-For the app used to read is a CLOUDFLARE EDGE address (measured 2026-10-31 on dev: 2208/2208
-// relay requests from CF ranges, 262 edges, 5 real clients). Per-IP limits were per-edge: users sharing an edge throttled each other
-// and one sender got a fresh budget on every edge. Worse once Caddy trusts CF, a client could forge the leftmost XFF entry.
+// #707 "client-ip v1" (Flint ruling lane:svrnty #1329; task #707). The relay sits behind Cloudflare → Caddy. When Caddy trusted no proxy,
+// the leftmost X-Forwarded-For the app read was a CLOUDFLARE EDGE address (measured 2026-10-31 on dev: 2208/2208 relay requests
+// from CF ranges, 262 edges, 5 real clients). Per-IP limits were per-edge: users sharing an edge throttled each other and one sender
+// got a fresh budget on every edge. Caddy trusts the CF ranges now, which makes the leftmost XFF entry forgeable, so it is never read.
 //
-// C3: read ONLY X-Svrnty-Client-IP, which Caddy sets itself (header_up overwrites anything the client sent) from {client_ip}, i.e.
+// C3: read ONLY X-Svrnty-Client-IP, which Caddy sets itself (request_header overwrites anything the client sent) from {client_ip}, i.e.
 // Cf-Connecting-IP when, and only when, the TCP peer is inside the pinned Cloudflare ranges (C2, trusted_proxies). Never the leftmost
 // XFF, never Cf-Connecting-IP directly. Missing or malformed → one shared 'unknown' bucket (fail-closed, strict).
 // C5: the value only keys the in-memory limiter. Never log it.
