@@ -17,7 +17,8 @@ import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { consumeInboundContactUpdates, envelopeDedupeKey, envelopeDedupeScope } from '@/lib/sync/consume-mailbox';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 
 const RELAY = 'http://relay.test/api/relay';
 

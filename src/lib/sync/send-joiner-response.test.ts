@@ -135,7 +135,7 @@ test('buildJoinerResponseDeposit (S14): the blob is a hybrid MailboxEnvelopePack
 test('sendJoinerResponse: POSTs {mailbox_id, blob} to /api/relay/envelope and reports ok', async () => {
   let seen: { url: string; body: any } | null = null;
   const okFetch = (async (url: string, init: any) => { seen = { url, body: JSON.parse(init.body) }; return { ok: true, status: 200 }; }) as unknown as typeof fetch;
-  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: okFetch });
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: okFetch, isBlocked: () => false });
   assert.equal(res.ok, true);
   assert.ok(seen, 'fetch was called');
   assert.match((seen as any).url, /\/api\/relay\/envelope$/);
@@ -145,20 +145,20 @@ test('sendJoinerResponse: POSTs {mailbox_id, blob} to /api/relay/envelope and re
 
 test('sendJoinerResponse: a relay non-2xx is reported (not thrown), status carried', async () => {
   const failFetch = (async () => ({ ok: false, status: 503 })) as unknown as typeof fetch;
-  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: failFetch });
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: failFetch, isBlocked: () => false });
   assert.deepEqual(res, { ok: false, status: 503 });
 });
 
 test('sendJoinerResponse: a network error is caught and reported (fail-soft)', async () => {
   const throwFetch = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
-  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: throwFetch });
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: throwFetch, isBlocked: () => false });
   assert.deepEqual(res, { ok: false, status: 'network-error' });
 });
 
 test('sendJoinerResponse: an unbuildable deposit never POSTs (encrypt-failed)', async () => {
   let called = false;
   const spyFetch = (async () => { called = true; return { ok: true, status: 200 }; }) as unknown as typeof fetch;
-  const res = await sendJoinerResponse(bobSender(), aliceTarget({ publicKeyArmored: '' }), { fetchImpl: spyFetch });
+  const res = await sendJoinerResponse(bobSender(), aliceTarget({ publicKeyArmored: '' }), { fetchImpl: spyFetch, isBlocked: () => false });
   assert.deepEqual(res, { ok: false, status: 'encrypt-failed' });
   assert.equal(called, false, 'no POST when there is no deposit to send');
 });
@@ -194,4 +194,40 @@ test('buildJoinerResponseDeposit: a CANONICAL sender WITHOUT its PQ pubkeys → 
     (n) => n === CODE,
   );
   assert.equal(joiner, null, 'a canonical joiner deposited without threaded PQ pubkeys must not verify');
+});
+
+function countingFetch() {
+  const seen = { posts: 0 };
+  const fetchImpl = (async () => { seen.posts++; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+  return { seen, fetchImpl };
+}
+
+test('a giver you have blocked gets no joiner response: nothing is sealed or posted', async () => {
+  const { seen, fetchImpl } = countingFetch();
+  const asked: string[] = [];
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl, isBlocked: (fp) => { asked.push(fp); return true; } });
+  assert.deepEqual(res, { ok: false, status: 'blocked' });
+  assert.equal(seen.posts, 0);
+  assert.deepEqual(asked, [aliceFp], 'the check is asked about the fingerprint whose mailbox would receive it');
+});
+
+test('a giver you have never met is not refused: that is the normal case for an invite', async () => {
+  const { seen, fetchImpl } = countingFetch();
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl, isBlocked: () => false });
+  assert.equal(res.ok, true);
+  assert.equal(seen.posts, 1);
+});
+
+test('a caller with no check deposits nothing, and does not throw into the ceremony', async () => {
+  const { seen, fetchImpl } = countingFetch();
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl } as never);
+  assert.deepEqual(res, { ok: false, status: 'blocked-check-failed' });
+  assert.equal(seen.posts, 0);
+});
+
+test('a check that throws deposits nothing, and does not throw into the ceremony', async () => {
+  const { seen, fetchImpl } = countingFetch();
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl, isBlocked: () => { throw new Error('book unreadable'); } });
+  assert.deepEqual(res, { ok: false, status: 'blocked-check-failed' });
+  assert.equal(seen.posts, 0);
 });

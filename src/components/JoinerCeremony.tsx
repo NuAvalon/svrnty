@@ -42,8 +42,12 @@ import {
   initSessionKey,
   lockSession,
   enqueueGateArrival,
+  getAllContacts,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
+import { blockedInBook } from '@/lib/sync/contact-update-gate';
+import { admitContact } from '@/lib/trust/admit-contact';
+import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
@@ -103,6 +107,8 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
     const ownPub: string = id?.identity?.public_key || '';
     if (!ownPub) return; // no own key to present — cannot build a verifiable response
     const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
+    // A giver you blocked gets nothing back. Read now, inside this try: if the book can't be read, no deposit goes out (the flow is fail-soft).
+    const isBlocked = blockedInBook(await getAllContacts(ownerFp));
     const res = await sendJoinerResponse(
       {
         fingerprint: ownerFp,
@@ -125,6 +131,7 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         giverPqKemPublicKey: peer.pq?.pq_kem_public_key,
         inviteNonce: code,
       },
+      { isBlocked },
     );
     if (!res.ok) {
       console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);
@@ -141,6 +148,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [ownerFp, setOwnerFp] = useState<string | null>(null);
   const [noIdentity, setNoIdentity] = useState(false);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
+  const [giverBlocked, setGiverBlocked] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -267,6 +275,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           });
         }
         setAlreadyKnown(true);
+        setGiverBlocked(!admitContact(existing)); // read here, from the row just loaded: no need to wait for the deposit to know this
       } else {
         // NOTE (piece-2 coverage boundary, unchanged): the device-mailbox is NOT threaded through the
         // holding-room gate pipeline (GateArrival → admit) yet — a gated joiner lands WITHOUT a mailbox
@@ -502,8 +511,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
           {alreadyKnown ? (
             <>
-              <h2 style={headingStyle}>You’re already connected</h2>
-              <p style={subStyle}>{peer?.name || 'They'} are already in your network.</p>
+              <h2 style={headingStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).heading}</h2>
+              <p style={subStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).sub}</p>
             </>
           ) : (
             <>

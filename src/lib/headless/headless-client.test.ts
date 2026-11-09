@@ -16,11 +16,8 @@ import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import {
-  type HeadlessOwner,
-  pollHeadlessOnce,
-  sendNoteFromHeadless,
-} from './headless-client';
+import { type HeadlessOwner, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 
 const RELAY = 'http://relay.test/api/relay';
 

@@ -41,7 +41,7 @@ test('the derive check is the real fingerprintMatchesKey and the J5 backup goes 
 });
 
 test('the deposit target is passed through untouched (it carries giverPqKemPublicKey; runJoin builds it)', () => {
-  assert.match(branch, /target,\s*\{ relayBase: RELAY \}/);
+  assert.match(branch, /target,\s*\{ isBlocked: blockedInBook\(store\.listContacts\(\)\), relayBase: RELAY \}/);
   assert.doesNotMatch(branch, /inviteNonce: code/, 'the old inline target (no KEM key) is gone');
 });
 

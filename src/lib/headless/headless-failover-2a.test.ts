@@ -13,7 +13,8 @@ import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, pollHeadlessAllRelays, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, pollHeadlessAllRelays, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 
 const R1 = 'http://t1.test/api/relay';
 const R2 = 'http://t2.test/api/relay';

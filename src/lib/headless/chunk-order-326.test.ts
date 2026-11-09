@@ -22,7 +22,8 @@ import { consumeInboundContactUpdates } from '@/lib/sync/consume-mailbox';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { DEAD_LETTER_FILE } from './headless-dead-letter';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, buildHeadlessConsumeDeps, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, buildHeadlessConsumeDeps } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 
 const RELAY = 'http://relay.test/api/relay';
 
