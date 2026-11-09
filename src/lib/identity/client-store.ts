@@ -5,6 +5,7 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+import { canonicalAuthorityPin } from './identity-card-sign';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
@@ -2072,6 +2073,8 @@ export interface GateArrival {
   publicKeyArmored: string;
   pqSigPublicKey?: string;
   pqKemPublicKey?: string;
+  /** The card's next_authority_commitment, kept only from a card whose signature verified. First write wins: see mergeArrivalPin (trust/grow-gate). */
+  nextAuthorityCommitment?: string;
   epoch: number;
   inviteNonce: string;
   mintChannel: GrowMintChannel;
@@ -2087,7 +2090,7 @@ function isGrowMintChannel(v: unknown): v is GrowMintChannel {
   return v === 'in_person' || v === 'remote';
 }
 
-function normalizeArrival(raw: unknown): GateArrival | null {
+export function normalizeArrival(raw: unknown): GateArrival | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
@@ -2107,6 +2110,8 @@ function normalizeArrival(raw: unknown): GateArrival | null {
   };
   if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
   if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  const pin = canonicalAuthorityPin(r.nextAuthorityCommitment);
+  if (pin) arrival.nextAuthorityCommitment = pin;
   return arrival;
 }
 
