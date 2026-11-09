@@ -43,6 +43,12 @@ interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
   onVaultRestore?: (contents: any) => void;
+  /**
+   * The report note after a backup import or restore, held by the PAGE. The page mounts this component in two places (the gate, and the Identity
+   * tab once an identity exists), so a restore that ends by setting the identity replaces the instance that holds local state: the note must survive that swap.
+   */
+  importNote?: string | null;
+  onImportNoteChange?: (note: string | null) => void;
   /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
   appLockPrefs?: AppLockPrefs;
   onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
@@ -241,10 +247,18 @@ async function safeJson(response: Response): Promise<any> {
   }
 }
 
+// "Set Passphrase" is OFF until the re-key fix ships. handleSetPassphrase re-derives the session key and re-stores ONLY the identity key and the post-quantum
+// keys; on an identity that is already encrypted at rest the contacts, the recovery vault, the shards and the device mailbox stay under the OLD passphrase and
+// stop opening (measured: the whole book disappears, the owner is told nothing, and a vault export then produces no file). This card-menu item is the only UI
+// entry point to the dialog and the handler; both stay in place, unreachable, so turning this back on is one line once the re-key is in.
+const SET_PASSPHRASE_ENTRY_ENABLED = false;
+
 export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
   onVaultRestore,
+  importNote,
+  onImportNoteChange,
   appLockPrefs,
   onAppLockPrefsChange,
   onLockNow,
@@ -275,7 +289,15 @@ export function SoverentityFrontend({
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
   /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
-  const [plaintextImportNote, setPlaintextImportNote] = useState<string | null>(null);
+  // Where the note lives. The Identity-tab instance SHOWS the page's note (no copy of its own, so when the page clears it on a lock or an identity change it
+  // is gone here too); the gate instance keeps its own, because it has no page-held identity to belong to. Every change is reported to the page, which is
+  // what carries a note set at the gate across the swap to the tab instance.
+  const [localImportNote, setLocalImportNote] = useState<string | null>(null);
+  const plaintextImportNote = onImportNoteChange && existingIdentity ? (importNote ?? null) : localImportNote;
+  const setPlaintextImportNote = (note: string | null) => {
+    setLocalImportNote(note);
+    onImportNoteChange?.(note);
+  };
   /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
   const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
   /** After successful seed-only restore — unmissable contacts-honesty interstitial (no CTA). */
@@ -1881,13 +1903,15 @@ export function SoverentityFrontend({
                   close();
                 }}
               />
-              <CardMenuItem
-                label={passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
-                onClick={() => {
-                  setShowPassphraseDialog(true);
-                  close();
-                }}
-              />
+              {SET_PASSPHRASE_ENTRY_ENABLED && (
+                <CardMenuItem
+                  label={passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
+                  onClick={() => {
+                    setShowPassphraseDialog(true);
+                    close();
+                  }}
+                />
+              )}
               <CardMenuItem
                 label="Lenses & vault"
                 onClick={() => {

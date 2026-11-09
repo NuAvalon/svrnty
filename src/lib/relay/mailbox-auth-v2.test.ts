@@ -40,6 +40,7 @@ before(() => {
 beforeEach(() => {
   resetMailboxStore();
   delete process.env.INVITE_REQUIRED;
+  process.env.RELAY_OWNER_V2_ENABLED = '1'; // these tests exercise the v2 owner routes; default off (mailbox-config.ts)
 });
 
 const decode = (h: string) => JSON.parse(Buffer.from(h, 'base64url').toString('utf8'));
