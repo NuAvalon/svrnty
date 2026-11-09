@@ -7,7 +7,7 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
+import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
@@ -290,7 +290,14 @@ export async function acceptInboundNote(args: {
   /** L-318a: told AFTER the note is stored and the session committed that this open STARTED the session (a first frame, or a replacement), with that frame's SIGNED sent_at, so the adopt floor can be raised. Best effort: a throw is swallowed and the floor simply stays where it was. */
   onSessionStarted?: (fromFingerprint: string, signedSentAt: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
+  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
+  /**
+   * #714 R1: told (once, at the END of the flow: note and thread stored, session committed) that THIS call CREATED the note row. Never told for a
+   * redelivery of a stored note, a first-write-wins refusal, a frame whose key was already spent, or a drop. The receipt layer answers only this
+   * delivery. If the note is stored but a later step throws, nothing is told and the retry finds the row: that note gets no receipt (the sender
+   * shows "delivery unknown"), pinned by a test.
+   */
+  onCreated?: () => void;
   /**
    * #720: told WHY a note was not stored, at the moment it is dropped (additive; the return value is unchanged). 'unverified' = the
    * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
@@ -380,7 +387,12 @@ export async function acceptInboundNote(args: {
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
   };
-  await (args.io?.putNote ?? putNote)(record);
+  // Created = the write itself found no row. With the real store that is one readwrite transaction (putNoteReportingCreated), so a second tab
+  // delivering the same blob cannot also report a creation. An injected plain putNote (tests) falls back to "no stored row was seen above".
+  let created: boolean;
+  if (args.io?.putNoteChecked) created = await args.io.putNoteChecked(record);
+  else if (args.io?.putNote) { await args.io.putNote(record); created = !prior; }
+  else created = await putNoteReportingCreated(record);
 
   const threads = await (args.io?.listThreads ?? listThreads)();
   let thread = threads.find((t) => t.thread_id === record.thread_id);
@@ -417,6 +429,7 @@ export async function acceptInboundNote(args: {
   if (viaRatchet) {
     try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
   }
+  if (created) { try { args.onCreated?.(); } catch { /* a receipt hook must never fail a stored note */ } }
   return record;
   } finally {
     staged?.release();
