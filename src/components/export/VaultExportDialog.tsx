@@ -71,16 +71,19 @@ export function VaultExportDialog({
     setLoading(true);
     setError(null);
     try {
-      const { exportAll, loadPQKeys, loadVault } = await import(
+      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord } = await import(
         '@/lib/identity/client-store'
       );
       const backup = await exportAll(fingerprint, true);
       const pqKeys = await loadPQKeys(fingerprint);
       const vaultData = await loadVault(fingerprint);
 
+      // #588: carry the beacon key record when the identity has one (none exists until trust is first needed, so today this adds nothing).
+      const beaconKey = await getBeaconKeyRecord(fingerprint);
       const vaultKeys = {
         classical: backup.keys || { privateKey: '', passphrase: '' },
         pq: pqKeys || null,
+        ...(beaconKey ? { beacon: beaconKey } : {}),
       };
 
       // Same loose graph shape ContactManagement already packs — fleet packVault

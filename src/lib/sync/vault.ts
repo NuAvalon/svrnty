@@ -124,6 +124,7 @@ export interface VaultHeader {
   iv: string; // base64 — AES-GCM IV (needed to decrypt)
 }
 
+import type { BeaconKeyRecord } from '../identity/beacon-key-record';
 export interface VaultContents {
   identity: VaultIdentity;
   keys: VaultKeys;
@@ -167,6 +168,8 @@ export interface VaultKeys {
     passphrase: string;
   };
   pq: unknown | null; // serialized PQ keypair bundle
+  /** #588: the identity's beacon key record (x + generation + jitter secret). OPTIONAL and additive: an old backup has none, an old client ignores it. */
+  beacon?: BeaconKeyRecord;
 }
 
 export interface VaultSettings {

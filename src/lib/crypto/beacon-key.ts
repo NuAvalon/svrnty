@@ -13,6 +13,8 @@ export const BEACON_KEY_BYTES = 32;
 
 /** Order of the BabyJubJub prime-order subgroup (the same constant the circuit and the prover use). */
 const L = BigInt('2736030358979909402780800718157159386076813972158567259200215660948447373041');
+/** Exported for the identity-key record's strict range check (1 <= x < l). */
+export const BEACON_ORDER = L;
 const ZERO = BigInt(0), ONE = BigInt(1), EIGHT = BigInt(8);
 const FIELD_P = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
 const HALF = (FIELD_P - ONE) / BigInt(2);

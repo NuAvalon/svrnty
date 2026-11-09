@@ -14,6 +14,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
+import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
@@ -404,6 +405,24 @@ async function txPut<T>(storeName: string, value: T): Promise<void> {
   });
 }
 
+/** Atomic create-if-absent: a single readwrite transaction whose `add` fails with ConstraintError if the key exists. Resolves 'exists' for that case
+ * (never overwrites), rejects on any other failure. Two tabs racing to create the same record: exactly one 'added'. */
+async function txAdd<T>(storeName: string, value: T): Promise<'added' | 'exists'> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    let exists = false;
+    const req = store.add(value);
+    req.onerror = (ev) => {
+      if (req.error && req.error.name === 'ConstraintError') { exists = true; ev.preventDefault(); ev.stopPropagation(); }
+    };
+    tx.oncomplete = () => { db.close(); resolve(exists ? 'exists' : 'added'); };
+    tx.onabort = () => { db.close(); reject(tx.error ?? new Error('transaction aborted')); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
 async function txDelete(storeName: string, key: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -602,6 +621,54 @@ export async function setBeaconSeeds(ownerFingerprint: string, map: BeaconSeeds)
   if (!isBeaconSeeds(map)) throw new Error('refusing to store a malformed beacon seed map');
   const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, map);
   await txPut('settings', { key: beaconSeedsSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── #588 D1/D2: the identity's beacon key record (x + generation + jitter secret) — IDENTITY STATE, DARK ─────────────────────
+// ONE value per identity, lazily created the first time trust is needed (never at genesis), encrypted at rest on the same AAD-bound path as the seeds,
+// carried in the backup as keys.beacon (optional, additive), STRICTLY validated on restore, and never overwritten once held.
+const BEACON_KEY_RECORD_ID = 'piece588:beacon-key'; // reserved AAD id
+function beaconKeySettingKey(ownerFingerprint: string): string {
+  return `beacon_key:${ownerFingerprint}`;
+}
+
+/** Read the record. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). */
+export async function getBeaconKeyRecord(ownerFingerprint: string): Promise<BeaconKeyRecord | null> {
+  if (!_sessionKey) return null;
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', beaconKeySettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null;
+    const rec = await decryptContactRecord<unknown>(_sessionKey, BEACON_KEY_RECORD_ID, ownerFingerprint, row.value);
+    return isBeaconKeyRecord(rec) ? rec : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The record, creating it if (and only if) none is held. Atomic: two tabs racing both end up with the SAME record. Throws when locked, and when a record
+ * is held but cannot be read (it is never overwritten). */
+export async function ensureBeaconKeyRecord(ownerFingerprint: string, nowMs: number = Date.now()): Promise<BeaconKeyRecord> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to create the beacon key unencrypted (fail-closed)');
+  const held = await getBeaconKeyRecord(ownerFingerprint);
+  if (held) return held;
+  const rec = await newBeaconKeyRecord(nowMs);
+  const payload = await encryptContactRecord(_sessionKey, BEACON_KEY_RECORD_ID, ownerFingerprint, rec);
+  const r = await txAdd('settings', { key: beaconKeySettingKey(ownerFingerprint), value: payload });
+  if (r === 'exists') {
+    const winner = await getBeaconKeyRecord(ownerFingerprint);
+    if (winner) return winner;
+    throw new Error('a beacon key record is already held but cannot be read; refusing to overwrite it');
+  }
+  return rec;
+}
+
+/** The RESTORE path: strictly validate a record from a backup and store it ONLY if none is held. 'invalid' = not a valid record (nothing written). */
+export async function importBeaconKeyRecord(ownerFingerprint: string, candidate: unknown): Promise<'added' | 'exists' | 'invalid'> {
+  if (!isBeaconKeyRecord(candidate)) return 'invalid';
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the beacon key unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, BEACON_KEY_RECORD_ID, ownerFingerprint, candidate);
+  return txAdd('settings', { key: beaconKeySettingKey(ownerFingerprint), value: payload });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
@@ -1747,6 +1814,11 @@ export async function importVaultContentsReport(
   }
   if (contents.keys?.pq) {
     await storePQKeys(fp, contents.keys.pq);
+  }
+  // #588: the beacon secret rides the backup (optional, additive; an old backup has none). Strictly validated, created only if none is held, and a bad or
+  // failing record must never fail the restore.
+  if (contents.keys?.beacon !== undefined) {
+    try { await importBeaconKeyRecord(fp, contents.keys.beacon); } catch { /* best-effort: restore continues */ }
   }
   // v4 dual-envelope recovery KeyVault (Shamir metadata) — the same store genesis and
   // the recovery-code path write via storeVault. Absent on v3 → skipped.
