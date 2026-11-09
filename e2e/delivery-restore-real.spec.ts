@@ -3,7 +3,9 @@ import { test, expect, type Page } from '@playwright/test';
 /**
  * The Delivery receipts setting after a REAL restore, through the screens (no planted marker): mint an identity, export an encrypted vault, restore it
  * in a fresh browser context (an empty IndexedDB = a new device) by each of the two restore paths, then open Settings (Identity tab) and read the panel.
- * A restore does not carry the owner's choice, so the panel must be asking (data-state="ask"), not already "on": no receipts go out until they answer.
+ * Recovery-code restore: the recovery code does not carry the owner's choice, so the panel must be asking (data-state="ask"), not already "on": no receipts
+ * go out until they answer. Vault-passphrase restore: the passphrase-authenticated vault DOES carry the choice (importVaultContentsReport), so it comes back
+ * as it was; Off is set before the export so a restored "off" can only have come from the vault (a default would be "on").
  * The mint/export/restore steps are the ones recovery-canonical-persist.spec.ts drives; this file asserts the Delivery side of them.
  */
 const APP = 'http://localhost:3000/';
@@ -68,9 +70,12 @@ test.describe('Delivery receipts after a real restore', () => {
     await expect(page.getByTestId('delivery-restore-ask')).toHaveCount(0);
   });
 
-  test('vault-passphrase restore: the owner is asked, and answering Yes turns it on', async ({ page, browser }, testInfo) => {
+  test('vault-passphrase restore keeps the choice the vault carried (Off stays Off), and asks nothing', async ({ page, browser }, testInfo) => {
     test.setTimeout(150_000);
     await mint(page);
+    await page.getByRole('tab', { name: 'Identity', exact: true }).click();
+    await page.getByTestId('delivery-off').click();
+    await expect(page.getByTestId('delivery-settings')).toHaveAttribute('data-state', 'off');
     const vaultPath = await exportVault(page, testInfo.outputPath('vault.svrnty'));
     const ctx = await browser.newContext();
     const p = await ctx.newPage();
@@ -78,9 +83,12 @@ test.describe('Delivery receipts after a real restore', () => {
     await p.getByPlaceholder('Encryption password from export').fill(EXPORT_PW);
     await p.getByRole('button', { name: /^restore identity$/i }).click();
     await expect(p.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 30_000 });
-    await expectAsk(p);
-    await p.getByTestId('delivery-restore-yes').click();
-    await expect(p.getByTestId('delivery-settings')).toHaveAttribute('data-state', 'on');
+    await p.getByRole('tab', { name: 'Identity', exact: true }).click();
+    const panel = p.getByTestId('delivery-settings');
+    await expect(panel).toBeVisible({ timeout: 15_000 });
+    await expect(panel).toHaveAttribute('data-state', 'off');
+    await expect(p.getByTestId('delivery-restore-ask')).toHaveCount(0);
+    await expect(p.getByTestId('delivery-upgrade-notice')).toHaveCount(0);
     await ctx.close();
   });
 
