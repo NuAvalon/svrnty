@@ -442,6 +442,10 @@ async function main() {
       const arrival = g[owner.fingerprint]?.[fp];
       if (!arrival) throw new Error(`no gate arrival ${fp}`);
       const rec = buildAdmitRecord(arrival, {});
+      // First write wins: a pin the row already holds is kept; upsertContact replaces the row, so say so here instead of letting the arrival's pin win.
+      const heldPin = canonicalAuthorityPin(store.getContactByFingerprint(arrival.fingerprint)?.next_authority_commitment);
+      if (heldPin && rec.next_authority_commitment && heldPin !== rec.next_authority_commitment) console.error(`kept the pin already held for ${arrival.fingerprint.slice(0, 8)}; the arrival carried a different one`);
+      const pinToStore = heldPin ?? rec.next_authority_commitment;
       store.upsertContact({                       // re-entrant: same lock, one unit with the gate removal
         id: arrival.fingerprint,
         fingerprint: arrival.fingerprint,
@@ -451,7 +455,7 @@ async function main() {
         trust_level: rec.trust_level,
         pq_sig_public_key: rec.pq_sig_public_key,
         pq_kem_public_key: rec.pq_kem_public_key,
-        ...(rec.next_authority_commitment ? { next_authority_commitment: rec.next_authority_commitment } : {}), // the pin the verified joiner response carried (canonical-checked at the arrival)
+        ...(pinToStore ? { next_authority_commitment: pinToStore } : {}), // the held pin if there is one, else the pin the verified joiner response carried (canonical-checked at the arrival)
       });
       delete g[owner.fingerprint][fp];
       if (!Object.keys(g[owner.fingerprint]).length) delete g[owner.fingerprint];

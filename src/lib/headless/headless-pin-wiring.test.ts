@@ -14,7 +14,12 @@ test('H1 [static] join sends the agent\'s OWN pin in the signed response, canoni
 });
 test('H2 [static] admit-gate copies the pin the arrival carried onto the contact (the arrival already holds only a canonical one)', () => {
   const gate = cli.slice(cli.indexOf("if (cmd === 'admit-gate')"), cli.indexOf("if (cmd === 'send-tr')"));
-  assert.match(gate, /\.\.\.\(rec\.next_authority_commitment \? \{ next_authority_commitment: rec\.next_authority_commitment \} : \{\}\)/);
+  assert.match(gate, /\.\.\.\(pinToStore \? \{ next_authority_commitment: pinToStore \} : \{\}\)/);
+});
+test('H2b [static] admit-gate keeps a pin the row already holds (upsertContact replaces the row): the held pin wins over the arrival\'s', () => {
+  const gate = cli.slice(cli.indexOf("if (cmd === 'admit-gate')"), cli.indexOf("if (cmd === 'send-tr')"));
+  assert.match(gate, /const heldPin = canonicalAuthorityPin\(store\.getContactByFingerprint\(arrival\.fingerprint\)\?\.next_authority_commitment\);/);
+  assert.match(gate, /const pinToStore = heldPin \?\? rec\.next_authority_commitment;/);
 });
 test('H3 [static] the headless join does NOT store the GIVER\'s pin: it verifies the fingerprint binding only, not the card signature (a pin needs a verified signature)', () => {
   const join = cli.slice(cli.indexOf("if (cmd === 'join')"), cli.indexOf("if (cmd === 'admit-gate')"));
