@@ -133,10 +133,12 @@ def mount(app, data_dir, mode: str, client_ip: Callable[[Request], str], *, make
         return _refuse("centurion")
     if centurion.vkey_sha != sha:                       # the centurion's own read is the one it will enforce
         return _refuse("vkey-changed")
+    # Before the routes, so a failure partway can never leave a route without its cap. Added last of all the middleware = outermost:
+    # it refuses before the rate limiter or any read.
+    app.add_middleware(BeaconBodyCap)
     for op in OPS:
         app.add_api_route(f"{ROUTE_PREFIX}/{op}", _endpoint(centurion, op, client_ip), methods=["POST"], include_in_schema=False)
     app.add_api_route(HEALTH_PATH, _health(centurion, kind, db_path), methods=["GET"], include_in_schema=False)
-    app.add_middleware(BeaconBodyCap)                   # added last = outermost: refuses before the rate limiter or any read
     print(f"[beacon] mounted: vkey={kind}", flush=True)
     return Mounted(centurion, kind)
 

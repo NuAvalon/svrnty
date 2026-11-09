@@ -321,6 +321,21 @@ def test_a_body_of_exactly_the_cap_reaches_the_centurion(world):
     assert r.content == bc.ACCEPTED and len(world["stub"].calls[0][1]) == CAP
 
 
+def test_the_cap_goes_in_before_any_route(world):
+    """A failure partway through mount() must never leave a route registered without its cap."""
+    order = []
+
+    class Recorder:
+        def add_middleware(self, cls):
+            order.append(("cap", cls.__name__))
+
+        def add_api_route(self, path, fn, **kw):
+            order.append(("route", path))
+
+    assert br.mount(Recorder(), world["tmp"], "full", lambda r: "x", make_centurion=lambda db, vkey, node: world["stub"]) is not None
+    assert order[0] == ("cap", "BeaconBodyCap") and len(order) == 6
+
+
 def test_the_cap_is_outermost_and_only_on_beacon_paths(world):
     app, _ = do_mount(world)
     assert app.user_middleware[0].cls.__name__ == "BeaconBodyCap"
