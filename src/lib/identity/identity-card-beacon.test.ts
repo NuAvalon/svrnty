@@ -13,6 +13,10 @@ import { identityCardSigningInput } from '../format/envelope';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from './fingerprint';
 import { beaconPublicKey } from '../crypto/beacon-key';
+import { GENERATION_FLOOR, FUTURE_SLACK_SECONDS } from '../crypto/beacon-generation';
+
+// generations are clock-seeded (D3): small offsets above the build floor, which is always in the past and never in the future
+const G = (n: number) => GENERATION_FLOOR + n;
 
 interface CanonId { fingerprint: string; publicKey: string; privateKey: string; passphrase: string; kemB64: string; sigB64: string }
 async function makeCanonicalId(name: string): Promise<CanonId> {
@@ -66,17 +70,17 @@ test('C1 a card built WITHOUT a beacon key has no beacon fields at all (byte-pre
 });
 
 test('C2 a card built WITH a beacon key carries both fields, verifies, and a receiver stores the key and the generation', async () => {
-  const c = await buildSignedIdentityCard(wrapper(alice), alice.privateKey, alice.passphrase, undefined, { publicKey: KEY_A, keyGeneration: 1 });
+  const c = await buildSignedIdentityCard(wrapper(alice), alice.privateKey, alice.passphrase, undefined, { publicKey: KEY_A, keyGeneration: G(1) });
   assert.equal(c.identity.beacon_public_key, KEY_A);
-  assert.equal(c.identity.beacon_key_generation, 1);
+  assert.equal(c.identity.beacon_key_generation, G(1));
   assert.equal(await verifySignedIdentityCard(c), true);
   const d = await classifyImportedCard(c);
-  assert.deepEqual(d.beaconKey, { publicKey: KEY_A, keyGeneration: 1 });
+  assert.deepEqual(d.beaconKey, { publicKey: KEY_A, keyGeneration: G(1) });
   assert.equal(d.branch, '4b', 'the pq disposition is unchanged by the new field');
 });
 
 test('C3 SWAP: replacing the beacon key on a signed card breaks the signature; nothing is stored and the alarm is the LOUD tamper branch', async () => {
-  const c = await signed({ beacon_public_key: KEY_A, beacon_key_generation: 1 });
+  const c = await signed({ beacon_public_key: KEY_A, beacon_key_generation: G(1) });
   const evil = JSON.parse(JSON.stringify(c)) as SignedIdentityCard;
   evil.identity.beacon_public_key = KEY_B;
   assert.equal(await verifySignedIdentityCard(evil), false);
@@ -88,7 +92,7 @@ test('C3 SWAP: replacing the beacon key on a signed card breaks the signature; n
 });
 
 test('C4 STRIP: removing the beacon fields from a signed card breaks the signature too (the signature covers their presence)', async () => {
-  const c = await signed({ beacon_public_key: KEY_A, beacon_key_generation: 1 });
+  const c = await signed({ beacon_public_key: KEY_A, beacon_key_generation: G(1) });
   const stripped = JSON.parse(JSON.stringify(c)) as SignedIdentityCard;
   delete (stripped.identity as any).beacon_public_key;
   delete (stripped.identity as any).beacon_key_generation;
@@ -97,7 +101,7 @@ test('C4 STRIP: removing the beacon fields from a signed card breaks the signatu
 });
 
 test('C5 an UNSIGNED card (branch 2) carrying a beacon key stores no key (an unauthenticated carrier cannot supply one)', async () => {
-  const unsigned = card(alice, { beacon_public_key: KEY_A, beacon_key_generation: 1 });
+  const unsigned = card(alice, { beacon_public_key: KEY_A, beacon_key_generation: G(1) });
   const d = await classifyImportedCard(unsigned);
   assert.equal(d.branch, 2);
   assert.equal(d.beaconKey, null);
@@ -111,7 +115,7 @@ test('C6 a valid signature over a BAD key drops the key only: the card imports, 
     ['not base64', '!'.repeat(44), 'encoding'],
   ];
   for (const [label, key, reason] of bad) {
-    const c = await signed({ beacon_public_key: key, beacon_key_generation: 1 });
+    const c = await signed({ beacon_public_key: key, beacon_key_generation: G(1) });
     const d = await classifyImportedCard(c);
     assert.equal(d.importClassical, true, label);
     assert.equal(d.branch, '4b', label);
@@ -122,11 +126,11 @@ test('C6 a valid signature over a BAD key drops the key only: the card imports, 
 });
 
 test('C7 my own beacon key arriving on a contact\'s card is dropped as own-key', async () => {
-  const c = await signed({ beacon_public_key: KEY_OWN, beacon_key_generation: 1 });
+  const c = await signed({ beacon_public_key: KEY_OWN, beacon_key_generation: G(1) });
   const d = await classifyImportedCard(c, { ownBeaconPublicKey: KEY_OWN });
   assert.equal(d.beaconKey, null);
   assert.equal(d.beaconKeyDropped, 'own-key');
-  assert.deepEqual((await classifyImportedCard(c)).beaconKey, { publicKey: KEY_OWN, keyGeneration: 1 }, 'without my key to compare, it is a valid key');
+  assert.deepEqual((await classifyImportedCard(c)).beaconKey, { publicKey: KEY_OWN, keyGeneration: G(1) }, 'without my key to compare, it is a valid key');
 });
 
 test('C8 key_generation must be a positive safe integer under 2^31, and must be present with the key', async () => {
@@ -138,25 +142,25 @@ test('C8 key_generation must be a positive safe integer under 2^31, and must be 
   }
   const noGen = await signed({ beacon_public_key: KEY_A });
   assert.equal((await classifyImportedCard(noGen)).beaconKeyDropped, 'generation');
-  const genOnly = await signed({ beacon_key_generation: 3 });
+  const genOnly = await signed({ beacon_key_generation: G(3) });
   assert.equal((await classifyImportedCard(genOnly)).beaconKeyDropped, 'generation', 'a generation with no key is malformed, not "no beacon"');
 });
 
 test('C9 ANTI-ROLLBACK: a lower generation than the highest seen is refused; the same generation with a DIFFERENT key is refused; the same key or a higher generation is taken', async () => {
-  const known = { publicKey: KEY_A, keyGeneration: 5 };
-  const lower = await classifyImportedCard(await signed({ beacon_public_key: KEY_B, beacon_key_generation: 4 }), { knownBeacon: known });
+  const known = { publicKey: KEY_A, keyGeneration: G(5) };
+  const lower = await classifyImportedCard(await signed({ beacon_public_key: KEY_B, beacon_key_generation: G(4) }), { knownBeacon: known });
   assert.equal(lower.beaconKey, null); assert.equal(lower.beaconKeyDropped, 'rollback');
-  const conflict = await classifyImportedCard(await signed({ beacon_public_key: KEY_B, beacon_key_generation: 5 }), { knownBeacon: known });
+  const conflict = await classifyImportedCard(await signed({ beacon_public_key: KEY_B, beacon_key_generation: G(5) }), { knownBeacon: known });
   assert.equal(conflict.beaconKey, null); assert.equal(conflict.beaconKeyDropped, 'conflict');
-  const same = await classifyImportedCard(await signed({ beacon_public_key: KEY_A, beacon_key_generation: 5 }), { knownBeacon: known });
-  assert.deepEqual(same.beaconKey, { publicKey: KEY_A, keyGeneration: 5 });
-  const higher = await classifyImportedCard(await signed({ beacon_public_key: KEY_B, beacon_key_generation: 6 }), { knownBeacon: known });
-  assert.deepEqual(higher.beaconKey, { publicKey: KEY_B, keyGeneration: 6 });
+  const same = await classifyImportedCard(await signed({ beacon_public_key: KEY_A, beacon_key_generation: G(5) }), { knownBeacon: known });
+  assert.deepEqual(same.beaconKey, { publicKey: KEY_A, keyGeneration: G(5) });
+  const higher = await classifyImportedCard(await signed({ beacon_public_key: KEY_B, beacon_key_generation: G(6) }), { knownBeacon: known });
+  assert.deepEqual(higher.beaconKey, { publicKey: KEY_B, keyGeneration: G(6) });
 });
 
 test('C10 the SENDER refuses to sign a bad key or a bad generation (a self-inconsistent card is uninstantiable)', async () => {
   const w = wrapper(alice);
-  await assert.rejects(() => buildSignedIdentityCard(w, alice.privateKey, alice.passphrase, undefined, { publicKey: 'AAAA', keyGeneration: 1 }), /beacon/i);
+  await assert.rejects(() => buildSignedIdentityCard(w, alice.privateKey, alice.passphrase, undefined, { publicKey: 'AAAA', keyGeneration: G(1) }), /beacon/i);
   await assert.rejects(() => buildSignedIdentityCard(w, alice.privateKey, alice.passphrase, undefined, { publicKey: KEY_A, keyGeneration: 0 }), /beacon/i);
   await assert.rejects(() => buildSignedIdentityCard(w, alice.privateKey, alice.passphrase, undefined, { publicKey: KEY_A, keyGeneration: 1.5 }), /beacon/i);
 });
@@ -168,7 +172,7 @@ test('C11 a card from an OLDER client (no beacon fields, any pq state) is untouc
   assert.equal(d.beaconKeyDropped, undefined);
 });
 
-test('C8b a card whose beacon_key_generation is a FLOAT / null / NaN cannot be signed by anyone (canonicalize refuses), and a hostile unsigned-looking one must not crash the importer', async () => {
+test('C8b a card whose beacon_key_generation is a FLOAT / null / NaN cannot be signed by anyone (canonicalize refuses), and a hostile one with a junk signature is REJECTED whole by the classifier (branch 1), never thrown, never stored', async () => {
   for (const g of [1.5, null, Number.NaN]) {
     await assert.rejects(() => signed({ beacon_public_key: KEY_A, beacon_key_generation: g }), /canonicalize/, String(g));
     // a hostile sender attaches a junk signature to a card that has a float field: the classifier must answer, not throw
@@ -177,6 +181,26 @@ test('C8b a card whose beacon_key_generation is a FLOAT / null / NaN cannot be s
     let d: any;
     try { d = await classifyImportedCard(hostile); } catch (e) { threw = e; }
     assert.equal(threw, undefined, `classifyImportedCard threw for ${String(g)}`);
+    assert.equal(d.importClassical, false, 'a card we cannot canonicalize is rejected whole, nothing stored');
+    assert.equal(d.branch, 1);
+    assert.equal(d.alarm, 'reject');
     assert.equal(d.beaconKey, null);
+    assert.equal(d.pq, null);
   }
+});
+
+test('C12 D3 bounds: below the build floor is dropped as past, beyond now + 1 day as future (the RECEIVER clock decides), and the sender refuses both', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const past = await classifyImportedCard(await signed({ beacon_public_key: KEY_A, beacon_key_generation: GENERATION_FLOOR - 1 }));
+  assert.equal(past.beaconKey, null); assert.equal(past.beaconKeyDropped, 'past');
+  const future = await classifyImportedCard(await signed({ beacon_public_key: KEY_A, beacon_key_generation: now + FUTURE_SLACK_SECONDS + 100 }));
+  assert.equal(future.beaconKey, null); assert.equal(future.beaconKeyDropped, 'future');
+  const edge = await classifyImportedCard(await signed({ beacon_public_key: KEY_A, beacon_key_generation: now + FUTURE_SLACK_SECONDS - 100 }));
+  assert.deepEqual(edge.beaconKey, { publicKey: KEY_A, keyGeneration: now + FUTURE_SLACK_SECONDS - 100 });
+  // the receiver's clock is what counts: the same card is fine for a receiver whose clock is a week ahead
+  const ahead = await classifyImportedCard(await signed({ beacon_public_key: KEY_A, beacon_key_generation: now + FUTURE_SLACK_SECONDS + 100 }), { nowSeconds: now + 7 * 86400 });
+  assert.ok(ahead.beaconKey);
+  const w = wrapper(alice);
+  await assert.rejects(() => buildSignedIdentityCard(w, alice.privateKey, alice.passphrase, undefined, { publicKey: KEY_A, keyGeneration: GENERATION_FLOOR - 1 }), /past/);
+  await assert.rejects(() => buildSignedIdentityCard(w, alice.privateKey, alice.passphrase, undefined, { publicKey: KEY_A, keyGeneration: now + FUTURE_SLACK_SECONDS + 100 }), /future/);
 });

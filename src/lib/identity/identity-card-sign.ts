@@ -28,10 +28,7 @@ import { extractValidMailboxFromCard, validateMailboxPublic, type DeviceMailboxP
 // #588 T4 (dark): the beacon key's receiver checks. beacon-key.ts loads its curve library lazily, ONLY when a card actually carries the field.
 import { checkBeaconPublicKey, type BeaconKeyReason } from '../crypto/beacon-key';
 
-/** key_generation is a positive integer below 2^31 (a counter, never a timestamp). */
-const MAX_KEY_GENERATION = 2 ** 31 - 1;
-const isKeyGeneration = (g: unknown): g is number => typeof g === 'number' && Number.isInteger(g) && g >= 1 && g <= MAX_KEY_GENERATION;
-
+import { generationProblem, type GenerationProblem } from '../crypto/beacon-generation';
 // ── §6 Suite-length validation: the ek length IS the suite discriminant ──────────
 // ML-KEM ek (public-key) sizes are bijective with the parameter set, so a valid card needs no
 // separate suite_id field — the length names the suite under the signature. This is the SINGLE
@@ -131,13 +128,9 @@ export async function verifySignedIdentityCard(
   // the signing input — the signer signed the card without them (identityCardSigningInput excludes them).
   const { signature, pq_signature, ...cardFields } = card;
   const envSig = envelopeSignatureOf(signature, pq_signature); // raw: '' / null refuse (#717)
-  // The canonicalizer REFUSES a float / null / NaN anywhere in a signed structure by THROWING. A hostile card from an untrusted carrier can carry
-  // one in any field, so without this guard the "returns false, NEVER throws" contract above was false (measured: classifyImportedCard threw).
-  let signingInput: string;
-  try { signingInput = identityCardSigningInput(cardFields as IdentityCard); } catch { return false; }
   return verifyWithEnvelope(
     DOMAIN_IDENTITY_CARD,
-    signingInput,
+    identityCardSigningInput(cardFields),
     envSig,
     id.public_key,
     pqSigningPublicKey,
@@ -205,7 +198,8 @@ export async function buildSignedIdentityCard(
   // #588 T4 (dark): carry the beacon PUBLIC key + its generation under identity.* (signed). OMITTED when no beacon is given, so every
   // existing card canonicalizes byte-for-byte as before. The SENDER refuses to sign a key the receiver rule would drop.
   if (beacon !== undefined) {
-    if (!isKeyGeneration(beacon.keyGeneration)) throw new Error('buildSignedIdentityCard: beacon key_generation must be a positive integer below 2^31');
+    const gp = generationProblem(beacon.keyGeneration, Math.floor(Date.now() / 1000));
+    if (gp) throw new Error(`buildSignedIdentityCard: beacon key_generation refused (${gp})`);
     const chk = await checkBeaconPublicKey(beacon.publicKey);
     if (!chk.ok) throw new Error(`buildSignedIdentityCard: beacon key refused (${chk.reason})`);
     card.identity.beacon_public_key = beacon.publicKey;
@@ -256,7 +250,7 @@ export interface ImportDisposition {
    */
   beaconKey: { publicKey: string; keyGeneration: number } | null;
   /** Why a PRESENT beacon key was dropped under a valid signature (a fixed word, never the input). Undefined when there was no beacon or it was kept. */
-  beaconKeyDropped?: BeaconKeyReason | 'generation' | 'rollback' | 'conflict';
+  beaconKeyDropped?: BeaconKeyReason | GenerationProblem | 'rollback' | 'conflict';
 }
 
 export interface ClassifyOptions {
@@ -264,6 +258,8 @@ export interface ClassifyOptions {
   ownBeaconPublicKey?: string;
   /** The highest beacon key already stored for this identity: a lower generation is a rollback; the same generation with another key is a conflict. */
   knownBeacon?: { publicKey: string; keyGeneration: number };
+  /** The RECEIVER's clock in whole seconds (default: now). A generation beyond now + 1 day is 'future', below the build floor is 'past'. */
+  nowSeconds?: number;
 }
 
 /**
@@ -304,7 +300,14 @@ export async function classifyImportedCard(card: any, opts: ClassifyOptions = {}
     return { importClassical: true, pq: null, alarm: 'quiet', branch: 2, deviceMailbox: null, beaconKey: null };
   }
   // Signature present → verify (re-checks fp↔key internally; keeps verify self-contained).
-  const valid = await verifySignedIdentityCard(card as SignedIdentityCard);
+  // The canonicalizer THROWS on a float / null / NaN anywhere in a signed structure, and a hostile card can carry one. We cannot canonicalize it, so we
+  // cannot verify it: REJECT the whole card (branch 1, nothing stored) rather than store a classical-only contact for a card we could not read (Flint, 11-09).
+  let valid: boolean;
+  try {
+    valid = await verifySignedIdentityCard(card as SignedIdentityCard);
+  } catch {
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null, beaconKey: null };
+  }
   // BRANCH 3: present but invalid → classical-only, LOUD. Reserve the tamper alarm for THIS only.
   if (!valid) {
     return { importClassical: true, pq: null, alarm: 'loud', branch: 3, deviceMailbox: null, beaconKey: null };
@@ -345,7 +348,9 @@ async function classifyBeaconKey(
 ): Promise<{ beaconKey: ImportDisposition['beaconKey']; beaconKeyDropped?: ImportDisposition['beaconKeyDropped'] }> {
   const hasKey = id?.beacon_public_key !== undefined, hasGen = id?.beacon_key_generation !== undefined;
   if (!hasKey && !hasGen) return { beaconKey: null }; // a card from before the field: nothing to say
-  if (!hasKey || !isKeyGeneration(id.beacon_key_generation)) return { beaconKey: null, beaconKeyDropped: 'generation' };
+  if (!hasKey) return { beaconKey: null, beaconKeyDropped: 'generation' };
+  const gp = generationProblem(id.beacon_key_generation, opts.nowSeconds ?? Math.floor(Date.now() / 1000));
+  if (gp) return { beaconKey: null, beaconKeyDropped: gp };
   const chk = await checkBeaconPublicKey(id.beacon_public_key, opts.ownBeaconPublicKey);
   if (!chk.ok) return { beaconKey: null, beaconKeyDropped: chk.reason };
   const k = opts.knownBeacon;

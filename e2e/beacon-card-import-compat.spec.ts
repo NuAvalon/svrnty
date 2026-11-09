@@ -4,6 +4,7 @@ import { signIdentityCard } from '../src/lib/identity/identity-card-sign';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../src/lib/crypto/pq';
 import { mintCanonicalFingerprint } from '../src/lib/identity/fingerprint';
 import { beaconPublicKey } from '../src/lib/crypto/beacon-key';
+import { GENERATION_FLOOR } from '../src/lib/crypto/beacon-generation';
 
 /**
  * #588 T4 compat proof (the T4 note's "UNVERIFIED and must be tested before shipping"): a signed identity card that carries the two NEW
@@ -52,7 +53,7 @@ async function mallory() {
     identity: {
       fingerprint, display_name: 'Mallory Beacon', public_key: publicKey, email: '',
       pq_sig_public_key: uint8ToBase64(pq.signing.publicKey), pq_kem_public_key: uint8ToBase64(pq.kem.publicKey), next_authority_commitment: '',
-      beacon_public_key: key, beacon_key_generation: 1,
+      beacon_public_key: key, beacon_key_generation: GENERATION_FLOOR + 1,
     },
   } as any, privateKey, pass);
   return { card, otherKey: await beaconPublicKey(BigInt('123123123')) };
