@@ -181,10 +181,10 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
       recordHop(trail, DECRYPTED_HOP, { note_id: wire.note_id }, trailPeer(store, wire.from_fingerprint, rec.participant_kind)); // decrypted on this host
       const r = store.acceptInboundNote(rec, threadFor, admitContact);
       if (r === 'not-admitted') return { dropped: 'not-in-book', fp: wire.from_fingerprint };
-      // Layer 1 R1: a NEW note, or a byte-identical redelivery (C2: our first receipt may have been lost while the sender's key is unspent),
-      // is a receipt CANDIDATE. Never a FWW refusal ('kept'). Nothing is sent here: the note is durable only at its chunk commit, and the
-      // emit must never hold the writer lock (C1). sendHeadlessReceipts() sends after the pass, for what the store then actually holds.
-      if (r === 'stored') receipts?.set(`${wire.from_fingerprint}:${wire.note_id}`, wire);
+      // Layer 1 R1 (#714: created-only): only a NEW row is a receipt CANDIDATE. A byte-identical redelivery ('stored') is not (Flint withdrew C2:
+      // a stored-and-acked note is not redelivered by an honest relay), and neither is a FWW refusal ('kept'). Nothing is sent here: the note is durable
+      // only at its chunk commit, and the emit must never hold the writer lock (C1). sendHeadlessReceipts() sends after the pass, for what the store then actually holds.
+      if (r === 'created') receipts?.set(`${wire.from_fingerprint}:${wire.note_id}`, wire);
       if (r === 'kept') {
         // FIRST WRITE WINS: a same-sender note that reuses a stored id with different content is refused; the stored note is what we acknowledge.
         noteRewriteRefused();

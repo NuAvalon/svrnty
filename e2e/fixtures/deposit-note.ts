@@ -46,6 +46,11 @@ export interface NoteDepositFields {
    * admitted, never rendered. Omit for an honest note (from_fingerprint = sender.fingerprint).
    */
   claimedFrom?: string;
+  /**
+   * 64-hex per-note receipt key, sealed INSIDE the signed wire (before signNoteWire). With it the receiving app answers the note with a delivered
+   * receipt (to the sender's mailbox); without it no receipt is ever sent. Omit for the notes that are not about receipts.
+   */
+  receiptKey?: string;
 }
 
 /**
@@ -70,6 +75,7 @@ export async function buildSealedNote(
     sent_at: new Date().toISOString(),
     body: fields.body,
     participant_kind: fields.participantKind ?? 'human',
+    ...(fields.receiptKey ? { receipt_key: fields.receiptKey } : {}),
   };
   const signed = await signNoteWire(
     unsigned,
