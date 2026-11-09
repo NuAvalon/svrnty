@@ -14,12 +14,15 @@
 //    the relay stores ciphertext only (custody / I-1: it cannot read contacts or reconstruct the edge).
 //  • ADDRESS by deriveMailboxId(recipient fingerprint) — the same deterministic mailbox id the
 //    recipient polls with (documented-leak bounded by I-4).
+//  • A BLOCK IS FINAL — every recipient is checked against the caller's RecipientGate (the book as it stands at send time) before
+//    anything is encrypted for them. The gate is a required argument, so no caller can leave it out, whatever list it was handed.
 //  • FAIL-CLOSED PER RECIPIENT — a recipient with no usable public key is SKIPPED and reported, NEVER
 //    sent to in a downgraded/cleartext form; and one recipient's key error never aborts the batch.
 
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { encryptContactUpdateTo } from './contact-update-envelope';
 import { buildAndSignContactUpdate, type BuildContactUpdateArgs } from '../trust/contact-update-sign';
+import type { RecipientGate } from './contact-update-gate';
 
 /** The card owner's signing identity (from the unlocked vault). pq secret present ⇒ hybrid suite. */
 export interface ContactUpdateOwner {
@@ -48,7 +51,7 @@ export interface ContactUpdateDeposit {
 /** The batch result — honest per-recipient accounting so the UI can say "sent to N of M" truthfully. */
 export interface ContactUpdateSendPlan {
   deposits: ContactUpdateDeposit[];
-  skipped: Array<{ fingerprint: string; reason: 'bad-fingerprint' | 'no-public-key' | 'no-pq-kem' | 'encrypt-failed' }>;
+  skipped: Array<{ fingerprint: string; reason: 'bad-fingerprint' | 'blocked' | 'no-public-key' | 'no-pq-kem' | 'encrypt-failed' }>;
 }
 
 /** The change the owner is publishing: the delta + the NEW monotonic card version. */
@@ -64,14 +67,16 @@ export interface ContactUpdateChange {
  * SKIPPED (reported), never sent to in a downgraded form (fail-closed per recipient); a single
  * recipient's encrypt error is reported and does not abort the rest of the batch.
  *
- * Throws (does NOT partially send) only if the change itself is unsendable — buildAndSign rejects it
- * (field outside the allowlist, empty delta, junk version): a whole-update failure, before any deposit.
+ * Throws (does NOT partially send) if the change itself is unsendable — buildAndSign rejects it (field outside the allowlist,
+ * empty delta, junk version) — or if the recipient check is missing or throws: a whole-update failure, before any deposit.
  */
 export async function buildContactUpdateDeposits(
   change: ContactUpdateChange,
   owner: ContactUpdateOwner,
   recipients: ContactUpdateRecipient[],
+  admit: RecipientGate,
 ): Promise<ContactUpdateSendPlan> {
+  if (typeof admit !== 'function') throw new Error('refusing to send a contact update without a recipient check');
   const args: BuildContactUpdateArgs = {
     fingerprint: owner.fingerprint,
     epoch: owner.epoch,
@@ -95,6 +100,10 @@ export async function buildContactUpdateDeposits(
   for (const r of recipients) {
     if (typeof r.fingerprint !== 'string' || r.fingerprint.length === 0) {
       skipped.push({ fingerprint: String(r?.fingerprint), reason: 'bad-fingerprint' });
+      continue;
+    }
+    if (!admit(r.fingerprint)) {
+      skipped.push({ fingerprint: r.fingerprint, reason: 'blocked' });
       continue;
     }
     if (typeof r.publicKeyArmored !== 'string' || r.publicKeyArmored.length === 0) {
@@ -141,12 +150,13 @@ export async function sendContactUpdate(
   change: ContactUpdateChange,
   owner: ContactUpdateOwner,
   recipients: ContactUpdateRecipient[],
+  admit: RecipientGate,
   opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
 ): Promise<SendContactUpdateResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const relayBase = opts.relayBase ?? '/api/relay';
 
-  const { deposits, skipped } = await buildContactUpdateDeposits(change, owner, recipients);
+  const { deposits, skipped } = await buildContactUpdateDeposits(change, owner, recipients, admit);
 
   const deposited: string[] = [];
   const failed: SendContactUpdateResult['failed'] = [];
