@@ -14,6 +14,7 @@ import type { VaultContents } from '../sync/vault';
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
+import { parseDeliveryDefault, type DeliveryDefault, type DeliveryDefaultRead } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
@@ -294,6 +295,8 @@ export interface ContactRecord {
   // an unauthenticated pq_kem is NEVER stored. Both are projected → TrustEdge.peer_pq_*.
   pq_sig_public_key?: string;   // ML-DSA base64
   pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
+  // ── delivery receipts (task #714 R2a): this contact's override of the global default, read AT SEND. Absent = follow the global. ──
+  delivery_receipts?: 'on' | 'off';
   // ── piece-2 device-mailbox (onion seal-target) ──────────────────────────────
   // The peer's PUBLIC device-mailbox block (fp + x25519/ml-kem pubkeys, hex). Stored ONLY from a card
   // whose signature VERIFIED (classifyImportedCard branch 4) — a seal-target is as MITM-sensitive as
@@ -456,6 +459,26 @@ async function txPut<T>(storeName: string, value: T): Promise<void> {
     store.put(value);
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+/** Put `value` under `key` ONLY IF no row exists, in one readwrite transaction (no await between the get and the put). Returns whether it wrote. */
+async function txPutIfAbsent(storeName: string, key: string, value: unknown): Promise<boolean> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const os = tx.objectStore(storeName);
+    let wrote = false;
+    const existing = os.get(key);
+    existing.onsuccess = () => {
+      if (existing.result === undefined) {
+        os.put(value);
+        wrote = true;
+      }
+    };
+    tx.oncomplete = () => resolve(wrote);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 
@@ -625,6 +648,65 @@ export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAff
   if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
   const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
   await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── Delivery-receipt setting (task #714 R2a): the GLOBAL default, a sealed per-owner record ───────────────────────
+// Same pattern as the suppression and held-affirmatives records: the `settings` store, encryptContactRecord under a reserved AAD id, so the
+// blob cannot be moved onto a contact row or another owner. Not the identity row (plaintext at rest) and not localStorage (no owner scope, and
+// clearing site data would silently turn Off back into On).
+const DELIVERY_RECORD_ID = 'piece2:delivery-receipts'; // reserved AAD id (contacts use random UUIDs, never this)
+function deliverySettingKey(ownerFingerprint: string): string {
+  return `delivery_receipts:${ownerFingerprint}`;
+}
+
+/** Read the record. ★ FAIL-CLOSED: locked, a decrypt/tag failure or a malformed shape is 'unreadable' (the caller sends nothing); no row is 'absent'. */
+export async function readDeliveryDefault(ownerFingerprint: string): Promise<DeliveryDefaultRead> {
+  if (!_sessionKey) return { state: 'unreadable' };
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', deliverySettingKey(ownerFingerprint));
+    if (!row?.value) return { state: 'absent' };
+    return parseDeliveryDefault(await decryptContactRecord<unknown>(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, row.value));
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
+/** Replace the record (the owner's own choice, or answering the one-time question). Throws when locked: never stored unencrypted. */
+export async function writeDeliveryDefault(ownerFingerprint: string, rec: DeliveryDefault): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the delivery-receipt setting unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, rec);
+  await txPut('settings', { key: deliverySettingKey(ownerFingerprint), value: payload });
+}
+
+/**
+ * Write `rec` only if NO record exists yet. Used by restores (which mark 'unknown') and by the migration below, so a late migration can never
+ * overwrite a marker or an answer. Returns whether it wrote.
+ */
+export async function writeDeliveryDefaultIfAbsent(ownerFingerprint: string, rec: DeliveryDefault): Promise<boolean> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the delivery-receipt setting unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, rec);
+  return txPutIfAbsent('settings', deliverySettingKey(ownerFingerprint), { key: deliverySettingKey(ownerFingerprint), value: payload });
+}
+
+/**
+ * The read a SEND uses. An ABSENT record here is an identity that existed before this setting did (a restore marks 'unknown' first), and prod
+ * already sends receipts for it, so it is switched to 'on' ONCE and flagged for a one-time notice. Written only-if-absent, then read back, so a
+ * concurrent writer wins. Anything unreadable stays unreadable.
+ */
+export async function readDeliveryDefaultMigrating(ownerFingerprint: string): Promise<DeliveryDefaultRead> {
+  const first = await readDeliveryDefault(ownerFingerprint);
+  if (first.state !== 'absent') return first;
+  try {
+    await writeDeliveryDefaultIfAbsent(ownerFingerprint, { v: 1, value: 'on', notice_pending: true });
+  } catch {
+    return { state: 'unreadable' };
+  }
+  return readDeliveryDefault(ownerFingerprint);
+}
+
+/** A restore's marker: the choice is not known on this device, so the owner is asked once and nothing is sent until they answer. */
+export async function markDeliveryDefaultUnknown(ownerFingerprint: string): Promise<void> {
+  await writeDeliveryDefaultIfAbsent(ownerFingerprint, { v: 1, value: 'unknown' });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
