@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS beacon_security_alarms (
 """
 
 
+def child_env() -> dict[str, str]:
+    """verify.mjs and auth.mjs run third-party npm code on hostile input. They get PATH and nothing else: no admin key, no
+    NODE_OPTIONS from the parent."""
+    return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
+
+
 def enabled() -> bool:
     """Only the exact value "1" turns the centurion on."""
     return os.environ.get(FLAG_ENV) == "1"
@@ -220,7 +226,7 @@ class Centurion:
         if self.vkey_path:
             cmd += ["--vkey", self.vkey_path, "--vkey-sha256", self.vkey_sha, "--now", str(int(now))]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                start_new_session=True)     # its own process group: killpg reaches every descendant
+                                start_new_session=True, env=child_env())     # its own process group: killpg reaches every descendant
         try:
             out, _ = proc.communicate(input=raw, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
@@ -265,6 +271,7 @@ class Centurion:
                 db.execute("INSERT INTO beacon_security_alarms (at, epoch, slot, n, raw) VALUES (?, ?, ?, ?, ?)",
                            (at, epoch, slot, n, raw.decode("utf-8", "replace")))
                 db.execute("COMMIT")
+                print("[beacon] SECURITY ALARM: a third nullifier at a full slot; see beacon_security_alarms", flush=True)
                 return ACCEPTED
             db.execute("INSERT INTO beacon_deposits (epoch, slot, n, k, accepted_at) VALUES (?, ?, ?, ?, ?)",
                        (epoch, slot, n, k, at))
@@ -310,7 +317,7 @@ class Centurion:
     def _authenticate(self, req: dict) -> bool:
         """One auth.mjs subprocess (own session; killpg + reap on timeout), fail closed on anything but the exact accept line."""
         proc = subprocess.Popen(self.auth_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                start_new_session=True)
+                                start_new_session=True, env=child_env())
         try:
             out, _ = proc.communicate(input=json.dumps(req, separators=(",", ":")).encode(), timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
