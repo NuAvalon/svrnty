@@ -177,6 +177,9 @@ test('the store helper computes facts without writing and fails closed', () => {
   assert.doesNotMatch(opens, /txPut|txDelete|initSessionKey/);
   const guard = fnBody(s, 'export async function assertRestoreKeepsOwnerDomain');
   assert.match(guard, /restoreDomainDecision\(/);
+  // These two facts ARE the locked-device case. No unit test can see them without an IndexedDB harness; the browser run is the proof.
+  assert.match(guard, /sessionOpens: held && unlocked \? await sessionOpensOwner\(fingerprint\) : false/);
+  assert.match(guard, /passphraseOpens: held && passphrase \? await verifyPassphrase\(fingerprint, passphrase\) : false/);
   assert.match(guard, /throw new RestoreDomainRefused\(/);
   assert.doesNotMatch(guard, /txPut|txDelete|initSessionKey\(/);
 });
