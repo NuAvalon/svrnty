@@ -15,16 +15,20 @@ const OWNER = { fingerprint: 'ab'.repeat(32), publicKeyArmored: 'x', privateKeyA
 const WIRE: NoteWireV0 = { type: NOTE_WIRE_TYPE, note_id: 'n1', thread_id: 't1', from_fingerprint: 'cd'.repeat(32), sent_at: '2026-10-30T12:00:00.000Z', body: 'hi', participant_kind: 'human', receipt_key: 'ab'.repeat(32) };
 const REC = { note_id: 'n1', thread_id: 't1', from_fingerprint: WIRE.from_fingerprint } as NoteRecord;
 
-function seam(accept: NoteSeamDeps['accept'], log: string[], sendReceipt: (w: NoteWireV0) => Promise<void>) {
-  const deps: NoteSeamDeps = { openOwner: () => OWNER.fingerprint, accept };
+function seam(accept: NoteSeamDeps['accept'], log: string[], sendReceipt: (w: NoteWireV0) => Promise<void>, over: Partial<NoteSeamDeps> = {}) {
+  const deps: NoteSeamDeps = { openOwner: () => OWNER.fingerprint, accept, isAdmittedNow: async () => true, ...over };
   return buildNoteSeam(OWNER, deps, undefined, sendReceipt);
 }
+// #714 R1: a receipt is queued only for the delivery that CREATED the note row; the real acceptInboundNote reports that through args.onCreated.
+const createdBy = (rec: NoteRecord, pre?: () => Promise<void>) => (async (a: { onCreated?: () => void }) => { await pre?.(); a.onCreated?.(); return rec; }) as never;
+const settle = () => new Promise((r) => setTimeout(r, 20)); // the send re-checks the contact at send time, so it starts a few ticks after accept returns
 
 test('N1 a stored note: the receipt is sent exactly once, and only AFTER accept (the durable store) has returned', async () => {
   const log: string[] = [];
-  const s = seam((async () => { await new Promise((r) => setTimeout(r, 20)); log.push('stored'); return REC; }) as never, log, async () => { log.push('receipt'); });
+  const s = seam(createdBy(REC, async () => { await new Promise((r) => setTimeout(r, 20)); log.push('stored'); }), log, async () => { log.push('receipt'); });
   const r = await s.accept(WIRE);
   assert.ok(r && 'note_id' in r);
+  await settle();
   assert.deepEqual(log, ['stored', 'receipt']);
 });
 
@@ -48,11 +52,64 @@ test('N4 a receipt hook that THROWS or REJECTS never fails the note: it is still
   for (const hook of [async () => { throw new Error('relay down'); }, () => Promise.reject(new Error('x'))]) {
     const origErr = console.error; console.error = () => {};
     try {
-      const s = seam((async () => REC) as never, [], hook as never);
+      const s = seam(createdBy(REC), [], hook as never);
       const r = await s.accept(WIRE);
       assert.ok(r && 'note_id' in r && r.note_id === 'n1');
+      await settle();
     } finally { console.error = origErr; }
   }
+});
+
+// ── #714 R1: created-only emission, and the block re-check at SEND ──
+test('R1-a a REDELIVERY (accept returns the stored note without reporting a creation) sends NO receipt', async () => {
+  const log: string[] = [];
+  const s = seam((async () => REC) as never, log, async () => { log.push('receipt'); });
+  const r = await s.accept(WIRE);
+  assert.ok(r && 'note_id' in r, 'the redelivered note is still acked (returned as accepted)');
+  await settle();
+  assert.deepEqual(log, []);
+});
+test('R1-b the same blob delivered twice: the first (creating) delivery sends ONE receipt, the second sends none', async () => {
+  const log: string[] = [];
+  let first = true;
+  const s = seam((async (a: { onCreated?: () => void }) => { if (first) { first = false; a.onCreated?.(); } return REC; }) as never, log, async () => { log.push('receipt'); });
+  await s.accept(WIRE);
+  await s.accept(WIRE);
+  await settle();
+  assert.deepEqual(log, ['receipt']);
+});
+test('R1-c G2: a contact BLOCKED after accept but before the queued send starts gets NO receipt (the contact is re-read when the send RUNS)', async () => {
+  // The outbox may hold a receipt behind its rate window; model that with a queue the test drains by hand.
+  for (const [blockInWindow, want] of [[true, []], [false, ['receipt']]] as const) {
+    const log: string[] = [];
+    let admitted = true;
+    const queued: Array<() => Promise<unknown>> = [];
+    const receipts = { enqueue: (_o: string, _n: string, send: () => Promise<unknown>) => void queued.push(send) } as never;
+    const s = seam(createdBy(REC), log, async () => { log.push('receipt'); }, { isAdmittedNow: async () => admitted, receipts });
+    await s.accept(WIRE);
+    assert.equal(queued.length, 1, 'one receipt is queued for the creating delivery');
+    assert.deepEqual(log, [], 'and nothing has left yet');
+    if (blockInWindow) admitted = false; // the user blocks them in the window between the accept and the send
+    await queued[0]();
+    assert.deepEqual(log, want, blockInWindow ? 'blocked in the window: nothing leaves' : 'control: still admitted, the receipt leaves');
+  }
+});
+test('R1-d G2 control: still admitted at send time => the receipt goes; and a re-check that THROWS sends nothing and never fails the note', async () => {
+  const log: string[] = [];
+  const ok = seam(createdBy(REC), log, async () => { log.push('receipt'); });
+  await ok.accept(WIRE);
+  await settle();
+  assert.deepEqual(log, ['receipt']);
+  lockSession();
+  const log2: string[] = [];
+  const origErr = console.error; console.error = () => {};
+  try {
+    const bad = seam(createdBy(REC), log2, async () => { log2.push('receipt'); }, { isAdmittedNow: async () => { throw new Error('contacts locked'); } });
+    const r = await bad.accept(WIRE);
+    assert.ok(r && 'note_id' in r);
+    await settle();
+  } finally { console.error = origErr; }
+  assert.deepEqual(log2, []);
 });
 
 // ── v7 binding constraint: no outbound traffic triggered or addressed by an UNAUTHENTICATED claim (Flint #2059, Archie v7, Hypatia TG-1 v1_3) ──
@@ -80,6 +137,7 @@ test('N5 v7 NEG: a forged note NAMING an admitted book contact (valid shape, fai
     openOwner: () => OWNER.fingerprint,
     // the REAL acceptInboundNote (real signature check); only storage is stubbed, and A is ADMITTED, exactly the forger's target
     accept: ((args: Parameters<typeof acceptInboundNote>[0]) => acceptInboundNote({ ...args, isAdmitted: async (fp) => fp === A.fp, io })) as never,
+    isAdmittedNow: async (fp) => fp === A.fp,
   };
   const seamB = buildNoteSeam({ ...OWNER, fingerprint: B.fp } as never, { ...deps, openOwner: () => B.fp }, undefined, async (w) => { await emitDeliveredReceipt(w, { fetchImpl }); });
   const r = await seamB.accept(forged);

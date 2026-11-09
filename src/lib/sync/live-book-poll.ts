@@ -177,6 +177,12 @@ export interface NoteSeamDeps {
   accept: typeof acceptInboundNote;
   /** The receipt outbox (default: the module one). Injectable so the rate window and the dedupe are testable on a fake clock. */
   receipts?: ReceiptOutbox;
+  /**
+   * #714 R1 (G2): is this sender STILL admitted (in the book and not blocked) at the moment a queued receipt is about to leave? The receipt
+   * starts after the outbox's rate window, possibly well after the accept, so a block that lands in between must stop it. Default: re-read the
+   * contact from the encrypted book. A throw means "no": nothing is sent.
+   */
+  isAdmittedNow?: (fromFingerprint: string) => Promise<boolean>;
 }
 
 export function buildNoteSeam(
@@ -218,7 +224,11 @@ export function buildNoteSeam(
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
       let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
       let dropCause: string | undefined;
+      let created = false; // #714 R1: did THIS delivery create the note row? (a redelivery, a refused rewrite and a spent frame did not)
       const rec = await deps.accept({
+        onCreated: () => {
+          created = true;
+        },
         onDrop: (r, c) => {
           dropReason = r;
           dropCause = c;
@@ -288,7 +298,16 @@ export function buildNoteSeam(
       // failure undo the note we already persisted.
       // S62 R3 (Flint #2094): the receipt is QUEUED, never awaited. It is started now or on a later tick, once per (owner, note_id) however often
       // the note is redelivered, and at most ~4 per minute, so it can neither hold the ack of the note it answers nor spend the user's send budget.
-      if (sendReceipt) (deps.receipts ?? receiptOutbox).enqueue(owner.fingerprint, `${wire.from_fingerprint}|${wire.note_id}`, () => sendReceipt(wire)); // note_id is SENDER-chosen: key on the sender too (Flint #2105)
+      // #714 R1 (Flint #6128/#6130): ONLY the delivery that created the row answers it. The sender's receipt key is spent by the first receipt, and an honest
+      // relay does not redeliver a stored-and-acked note, so a second delivery of the same note is not asked to re-send. G2: the sender is re-checked at SEND time.
+      if (sendReceipt && created) {
+        const stillAdmitted = deps.isAdmittedNow ?? (async (fp: string) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)));
+        (deps.receipts ?? receiptOutbox).enqueue(owner.fingerprint, `${wire.from_fingerprint}|${wire.note_id}`, async () => {
+          let ok = false;
+          try { ok = await stillAdmitted(wire.from_fingerprint); } catch { ok = false; } // can't tell => don't send
+          return ok ? sendReceipt(wire) : undefined; // returned, not awaited here: the OUTBOX runs this callback, never the note path
+        }); // note_id is SENDER-chosen: key on the sender too (Flint #2105)
+      }
       return { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
     },
   };
