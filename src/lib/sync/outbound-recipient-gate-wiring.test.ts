@@ -2,7 +2,7 @@
 // The call sites that need a live browser or a real agent directory. Source pins: each one must read the book at send time and pass the check on.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
@@ -52,4 +52,23 @@ test('the send paths have no default that could admit everyone', () => {
   const joiner = src('src/lib/sync/send-joiner-response.ts');
   assert.doesNotMatch(joiner, /isBlocked\?:/);
   assert.doesNotMatch(between(joiner, 'export async function sendJoinerResponse', '): Promise<JoinerResponseSendResult>'), /= \{\}/);
+});
+
+test('Joiner done screen: the row already loaded decides it, and the blocked copy is what renders', () => {
+  const s = src('src/components/JoinerCeremony.tsx');
+  assert.match(between(s, 'const addToGate = useCallback', 'setPhase(\'done\')'), /setGiverBlocked\(!admitContact\(existing\)\)/);
+  const done = between(s, "{phase === 'done' && (", 'Open SVRNTY');
+  assert.match(done, /alreadyKnownCopy\(peer\?\.name, giverBlocked\)\.heading/);
+  assert.match(done, /alreadyKnownCopy\(peer\?\.name, giverBlocked\)\.sub/);
+  assert.doesNotMatch(done, /already connected/, 'the old fixed heading is gone');
+});
+
+test('the test-only send helper, which admits the peer first, is imported by tests and nothing else', () => {
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => {
+    const p = join(d, f);
+    return statSync(p).isDirectory() ? walk(p) : /\.tsx?$/.test(p) ? [p] : [];
+  });
+  const offenders = ['src', 'app', 'scripts'].flatMap(walk).filter((p) =>
+    !/\.test\.tsx?$/.test(p) && !p.endsWith('headless-test-send.ts') && readFileSync(p, 'utf8').includes('headless-test-send'));
+  assert.deepEqual(offenders, []);
 });

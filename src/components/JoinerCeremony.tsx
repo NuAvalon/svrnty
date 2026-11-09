@@ -46,6 +46,8 @@ import {
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { blockedInBook } from '@/lib/sync/contact-update-gate';
+import { admitContact } from '@/lib/trust/admit-contact';
+import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
@@ -143,6 +145,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [ownerFp, setOwnerFp] = useState<string | null>(null);
   const [noIdentity, setNoIdentity] = useState(false);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
+  const [giverBlocked, setGiverBlocked] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -262,6 +265,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           });
         }
         setAlreadyKnown(true);
+        setGiverBlocked(!admitContact(existing)); // read here, from the row just loaded: no need to wait for the deposit to know this
       } else {
         // NOTE (piece-2 coverage boundary, unchanged): the device-mailbox is NOT threaded through the
         // holding-room gate pipeline (GateArrival → admit) yet — a gated joiner lands WITHOUT a mailbox
@@ -497,8 +501,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
           {alreadyKnown ? (
             <>
-              <h2 style={headingStyle}>You’re already connected</h2>
-              <p style={subStyle}>{peer?.name || 'They'} are already in your network.</p>
+              <h2 style={headingStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).heading}</h2>
+              <p style={subStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).sub}</p>
             </>
           ) : (
             <>
