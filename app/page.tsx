@@ -50,6 +50,7 @@ import {
   storeIdentity,
   loadGateArrivals,
 } from '@/lib/identity/client-store';
+import { saveOwnerEmail } from '@/lib/identity/save-owner-email';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
@@ -1000,11 +1001,7 @@ export default function Home() {
             onLocalSave={async (kind, value) => {
               const fp = identity.identity.fingerprint as string;
               if (kind === 'email') {
-                const next = {
-                  ...identity,
-                  identity: { ...identity.identity, email: value },
-                };
-                await storeIdentity(fp, next);
+                const next = await saveOwnerEmail(fp, value, identity, { load: loadIdentity, store: storeIdentity });
                 setIdentity(next);
                 return;
               }
