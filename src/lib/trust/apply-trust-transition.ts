@@ -20,6 +20,20 @@ import { updateContact as realUpdateContact, getContact as realGetContact } from
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
 import type { TrustEvent } from '@/lib/trust/types';
+import { admitContact } from './admit-contact';
+
+/**
+ * Thrown when a trust GRANT targets a contact the stored record says is blocked. Blocking means "I do not want this person reaching me";
+ * trusting someone you are hiding from is contradictory, and the way back is Unblock first. Nothing has been written, committed or
+ * reconciled when this is thrown. Retracting trust (nextTrusted === false) is never refused.
+ */
+export class TrustRefusedError extends Error {
+  readonly reason = 'blocked' as const;
+  constructor() {
+    super('This contact is blocked. Unblock them before trusting them.');
+    this.name = 'TrustRefusedError';
+  }
+}
 
 export interface TrustTransitionOwner {
   fingerprint: string;
@@ -83,6 +97,9 @@ export async function applyTrustTransition(
   // The history append and the open_visibility clear are built from the record held when the write runs, not from the copy `peer` was read from.
   // A trust change is a write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
   await withSafetyWrite(peer.contactId, () => updateContact(peer.contactId, (existing: Record<string, unknown>) => {
+    // A GRANT is refused for a contact the record held WHEN THE WRITE RUNS calls blocked (never the caller's copy), so no entry point,
+    // button or future shortcut can add trust to someone the owner blocked. Throwing here writes nothing, and steps (2) and (3) never run.
+    if (nextTrusted && existing && !admitContact(existing)) throw new TrustRefusedError();
     const md = (existing.metadata ?? {}) as Record<string, unknown>;
     return {
       trust_level: nextTrusted ? 'trusted' : 'unverified',
