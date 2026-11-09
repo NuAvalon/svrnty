@@ -42,14 +42,20 @@ import {
   initSessionKey,
   lockSession,
   enqueueGateArrival,
+  getGateArrival,
+  getAllContacts,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
+import { blockedInBook } from '@/lib/sync/contact-update-gate';
+import { admitContact } from '@/lib/trust/admit-contact';
+import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
-import { clampArrivalName } from '@/lib/trust/grow-gate';
+import { clampArrivalName, mergeArrivalPin } from '@/lib/trust/grow-gate';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -103,6 +109,9 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
     const ownPub: string = id?.identity?.public_key || '';
     if (!ownPub) return; // no own key to present — cannot build a verifiable response
     const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
+    const ownPin = canonicalAuthorityPin(id?.next_authority_commitment ?? id?.identity?.next_authority_commitment);
+    // A giver you blocked gets nothing back. Read now, inside this try: if the book can't be read, no deposit goes out (the flow is fail-soft).
+    const isBlocked = blockedInBook(await getAllContacts(ownerFp));
     const res = await sendJoinerResponse(
       {
         fingerprint: ownerFp,
@@ -116,6 +125,8 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         ...(id?.post_quantum?.kem_public_key && id?.post_quantum?.sig_public_key
           ? { kemPublicKeyB64: id.post_quantum.kem_public_key, sigPublicKeyB64: id.post_quantum.sig_public_key }
           : {}),
+        // Our own pin, read the way the card builder reads it (wrapper first, then the nested identity). Only a canonical value goes out.
+        ...(ownPin ? { nextAuthorityCommitment: ownPin } : {}),
       },
       {
         fingerprint: peer.fingerprint,
@@ -125,6 +136,7 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         giverPqKemPublicKey: peer.pq?.pq_kem_public_key,
         inviteNonce: code,
       },
+      { isBlocked },
     );
     if (!res.ok) {
       console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);
@@ -141,6 +153,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [ownerFp, setOwnerFp] = useState<string | null>(null);
   const [noIdentity, setNoIdentity] = useState(false);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
+  const [giverBlocked, setGiverBlocked] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -267,11 +280,18 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           });
         }
         setAlreadyKnown(true);
+        setGiverBlocked(!admitContact(existing)); // read here, from the row just loaded: no need to wait for the deposit to know this
       } else {
         // NOTE (piece-2 coverage boundary, unchanged): the device-mailbox is NOT threaded through the
         // holding-room gate pipeline (GateArrival → admit) yet — a gated joiner lands WITHOUT a mailbox
         // until a re-exchange back-fills it (safe: emit under-reveals, fail-closed). Threading the gate
         // pipeline is a tracked fast-follow (co-owned with Apollo's emit UI work).
+        // First write wins at the Gate too: someone already waiting here under a DIFFERENT pin is loud and changes nothing (same rule and words as Contacts import).
+        const pinMerge = mergeArrivalPin(await getGateArrival(ownerFp, peer.fingerprint), peer.authorityPin);
+        if (pinMerge.conflict) {
+          setError(authorityPinConflictMessage(peer.name));
+          return;
+        }
         await enqueueGateArrival(ownerFp, {
           fingerprint: peer.fingerprint,
           displayName: clampArrivalName(peer.name),
@@ -284,6 +304,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           ...(peer.pq
             ? { pqKemPublicKey: peer.pq.pq_kem_public_key, pqSigPublicKey: peer.pq.pq_sig_public_key }
             : {}),
+          ...(pinMerge.pin ? { nextAuthorityCommitment: pinMerge.pin } : {}),
         });
         emitContactChange({ ids: [], reason: 'ui-edit' });
       }
@@ -502,8 +523,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
           {alreadyKnown ? (
             <>
-              <h2 style={headingStyle}>You’re already connected</h2>
-              <p style={subStyle}>{peer?.name || 'They'} are already in your network.</p>
+              <h2 style={headingStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).heading}</h2>
+              <p style={subStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).sub}</p>
             </>
           ) : (
             <>

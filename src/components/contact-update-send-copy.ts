@@ -28,7 +28,8 @@ export function contactUpdateSendMessage(
     ].filter(Boolean);
     return {
       ok: false,
-      message: `Couldn't deliver${parts.length ? `: ${parts.join(', ')}` : ''}. Saved locally — try Send again later.`,
+      // Retrying can only help the failed ones: a blocked or removed contact is refused every time.
+      message: `Couldn't deliver${parts.length ? `: ${parts.join(', ')}` : ''}. Saved locally — try Send again later${blocked && failed ? ` for the ${failed} that failed` : ''}.`,
     };
   }
   return {

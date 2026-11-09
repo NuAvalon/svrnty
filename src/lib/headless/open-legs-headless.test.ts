@@ -11,7 +11,8 @@ import { sealNoteClassicalFixture } from '@/lib/messaging/seal-classical-fixture
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 
 const RELAY = 'http://relay.test/api/relay';
 type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };

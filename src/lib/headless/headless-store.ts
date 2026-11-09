@@ -30,6 +30,7 @@ export interface HeadlessContact {
   version?: number;
   pq_sig_public_key?: string; // base64
   pq_kem_public_key?: string; // base64
+  next_authority_commitment?: string; // 64 lowercase hex: the contact's pin, kept only from a signature-verified source (a verified joiner response admitted from the Gate)
   mutual?: { they_trust_me: boolean | null; last_sync: string | null; reciprocal: boolean; last_affirm_at?: string };
   [key: string]: unknown;
 }
