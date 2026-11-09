@@ -76,7 +76,7 @@ test('S4 the migration is only-if-absent and reads the restored flag; a send nev
 });
 
 test('S5 the send-time read uses the MIGRATING reader and the sealed record is not read from localStorage or the identity row', () => {
-  assert.match(read('src/lib/sync/receipt-allowed.ts'), /readDeliveryDefaultMigrating/);
+  assert.match(read('src/lib/sync/receipt-allowed.ts'), /readGlobal:\s*readDeliveryDefaultMigrating\b/, 'the global is read by the MIGRATING reader (an absent record becomes On/unknown first)');
   const store = read('src/lib/identity/client-store.ts');
   const seg = store.slice(store.indexOf('// ── Delivery-receipt setting'), store.indexOf('export async function listIdentities('));
   const code = seg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1'); // code only: the comments explain why not localStorage
