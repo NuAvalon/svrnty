@@ -607,7 +607,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setDeliveryBusy(true);
       setDeliveryError(null);
-      await updateContact(deliveryContact.id, contactDeliveryPatch(choice));
+      await updateContact(deliveryContact.id, (fresh) => contactDeliveryPatch(fresh, choice));
       await loadContacts();
       onContactsChange?.();
     } catch {

@@ -44,7 +44,9 @@ export async function dismissDeliveryNotice(io: DeliveryIO, owner: string): Prom
 /** Per-contact choice: 'on' | 'off' set it, 'follow' removes it so the contact follows the global setting. */
 export type ContactDeliveryChoice = DeliveryValue | 'follow';
 
-export function contactDeliveryPatch(choice: ContactDeliveryChoice): { delivery_receipts: DeliveryValue | undefined } {
+// `held` is the record the write is applied to (updateContact hands it to the updater): the choice does not depend on it, but the write is shaped
+// like every other one in ContactManagement (a patch built from the held record, never from the screen's copy; see contact-update-fresh-read.test.ts).
+export function contactDeliveryPatch(_held: unknown, choice: ContactDeliveryChoice): { delivery_receipts: DeliveryValue | undefined } {
   return { delivery_receipts: choice === 'follow' ? undefined : choice };
 }
 

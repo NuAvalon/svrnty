@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseDelivery, dismissDeliveryNotice, loadDeliveryPanel, panelFromRead, type DeliveryIO } from './delivery-actions';
+import { chooseDelivery, contactDeliveryChoice, contactDeliveryPatch, dismissDeliveryNotice, loadDeliveryPanel, panelFromRead, type DeliveryIO } from './delivery-actions';
 import type { DeliveryDefault, DeliveryDefaultRead } from '@/lib/trust/delivery-receipt-setting';
 
 function fakeIO(start: DeliveryDefaultRead) {
@@ -52,5 +52,15 @@ describe('Delivery UI actions', () => {
   it('A7 loadDeliveryPanel reads through the io', async () => {
     const { io } = fakeIO(ok('off'));
     assert.deepEqual(await loadDeliveryPanel(io, 'o'), { kind: 'choice', value: 'off', notice: false });
+  });
+  it('A8 per-contact patch: on/off set the field, follow clears it, and the held record is not read', () => {
+    assert.deepEqual(contactDeliveryPatch(null, 'on'), { delivery_receipts: 'on' });
+    assert.deepEqual(contactDeliveryPatch({ delivery_receipts: 'off' }, 'off'), { delivery_receipts: 'off' });
+    assert.deepEqual(contactDeliveryPatch({ delivery_receipts: 'on' }, 'follow'), { delivery_receipts: undefined });
+  });
+  it('A9 the stored field reads back as one of three choices; anything else is follow', () => {
+    assert.equal(contactDeliveryChoice('on'), 'on');
+    assert.equal(contactDeliveryChoice('off'), 'off');
+    for (const v of [undefined, null, 'ON', 1, {}, 'unknown']) assert.equal(contactDeliveryChoice(v), 'follow');
   });
 });
