@@ -73,7 +73,7 @@ async function unlock(page: Page) {
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 60_000 });
 }
 async function admitFromGate(page: Page) {
-  await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+  await page.getByRole('tab', { name: /^Galaxy\b/ }).click(); // the tab's name gains ", new activity" while an arrival is unseen
   const gate = page.getByTestId('galaxy-gate');
   await expect(gate).toHaveAttribute('data-count', '1', { timeout: 30_000 });
   await gate.click();
