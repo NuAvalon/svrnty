@@ -154,6 +154,14 @@ def test_a_failure_inside_the_transaction_leaves_no_rows(cen, monkeypatch):
     assert rows(cen, "beacon_deposits") == 1 and rows(cen, "beacon_matches") == 0     # the 2nd deposit rolled back too
 
 
+def _is_zombie(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
 def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
     marker = tmp_path / "grandchild.pid"
     hang = ("import os, subprocess, sys, time;"
@@ -169,6 +177,8 @@ def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
         try:
             os.kill(gpid, 0)
         except ProcessLookupError:
+            break
+        if _is_zombie(gpid):                                   # dead, just unreaped: in a container with no init, nobody reaps orphans
             break
         time.sleep(0.1)
     else:
@@ -220,7 +230,7 @@ def test_python_epoch_constants_equal_the_shared_js_module():
     """Python can't import the JS module, so it keeps its own copy; this pins the copy to beacon-wire.mjs (the one the
     prover and verify.mjs import). A drift here = every deposit lands in an epoch the other side never matches."""
     import subprocess
-    wire = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "lib", "crypto", "beacon-wire.mjs")
+    wire = os.path.join(os.path.dirname(os.path.abspath(__file__)), "beacon-verifier", "beacon-wire.mjs")  # the copy the image runs; CI pins it to src/lib/crypto
     code = ("import(process.argv[1]).then(m => process.stdout.write(JSON.stringify("
             "{e: m.EPOCH_SECONDS ?? null, g: m.GRACE_SECONDS ?? null})))")
     out = subprocess.run([NODE, "-e", code, os.path.realpath(wire)], capture_output=True, text=True, timeout=60, check=True)

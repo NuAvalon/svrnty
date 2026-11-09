@@ -24,6 +24,13 @@ RUN git clone --depth 1 --branch 0.16.0 https://github.com/open-quantum-safe/lib
       -DCMAKE_INSTALL_PREFIX=/opt/oqs \
  && ninja -C /tmp/liboqs/build install
 
+# #588 mutual-trust beacon: the verifier's node binary and npm tree. Pinned by digest because this code parses hostile
+# input. --ignore-scripts: no dependency runs anything at install; the JS fallbacks are what the tests exercise.
+FROM node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS beacon-deps
+WORKDIR /b
+COPY beacon-verifier/package.json beacon-verifier/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
 # final
 FROM python:3.12-slim
 WORKDIR /app
@@ -47,6 +54,14 @@ ENV OQS_INSTALL_PATH=/usr/local
 # svrnty_deploy.sh — NOT in the local infra/satellite tree (local crypto_utils.py is a different
 # 10506B file). Build on box. The satellite serves no HTML pages, so no .html is copied.
 COPY satellite.py mailbox_envelope.py satellite_keys.py crypto_utils.py ./
+
+# #588 beacon. Inert unless BEACON_CENTURION=1 (satellite.py doesn't even import these otherwise). Copied as root, so the
+# satellite user can run the verifier but not change it. beacon-wire.mjs here is a byte copy of src/lib/crypto/beacon-wire.mjs,
+# which sits outside this build context; CI refuses a PR where the two differ.
+COPY beacon_routes.py beacon_centurion.py ./
+COPY beacon-verifier/verify.mjs beacon-verifier/auth.mjs beacon-verifier/beacon-wire.mjs ./beacon-verifier/
+COPY --from=beacon-deps /b/node_modules ./beacon-verifier/node_modules
+COPY --from=beacon-deps /usr/local/bin/node /usr/local/bin/node
 
 # Non-root (hardening pt3 — the relay is internet-facing). The persistent /data volume
 # (SQLite DB + SATELLITE_KEY_PATH keypair, minted 0600 on first start) must be writable by

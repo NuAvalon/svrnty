@@ -15,7 +15,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createPublicKey, verify as edVerify } from 'node:crypto';
 import { buildPoseidon } from 'circomlibjs';
-import { AUTH_OPS, kInputs, authMessage, parseFieldElement, WireError } from '../../../src/lib/crypto/beacon-wire.mjs';
+import { AUTH_OPS, kInputs, authMessage, parseFieldElement, WireError } from './beacon-wire.mjs';
 
 const MAX_STDIN = 4096;
 const KEYS = ['op', 'H_e', 'N', 'K', 'pk', 'sig', 'nonce'];

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildPoseidon } from 'circomlibjs';
 import { verifyAuth, parseAuthRequest, decodePoint, isSmallOrder, L, SMALL_ORDER_HEX } from './auth.mjs';
-import { DS_K, K_TAG, AUTH_OPS, asciiTag, be32, pkSplit, kInputs, authMessage, R } from '../../../src/lib/crypto/beacon-wire.mjs';
+import { DS_K, K_TAG, AUTH_OPS, asciiTag, be32, pkSplit, kInputs, authMessage, R } from './beacon-wire.mjs';
 
 const AUTH = new URL('./auth.mjs', import.meta.url).pathname;
 // Apollo's THROWAWAY kat.json (588_throwaway_fixtures_20261107, sha256 bd67ef7a812a503b...): public test values, no secrets.
