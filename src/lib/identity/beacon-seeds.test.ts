@@ -106,13 +106,13 @@ test('BS10 [static] client-store holds the seeds under a RESERVED AAD id, distin
 
 test('BS11 [static] setBeaconSeeds throws when locked and encrypts BEFORE it writes; getBeaconSeeds returns null when locked, absent, or malformed', () => {
   const s = store();
-  const set = s.slice(s.indexOf('export async function setBeaconSeeds'), s.indexOf('export async function setBeaconSeeds') + 700);
+  const set = s.slice(s.indexOf('export async function setBeaconSeeds'), s.indexOf('export async function listIdentities'));
   assert.match(set, /if \(!_sessionKey\) throw new Error\(/);
   const encAt = set.indexOf('encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID');
   const putAt = set.indexOf("txPut('settings'");
   assert.ok(encAt > -1 && putAt > encAt, 'encrypt, then put');
   assert.ok(!/txPut\('settings', \{ key: beaconSeedsSettingKey\(ownerFingerprint\), value: map/.test(s), 'the plain map is never the stored value');
-  const get = s.slice(s.indexOf('export async function getBeaconSeeds'), s.indexOf('export async function getBeaconSeeds') + 900);
+  const get = s.slice(s.indexOf('export async function getBeaconSeeds'), s.indexOf('/** Persist the seed map'));  // ends where the setter's doc starts, so the setter's own checks cannot satisfy these
   assert.match(get, /if \(!_sessionKey\) return null/);
   assert.match(get, /isBeaconSeeds\(/);
   assert.match(get, /catch \{\s*return null/);
