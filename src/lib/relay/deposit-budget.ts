@@ -47,6 +47,11 @@ function current(now: number, windowMs: number): { windowStart: number; used: nu
   return (globalThis.__depositBudget = { windowStart: now, used: 0 });
 }
 
+/** What a deposit spends: its blob, or a floor, since a row costs more to store than a tiny blob does. */
+export function depositCharge(blobBytes: number): number {
+  return Math.max(blobBytes, 512);
+}
+
 export function depositBudgetAllows(bytes: number, now: number): boolean {
   return current(now, mailboxConfig().rateLimitWindowMs).used + bytes <= depositBudgetBytes(dbPath(), now);
 }

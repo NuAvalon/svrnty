@@ -22,3 +22,10 @@ export async function readBodyCapped(request: Request, cap: number): Promise<Uin
   for (const c of chunks) { out.set(c, at); at += c.byteLength; }
   return out;
 }
+
+/** The body as JSON, or null if it's over the cap or isn't JSON. For routes that refuse both the same way. */
+export async function readJsonCapped(request: Request, cap: number): Promise<any | null> { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const raw = await readBodyCapped(request, cap).catch(() => null);
+  if (raw === null) return null;
+  try { return JSON.parse(new TextDecoder().decode(raw)); } catch { return null; }
+}

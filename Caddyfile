@@ -30,7 +30,7 @@
 	# #707: the app keys its per-client rate limits on this header ONLY (src/lib/relay/client-ip.ts). Caddy is the edge
 	# here, so {remote_host} is the real peer; header_up OVERWRITES anything the client sent.
 	# The deposit route enforces its own cap too; this stops an oversized body at the edge. A little above the route's 64 KiB, so the route's own refusal is what clients see.
-	@relay path /api/relay/*
+	@relay path /api/relay /api/relay/*
 	request_body @relay {
 		max_size 128KB
 	}

@@ -13,7 +13,7 @@ import { dbPath } from '@/lib/relay/mailbox-store';
 import { logDeposit429 } from '@/lib/relay/deposit-429-log';
 import { readBodyCapped } from '@/lib/relay/read-body-capped';
 import { isValidMailboxId } from '@/lib/relay/mailbox-id';
-import { chargeDepositBudget, depositBudgetAllows } from '@/lib/relay/deposit-budget';
+import { chargeDepositBudget, depositCharge, depositBudgetAllows } from '@/lib/relay/deposit-budget';
 
 // The uniform deposit ack — identical for every mailbox state (I-4). Never varies on R.
 const UNIFORM_ACK = { status: 'queued' as const };
@@ -52,7 +52,8 @@ export async function POST(request: Request) {
 
     // One budget for everyone: refusing for the rest of this window beats filling the disk and refusing until the TTLs expire. Never per-mailbox (I-4).
     const blobBytes = typeof blob === 'string' ? Buffer.byteLength(blob) : 0;
-    if (!depositBudgetAllows(blobBytes, now)) {
+    const charge = depositCharge(blobBytes);
+    if (!depositBudgetAllows(charge, now)) {
       logDeposit429('global_budget', now);
       return NextResponse.json({ error: 'Relay busy.' }, { status: 429 });
     }
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
       if (result.status === 413) return NextResponse.json({ error: 'Payload too large.' }, { status: 413 });
       return NextResponse.json({ error: 'Missing or invalid field.' }, { status: 400 });
     }
-    chargeDepositBudget(blobBytes, now);
+    chargeDepositBudget(charge, now);
     return NextResponse.json(UNIFORM_ACK);
   } catch {
     return NextResponse.json({ error: 'Failed to deposit.' }, { status: 500 });

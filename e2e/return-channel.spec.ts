@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { test, expect, type APIRequestContext } from '@playwright/test';
 import { ownerMailboxId, pollHeaders, ackHeaders } from './fixtures/return-channel-owner';
 
@@ -20,7 +21,7 @@ const OPAQUE_BLOB = 'AAAA';                    // opaque base64-ish payload; the
 
 // Deterministic distinct mailbox ids for probing. TODO(seam §4.2): demo = hash(fingerprint).
 function mailboxIdFor(seed: string): string {
-  return `mbx_${seed}_${'x'.repeat(24)}`.slice(0, 40);
+  return `mbx_${createHash('sha256').update(seed).digest('hex')}`; // the relay only accepts the real id shape
 }
 
 // Owner-ownership proof (§4.1) is now WIRED: the fixture (e2e/fixtures/return-channel-owner.ts) signs

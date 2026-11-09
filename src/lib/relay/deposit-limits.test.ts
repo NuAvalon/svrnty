@@ -5,6 +5,7 @@
 process.env.RELAY_DB_PATH = ':memory:';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLIENT_IP_HEADER } from './client-ip';
@@ -305,4 +306,143 @@ test('P6 expired addresses are swept when the map is full, so new addresses get 
   const later = now + 60_001 + 1_000;
   assert.equal(checkMailboxRateLimit('10.0.1.1', later), true);
   assert.ok(mailboxLimiterSize() <= 2, `swept to ${mailboxLimiterSize()}`);
+});
+
+// ---- The other three routes that read a body, and the size of what a deposit costs. ----
+let ipSeq = 1;
+const freshIp = () => `198.51.100.${ipSeq++}`;
+const CAP = 64 * 1024;
+const OVER = 50 * 1024 * 1024;
+const NEAR = CAP + 2 * 16 * 1024;
+
+function reqTo(path: string, init: { body?: string; stream?: ReadableStream<Uint8Array>; ip?: string }) {
+  return new Request(`http://r.test${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [CLIENT_IP_HEADER]: init.ip ?? freshIp() },
+    body: init.stream ?? init.body,
+    ...(init.stream ? { duplex: 'half' } : {}),
+  } as RequestInit);
+}
+const mint = async (init: Parameters<typeof reqTo>[1]) => (await import('../../../app/api/relay/route')).POST(reqTo('/api/relay', init));
+const ack = async (init: Parameters<typeof reqTo>[1]) => (await import('../../../app/api/relay/ack/route')).POST(reqTo('/api/relay/ack', init));
+const claim = async (init: Parameters<typeof reqTo>[1]) => (await import('../../../app/api/relay/claim/route')).POST(reqTo('/api/relay/claim', init));
+/** A successful mint arms a 7-day timer; this keeps the test process from waiting on it. */
+async function withoutTimers<T>(f: () => Promise<T>): Promise<T> {
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (() => ({ unref() {}, ref() {} })) as unknown as typeof setTimeout;
+  try { return await f(); } finally { globalThis.setTimeout = real; }
+}
+
+test('mint: a chunked body over the cap is refused with its 413, and reading stops near the cap', async () => {
+  const { stream, stats } = chunked(16 * 1024, OVER);
+  const res = await mint({ stream });
+  assert.equal(res.status, 413);
+  assert.ok(stats.pulled <= NEAR, `pulled ${stats.pulled} bytes`);
+  assert.equal(stats.cancelled, true);
+});
+
+test('mint: a chunked body under the cap still mints a code', async () => {
+  const head = JSON.stringify({ encrypted: 'opaque' });
+  const { stream } = chunked(head.length, head.length, head);
+  const res = await withoutTimers(() => mint({ stream }));
+  assert.equal(res.status, 200);
+  assert.match((await res.json()).code, /^[A-Za-z0-9]{6}$/);
+});
+
+test('mint: a body of exactly the cap is accepted, one byte over is refused', async () => {
+  const wrap = JSON.stringify({ encrypted: '' }).length;
+  const at = JSON.stringify({ encrypted: 'x'.repeat(CAP - wrap) });
+  assert.equal(at.length, CAP);
+  const a = chunked(at.length, at.length, at);
+  assert.equal((await withoutTimers(() => mint({ stream: a.stream }))).status, 200);
+  const over = at.slice(0, -2) + 'x"}';
+  assert.equal(over.length, CAP + 1);
+  const b = chunked(over.length, over.length, over);
+  assert.equal((await mint({ stream: b.stream })).status, 413);
+});
+
+test('mint: its per-address limit still runs before any of the body is read', async () => {
+  const ip = freshIp();
+  for (let i = 0; i < 10; i++) await withoutTimers(() => mint({ body: JSON.stringify({ encrypted: 'x' }), ip }));
+  const { stream, stats } = chunked(16 * 1024, OVER);
+  assert.equal((await mint({ stream, ip })).status, 429);
+  assert.equal(stats.pulled, 0);
+});
+
+test('mint: a body that is not JSON keeps its existing answer', async () => {
+  assert.equal((await mint({ body: 'not json' })).status, 500);
+});
+
+test('ack: a chunked body over the cap gets the same refusal as a malformed one, and reading stops near the cap', async () => {
+  const { stream, stats } = chunked(16 * 1024, OVER);
+  const res = await ack({ stream });
+  const plain = await ack({ body: 'not json' });
+  assert.equal(res.status, 401);
+  assert.equal(plain.status, 401);
+  assert.deepEqual(await res.json(), await plain.json());
+  assert.ok(stats.pulled <= NEAR, `pulled ${stats.pulled} bytes`);
+  assert.equal(stats.cancelled, true);
+});
+
+test('claim: a chunked body over the cap gets the same refusal as a malformed one, and reading stops near the cap', async () => {
+  process.env.SVRNTY_BETA_ISSUER_FP = 'a'.repeat(40);
+  process.env.SVRNTY_BETA_ISSUER_PUBKEY = 'not-used-before-the-token-parses';
+  try {
+    const { stream, stats } = chunked(16 * 1024, OVER);
+    const res = await claim({ stream });
+    const plain = await claim({ body: 'not json' });
+    assert.equal(res.status, 401);
+    assert.equal(plain.status, 401);
+    assert.deepEqual(await res.json(), await plain.json());
+    assert.ok(stats.pulled <= NEAR, `pulled ${stats.pulled} bytes`);
+    assert.equal(stats.cancelled, true);
+  } finally {
+    delete process.env.SVRNTY_BETA_ISSUER_FP;
+    delete process.env.SVRNTY_BETA_ISSUER_PUBKEY;
+  }
+});
+
+test('no relay route reads a body except through the capped reader', () => {
+  for (const r of ['route.ts', 'ack/route.ts', 'claim/route.ts', 'envelope/route.ts', 'queue/route.ts', '[code]/route.ts']) {
+    const src = readFileSync(join(process.cwd(), 'app/api/relay', r), 'utf8');
+    assert.doesNotMatch(src, /request\.(json|text|arrayBuffer|formData|blob)\(/, r);
+  }
+});
+
+test('the self-host edge caps the bare mint path as well as everything under it', () => {
+  const caddy = readFileSync(join(process.cwd(), 'Caddyfile'), 'utf8');
+  assert.match(caddy, /@relay path \/api\/relay \/api\/relay\/\*\n/);
+  assert.match(caddy, /request_body @relay \{\s*max_size 128KB\s*\}/);
+});
+
+test('a tiny deposit is charged a floor, because the row costs more than its blob', async () => {
+  process.env.RELAY_GLOBAL_DEPOSIT_BYTES_PER_WINDOW = '1024';
+  assert.equal((await deposit(MB, 'a')).status, 200);
+  assert.equal((await deposit(MB2, 'b')).status, 200);
+  assert.equal((await deposit(MB, 'c')).status, 429);
+});
+
+test('a deposit above the floor is charged what it is', async () => {
+  process.env.RELAY_GLOBAL_DEPOSIT_BYTES_PER_WINDOW = '1600';
+  assert.equal((await deposit(MB, 'a'.repeat(800))).status, 200);
+  assert.equal((await deposit(MB2, 'b'.repeat(800))).status, 200);
+  assert.equal((await deposit(MB, 'c')).status, 429);
+});
+
+test('the mailbox byte cap counts bytes, not characters', async () => {
+  process.env.RELAY_MAILBOX_BYTES_CAP = '10';
+  assert.equal((await deposit(MB, 'é'.repeat(5))).status, 200);
+  assert.equal((await deposit(MB, 'a')).status, 429);
+});
+
+test('SQLite here has octet_length (3.43 or newer): older, and every deposit would answer 500', () => {
+  const { v } = new DatabaseSync(':memory:').prepare('SELECT sqlite_version() AS v').get() as { v: string };
+  const [major, minor] = v.split('.').map(Number);
+  assert.ok(major > 3 || (major === 3 && minor >= 43), `SQLite ${v}`);
+});
+
+test('the byte count takes each length from the record header, never reading the blob', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/relay/mailbox-store.ts'), 'utf8');
+  assert.match(src, /SUM\(octet_length\(blob\)\)/);
+  assert.doesNotMatch(src, /CAST\(blob/);
 });
