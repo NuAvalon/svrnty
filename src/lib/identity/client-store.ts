@@ -6,6 +6,7 @@
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
+import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
@@ -644,6 +645,39 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
   } catch {
     return false; // wrong passphrase (GCM auth fail) or any error
   }
+}
+
+// ── Restore key-domain guard ──────────────────────────────
+
+/** Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes. */
+export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
+  for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
+    if (await txGet<unknown>(store, fingerprint)) return true;
+  }
+  return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
+}
+
+/** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
+export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
+  if (!_sessionKey) return false;
+  return keyRecordOpens(await txGet<unknown>('keys', fingerprint), _sessionKey, ENC_VERSION);
+}
+
+/**
+ * Call after the owner's fingerprint is derived and BEFORE any initSessionKey or write. Throws RestoreDomainRefused when this restore
+ * would put the owner's records under a different passphrase than the ones already here. Reads only.
+ * initSessionKey itself is deliberately not the guard: a second identity under another passphrase is legitimate.
+ */
+export async function assertRestoreKeepsOwnerDomain(fingerprint: string, passphrase: string, use: RestoreKeyUse): Promise<void> {
+  const held = await deviceHoldsOwner(fingerprint);
+  const unlocked = isSessionUnlocked();
+  const decision = restoreDomainDecision(use, {
+    held,
+    unlocked,
+    sessionOpens: held && unlocked ? await sessionOpensOwner(fingerprint) : false,
+    passphraseOpens: held && passphrase ? await verifyPassphrase(fingerprint, passphrase) : false,
+  });
+  if (decision === 'refuse') throw new RestoreDomainRefused(use);
 }
 
 // ── PQ key operations ────────────────────────────────────────────
@@ -1613,6 +1647,7 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
 

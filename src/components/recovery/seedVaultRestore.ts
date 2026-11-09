@@ -15,6 +15,7 @@ import {
   storeVault,
   setActiveFingerprint,
   initSessionKey,
+  assertRestoreKeepsOwnerDomain,
 } from '@/lib/identity/client-store';
 import {
   reconstructCanonicalIdentityForRestore,
@@ -146,6 +147,10 @@ export async function restoreIdentityFromSeedVault(
       restored_via: 'seed-phrase-v4' as const,
     },
   };
+
+  // Never write this owner under a different passphrase than the rows already here. This path always re-derives the session,
+  // so the typed passphrase is the only one that counts.
+  await assertRestoreKeepsOwnerDomain(fingerprint, newPassphrase, 'always-derives');
 
   // 3a-pure: derive + persist the passphrase-derived session key BEFORE writing any key material,
   // so storeKey/storeVault encrypt at rest. The stores now fail-closed if this is missing.
