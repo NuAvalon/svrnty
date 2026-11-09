@@ -25,6 +25,12 @@ import { fingerprintMatchesKey } from './fingerprint';
 // shape/content-fp gate ON TOP of the card signature (the mailbox fields live under identity.* so the
 // signature already covers them); validateMailboxPublic re-checks the owner's own cached block on send.
 import { extractValidMailboxFromCard, validateMailboxPublic, type DeviceMailboxPublic } from './device-mailbox';
+// #588 T4 (dark): the beacon key's receiver checks. beacon-key.ts loads its curve library lazily, ONLY when a card actually carries the field.
+import { checkBeaconPublicKey, type BeaconKeyReason } from '../crypto/beacon-key';
+
+/** key_generation is a positive integer below 2^31 (a counter, never a timestamp). */
+const MAX_KEY_GENERATION = 2 ** 31 - 1;
+const isKeyGeneration = (g: unknown): g is number => typeof g === 'number' && Number.isInteger(g) && g >= 1 && g <= MAX_KEY_GENERATION;
 
 // ── §6 Suite-length validation: the ek length IS the suite discriminant ──────────
 // ML-KEM ek (public-key) sizes are bijective with the parameter set, so a valid card needs no
@@ -125,9 +131,13 @@ export async function verifySignedIdentityCard(
   // the signing input — the signer signed the card without them (identityCardSigningInput excludes them).
   const { signature, pq_signature, ...cardFields } = card;
   const envSig = envelopeSignatureOf(signature, pq_signature); // raw: '' / null refuse (#717)
+  // The canonicalizer REFUSES a float / null / NaN anywhere in a signed structure by THROWING. A hostile card from an untrusted carrier can carry
+  // one in any field, so without this guard the "returns false, NEVER throws" contract above was false (measured: classifyImportedCard threw).
+  let signingInput: string;
+  try { signingInput = identityCardSigningInput(cardFields as IdentityCard); } catch { return false; }
   return verifyWithEnvelope(
     DOMAIN_IDENTITY_CARD,
-    identityCardSigningInput(cardFields),
+    signingInput,
     envSig,
     id.public_key,
     pqSigningPublicKey,
@@ -145,6 +155,7 @@ export async function buildSignedIdentityCard(
   classicalPrivateKeyArmored: string,
   classicalPassphrase: string,
   entityType?: 'agent' | 'human' | 'org',
+  beacon?: { publicKey: string; keyGeneration: number },
 ): Promise<SignedIdentityCard> {
   const idData = identity?.identity ?? identity;
   if (!idData?.fingerprint || !idData?.public_key) {
@@ -191,6 +202,15 @@ export async function buildSignedIdentityCard(
     card.identity.mailbox_x25519_pk = dmb.mailbox_x25519_pk;
     card.identity.mailbox_mlkem1024_pk = dmb.mailbox_mlkem1024_pk;
   }
+  // #588 T4 (dark): carry the beacon PUBLIC key + its generation under identity.* (signed). OMITTED when no beacon is given, so every
+  // existing card canonicalizes byte-for-byte as before. The SENDER refuses to sign a key the receiver rule would drop.
+  if (beacon !== undefined) {
+    if (!isKeyGeneration(beacon.keyGeneration)) throw new Error('buildSignedIdentityCard: beacon key_generation must be a positive integer below 2^31');
+    const chk = await checkBeaconPublicKey(beacon.publicKey);
+    if (!chk.ok) throw new Error(`buildSignedIdentityCard: beacon key refused (${chk.reason})`);
+    card.identity.beacon_public_key = beacon.publicKey;
+    card.identity.beacon_key_generation = beacon.keyGeneration;
+  }
   // Build-time self-consistency guard (N2 class-killer — Archie ⚡9693 + Hypatia's claim-honesty vote):
   // a card whose canonical fingerprint claims 4 keys MUST carry all 4. Assert the card binds to its
   // OWN carried keys BEFORE it can be constructed, so a self-inconsistent card (fp≠carried-keys — e.g.
@@ -230,6 +250,20 @@ export interface ImportDisposition {
    * sub-disposition: a valid signer may carry a mailbox but no pq (and vice-versa).
    */
   deviceMailbox: DeviceMailboxPublic | null;
+  /**
+   * #588 T4 (dark): the VALIDATED beacon key + generation to STORE on the contact, or null. Non-null ONLY under a VALID signature (branch 4) and a key
+   * that passes checkBeaconPublicKey and the generation / anti-rollback rules. Dropped by construction in branches 1/2/3. A drop never rejects the card.
+   */
+  beaconKey: { publicKey: string; keyGeneration: number } | null;
+  /** Why a PRESENT beacon key was dropped under a valid signature (a fixed word, never the input). Undefined when there was no beacon or it was kept. */
+  beaconKeyDropped?: BeaconKeyReason | 'generation' | 'rollback' | 'conflict';
+}
+
+export interface ClassifyOptions {
+  /** My own beacon public key: a contact's card carrying it is dropped (own-key). */
+  ownBeaconPublicKey?: string;
+  /** The highest beacon key already stored for this identity: a lower generation is a rollback; the same generation with another key is a conflict. */
+  knownBeacon?: { publicKey: string; keyGeneration: number };
 }
 
 /**
@@ -245,7 +279,7 @@ export interface ImportDisposition {
  * The core `verifySignedIdentityCard` collapses 2 and 3 into `false`; we split them here on the
  * PRESENCE of a non-empty `signature` field (branch 2 never calls verify).
  */
-export async function classifyImportedCard(card: any): Promise<ImportDisposition> {
+export async function classifyImportedCard(card: any, opts: ClassifyOptions = {}): Promise<ImportDisposition> {
   const id = card?.identity;
   // Malformed classical identity → branch 1 (nothing to import, nothing to trust).
   if (
@@ -253,7 +287,7 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     typeof id.public_key !== 'string' || id.public_key.length === 0 ||
     typeof id.fingerprint !== 'string' || id.fingerprint.length === 0
   ) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null };
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null, beaconKey: null };
   }
   // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
   // never calls verify, and this decides classical-import for every branch.
@@ -261,34 +295,35 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     kem_public_key: id.pq_kem_public_key,
     sig_public_key: id.pq_sig_public_key,
   }))) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null };
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null, beaconKey: null };
   }
   // fp↔key OK → the classical contact imports for branches 2/3/4.
   const hasSig = typeof card.signature === 'string' && card.signature.length > 0;
   // BRANCH 2: no signature → classical-only, quiet. Must NOT alarm (benign transition-era peer).
   if (!hasSig) {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2, deviceMailbox: null };
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2, deviceMailbox: null, beaconKey: null };
   }
   // Signature present → verify (re-checks fp↔key internally; keeps verify self-contained).
   const valid = await verifySignedIdentityCard(card as SignedIdentityCard);
   // BRANCH 3: present but invalid → classical-only, LOUD. Reserve the tamper alarm for THIS only.
   if (!valid) {
-    return { importClassical: true, pq: null, alarm: 'loud', branch: 3, deviceMailbox: null };
+    return { importClassical: true, pq: null, alarm: 'loud', branch: 3, deviceMailbox: null, beaconKey: null };
   }
   // BRANCH 4: valid signature. The seal-target (device-mailbox) is now authenticated under identity.* —
   // extract + content-fp-validate it ONCE here (orthogonal to the pq suite decision below). Absent/invalid
   // → null (emit under-reveals). Dropped by construction in branches 1/2/3 above (no valid signature).
   const deviceMailbox = extractValidMailboxFromCard(id);
+  const beacon = await classifyBeaconKey(id, opts);
   // pq sub-disposition:
   const kem = typeof id.pq_kem_public_key === 'string' ? id.pq_kem_public_key : '';
   // 4a: absent/empty pq_kem under a valid sig → legit v1/no-PQ signer. Quiet, no pq.
   if (kem === '') {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a', deviceMailbox };
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a', deviceMailbox, ...beacon };
   }
   const suite = suiteFromKemLength(kem);
   // 4c: valid sig, unsupported/malformed suite length → sender bug, NOT tampering. Soft-info, no pq.
   if (!suite) {
-    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c', deviceMailbox };
+    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c', deviceMailbox, ...beacon };
   }
   // 4b: valid sig + supported suite → STORE the authenticated pq (both keys, as carried).
   const sig = typeof id.pq_sig_public_key === 'string' ? id.pq_sig_public_key : '';
@@ -299,5 +334,24 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     branch: '4b',
     suite,
     deviceMailbox,
+    ...beacon,
   };
+}
+
+/** #588 T4 (dark): decide what to do with the beacon fields of a card whose signature already VERIFIED. Never throws; a drop keeps the card. */
+async function classifyBeaconKey(
+  id: any,
+  opts: ClassifyOptions,
+): Promise<{ beaconKey: ImportDisposition['beaconKey']; beaconKeyDropped?: ImportDisposition['beaconKeyDropped'] }> {
+  const hasKey = id?.beacon_public_key !== undefined, hasGen = id?.beacon_key_generation !== undefined;
+  if (!hasKey && !hasGen) return { beaconKey: null }; // a card from before the field: nothing to say
+  if (!hasKey || !isKeyGeneration(id.beacon_key_generation)) return { beaconKey: null, beaconKeyDropped: 'generation' };
+  const chk = await checkBeaconPublicKey(id.beacon_public_key, opts.ownBeaconPublicKey);
+  if (!chk.ok) return { beaconKey: null, beaconKeyDropped: chk.reason };
+  const k = opts.knownBeacon;
+  if (k) {
+    if (id.beacon_key_generation < k.keyGeneration) return { beaconKey: null, beaconKeyDropped: 'rollback' };
+    if (id.beacon_key_generation === k.keyGeneration && id.beacon_public_key !== k.publicKey) return { beaconKey: null, beaconKeyDropped: 'conflict' };
+  }
+  return { beaconKey: { publicKey: id.beacon_public_key as string, keyGeneration: id.beacon_key_generation as number } };
 }

@@ -234,6 +234,12 @@ export interface IdentityCard {
     mailbox_fp?: string;            // 64 hex — SHA256(x25519_pub ‖ mlkem1024_pub)
     mailbox_x25519_pk?: string;     // 64 hex — 32B X25519 public
     mailbox_mlkem1024_pk?: string;  // 3136 hex — 1568B ML-KEM-1024 encapsulation key
+    // ── #588 T4 mutual-trust beacon key (DARK) ──────────────────────────────────────────────────────
+    // The identity's BabyJubJub beacon PUBLIC key (base64 of the pinned 32-byte encoding in crypto/beacon-key.ts) and its monotonic
+    // generation. Under identity.* so the card signature covers both (a swap or a strip breaks it). OPTIONAL + byte-preserving: ABSENT on every
+    // card built without a beacon key, so such a card canonicalizes exactly as before. A receiver stores them ONLY under a valid signature.
+    beacon_public_key?: string;
+    beacon_key_generation?: number;
   };
   // Self-attested entity type, bound in the signed card (identityCardSigningInput canonicalizes the whole
   // card minus signature/pq_signature, so a top-level entity_type IS signed) → immutable for the identity's
