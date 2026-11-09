@@ -6,6 +6,7 @@
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
+import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
@@ -132,6 +133,8 @@ async function deriveHmacMasterSalt(keSalt: Uint8Array): Promise<Uint8Array> {
  * The derived CryptoKey is held in memory — lost on tab close.
  */
 export async function initSessionKey(passphrase: string): Promise<void> {
+  // First, before the key changes: the old verified set must never meet a new, unverified key.
+  _unlockVerifiedOwners = new Set();
   // Check if we have an existing salt stored for this browser
   const setting = await txGet<{ key: string; value: string }>('settings', 'key_encryption_salt');
   let salt: Uint8Array;
@@ -147,6 +150,8 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // enc-b: derive the two HMAC subkeys {index, manifest} from the passphrase via the salt-(b)
   // HMAC-master. Contact-record AES reuses _sessionKey (◆5701) — no separate AES key derived here.
   _contactKeys = await deriveContactCryptoKeys(passphrase, await deriveHmacMasterSalt(salt), PBKDF2_ITERATIONS);
+  // Before any migration below: decides which owners those migrations may touch.
+  _unlockVerifiedOwners = await ownersVerifiedBySession();
   // enc-b B5: on every unlock, heal any legacy plaintext-at-rest contacts to encrypted, then establish
   // (first run / post-upgrade) or verify the per-owner book manifest. Best-effort + resumable — it
   // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
@@ -166,6 +171,50 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   await ensureDeviceMailboxesOnUnlock();
 }
 
+/**
+ * Owners whose existing encrypted records open under the current session key. initSessionKey doesn't validate the passphrase, so this
+ * is what stands between a mistyped passphrase and a write: anything that heals plaintext or creates a record at unlock runs only for
+ * these owners. An owner with no encrypted rows can't be verified and stays as it was; a key lost under a typo can't be recovered.
+ */
+let _unlockVerifiedOwners: Set<string> = new Set();
+
+const OWNER_KEY_STORES = ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox'];
+const MAX_CONTACT_SAMPLES = 3;
+
+async function sessionVerifiesOwner(owner: string, contactRows: Array<Record<string, unknown>>): Promise<boolean> {
+  if (!_sessionKey) return false;
+  for (const store of OWNER_KEY_STORES) {
+    if (await keyRecordOpens(await txGet<unknown>(store, owner), _sessionKey, ENC_VERSION)) return true;
+  }
+  for (const rec of contactRows.filter((r) => r.enc_version && typeof r.ciphertext === 'string').slice(0, MAX_CONTACT_SAMPLES)) {
+    try {
+      await decryptContactIfNeeded(rec);
+      return true;
+    } catch {
+      /* wrong key for this row: try the next sample */
+    }
+  }
+  return false;
+}
+
+/** Reads only, and never throws into unlock: any failure means nobody is verified, so nothing is written. */
+async function ownersVerifiedBySession(): Promise<Set<string>> {
+  const verified = new Set<string>();
+  try {
+    const contacts = await txGetAll<Record<string, unknown>>('contacts');
+    const owners = new Set<string>((await listIdentities()).map((i) => i.fingerprint));
+    for (const c of contacts) if (typeof c?.owner_fingerprint === 'string') owners.add(c.owner_fingerprint);
+    for (const owner of owners) {
+      if (await sessionVerifiesOwner(owner, contacts.filter((c) => c?.owner_fingerprint === owner))) verified.add(owner);
+    }
+    const unverified = owners.size - verified.size;
+    if (unverified > 0) console.info(`[enc-b] ${unverified} owner(s) could not be verified on this unlock; left as they were`);
+  } catch {
+    verified.clear();
+  }
+  return verified;
+}
+
 /** Check if the session is unlocked (key available in memory). */
 export function isSessionUnlocked(): boolean {
   return _sessionKey !== null;
@@ -176,6 +225,7 @@ export function lockSession(): void {
   _sessionKey = null;
   _sessionSalt = null;
   _contactKeys = null;
+  _unlockVerifiedOwners = new Set();
   fireSessionLockHooks(); // P1#1: drop the notes-store key (+ any registered session-scoped key) on lock
 }
 
@@ -601,7 +651,7 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
 
   // Legacy unencrypted record — return as-is
   // Auto-migrate: re-encrypt if session key is available
-  if (_sessionKey && record.privateKey) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.privateKey) {
     const encrypted = await encryptKeyData({ privateKey: record.privateKey, passphrase: record.passphrase });
     await txPut('keys', { fingerprint, ...encrypted });
   }
@@ -646,6 +696,39 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
   }
 }
 
+// ── Restore key-domain guard ──────────────────────────────
+
+/** Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes. */
+export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
+  for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
+    if (await txGet<unknown>(store, fingerprint)) return true;
+  }
+  return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
+}
+
+/** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
+export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
+  if (!_sessionKey) return false;
+  return keyRecordOpens(await txGet<unknown>('keys', fingerprint), _sessionKey, ENC_VERSION);
+}
+
+/**
+ * Call after the owner's fingerprint is derived and BEFORE any initSessionKey or write. Throws RestoreDomainRefused when this restore
+ * would put the owner's records under a different passphrase than the ones already here. Reads only.
+ * initSessionKey itself is deliberately not the guard: a second identity under another passphrase is legitimate.
+ */
+export async function assertRestoreKeepsOwnerDomain(fingerprint: string, passphrase: string, use: RestoreKeyUse): Promise<void> {
+  const held = await deviceHoldsOwner(fingerprint);
+  const unlocked = isSessionUnlocked();
+  const decision = restoreDomainDecision(use, {
+    held,
+    unlocked,
+    sessionOpens: held && unlocked ? await sessionOpensOwner(fingerprint) : false,
+    passphraseOpens: held && passphrase ? await verifyPassphrase(fingerprint, passphrase) : false,
+  });
+  if (decision === 'refuse') throw new RestoreDomainRefused(use);
+}
+
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
@@ -667,7 +750,7 @@ export async function loadPQKeys(fingerprint: string): Promise<any | null> {
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && record.bundle) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.bundle) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.bundle), passphrase: '' });
     await txPut('pq_keys', { fingerprint, ...encrypted });
   }
@@ -696,7 +779,7 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && record.vault) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.vault) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.vault), passphrase: '' });
     await txPut('vaults', { fingerprint, ...encrypted });
   }
@@ -795,6 +878,7 @@ async function ensureDeviceMailboxesOnUnlock(): Promise<void> {
   }
   for (const idRec of identities) {
     const fp = idRec.fingerprint;
+    if (!_unlockVerifiedOwners.has(fp)) continue;
     try {
       const existing = await loadDeviceMailbox(fp); // null = absent; throw = present-but-unreadable
       if (existing) continue; // already has a readable mailbox — nothing to do
@@ -844,7 +928,7 @@ export async function loadShards(fingerprint: string): Promise<ShardsData | null
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && record.shards_data) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.shards_data) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.shards_data), passphrase: '' });
     await txPut('shards', { fingerprint, ...encrypted });
   }
@@ -1306,6 +1390,7 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
   // 1. Migrate plaintext-at-rest contacts (no enc_version) → encrypted envelope, in place.
   for (const rec of stored) {
     if (rec && rec.enc_version) continue; // already encrypted — idempotent skip
+    if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
     try {
       await txPut('contacts', await buildStoredContact(rec as unknown as ContactRecord));
     } catch (e) {
@@ -1318,6 +1403,7 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
     const healed = await txGetAll<Record<string, unknown>>('contacts');
     const byOwner = new Map<string, ContactRecord[]>();
     for (const rec of healed) {
+      if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
       const c = await decryptContactIfNeeded(rec);
       const list = byOwner.get(c.owner_fingerprint) ?? [];
       list.push(c);
@@ -1375,6 +1461,7 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
   let stored: Array<Record<string, unknown>>;
   try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
   for (const rec of stored) {
+    if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
     try {
       const c = await decryptContactIfNeeded(rec);
       // ★★ edgeTrusted (shared reveal derivation): explicit c.trusted===false WINS over trust_level (?? semantics).
@@ -1417,6 +1504,7 @@ async function purgeAffirmWireMutualTaintOnUnlock(): Promise<void> {
   try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
   let scrubbed = 0;
   for (const rec of stored) {
+    if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
     try {
       const c = await decryptContactIfNeeded(rec);
       const res = scrubAffirmWireMutual(c.mutual);
@@ -1457,6 +1545,7 @@ async function eagerMigrateIdentityStoresOnUnlock(): Promise<void> {
   }
   for (const idRec of identities) {
     const fp = idRec.fingerprint;
+    if (!_unlockVerifiedOwners.has(fp)) continue;
     try { await loadKey(fp); } catch (e) { console.warn('[enc-b] eager key migrate skipped', fp, e); }
     try { await loadPQKeys(fp); } catch (e) { console.warn('[enc-b] eager pq_keys migrate skipped', fp, e); }
     try { await loadVault(fp); } catch (e) { console.warn('[enc-b] eager vault migrate skipped', fp, e); }
@@ -1613,6 +1702,7 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
 

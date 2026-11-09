@@ -85,7 +85,8 @@ test('V4 two envelopes, one acked, one held -> the v4 line (acked < polled and h
 test('V5 empty list -> Caught up.; malformed 200 ({} / null / "x" / 7) -> Could not check right now.; refused 401/403/500/503 -> same', async () => {
   assert.equal((await run(relay({ queue: [] }))).note, CAUGHT);
   for (const b of [{}, null, 'x', 7]) { const r = await run(relay({ queue: b })); assert.equal(r.note, FAILED, JSON.stringify(b)); assert.equal(r.status, 'unreadable'); }
-  for (const s of [401, 403, 500, 503]) { const r = await run(relay({ queue: {}, queueStatus: s })); assert.equal(r.note, FAILED, String(s)); assert.equal(r.status, 'rejected'); }
+  for (const s of [401, 403, 500]) { const r = await run(relay({ queue: {}, queueStatus: s })); assert.equal(r.note, FAILED, String(s)); assert.equal(r.status, 'rejected'); }
+  { const r = await run(relay({ queue: {}, queueStatus: 503 })); assert.equal(r.note, FAILED, '503'); assert.equal(r.status, 'busy'); } // a single shed poll maps to the same line; retries live in refreshNoteAfter
 });
 test('V6 locked (no deps) -> Unlock...; a lock landing MID-poll (cycle ended) -> Unlock..., never Caught up.', async () => {
   assert.equal(refreshNoteFor(await pollLiveBookOnce({}, { buildDeps: async () => null })), LOCKED);

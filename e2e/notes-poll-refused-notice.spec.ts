@@ -65,6 +65,46 @@ for (const variant of MATRIX) {
       await expect(notice).toHaveCount(0, { timeout: 20_000 });
     });
 
+    test('NOT A 401 (403): three refused polls say "refused" with NO clock hint', async ({ page }) => {
+      test.setTimeout(120_000);
+      await refuse(page, 403);
+      await genesisReceiver(page, 'Alice Forbidden');
+      await seedAliceWithBob(page);
+      await openChat(page);
+
+      await expect(page.getByTestId('notes-poll-refused-text')).toHaveText(POLL_REFUSED_COPY.never, { timeout: 30_000 });
+      await expect(page.getByTestId('notes-poll-refused-hint')).toHaveCount(0);
+    });
+
+    test('BUSY (429): nothing is shown for 30 s, then only the plain line with no clock hint; an answered poll clears it', async ({ page }) => {
+      test.setTimeout(180_000);
+      // One handler whose answer flips, so no poll can slip through to the real relay between two routes: polls never overlap, so one slow
+      // real poll would hold back every later one.
+      let busy = false;
+      await page.context().route(QUEUE, (r) =>
+        r.fulfill({ status: busy ? 429 : 200, contentType: 'application/json', body: busy ? '{"error":"rate_limited"}' : '[]' }),
+      );
+      await genesisReceiver(page, 'Alice Busy');
+      await seedAliceWithBob(page);
+      await openChat(page);
+      await page.waitForTimeout(3_000);
+
+      busy = true;
+      const startedAt = Date.now();
+      const notice = page.getByTestId('notes-poll-refused-notice');
+      // Well past the three polls that would show the refused notice, and still silent.
+      await page.waitForTimeout(20_000);
+      await expect(notice).toHaveCount(0);
+
+      await expect(page.getByTestId('notes-poll-refused-text')).toHaveText(POLL_REFUSED_COPY.busy, { timeout: 40_000 });
+      expect(Date.now() - startedAt, 'not before 30 s of continuous busy').toBeGreaterThanOrEqual(30_000);
+      await expect(page.getByTestId('notes-poll-refused-hint')).toHaveCount(0);
+      await expect(notice).not.toContainText(/refused|date and time|caught up|up to date/i);
+
+      busy = false;
+      await expect(notice).toHaveCount(0, { timeout: 20_000 });
+    });
+
     test('REFUSED after an answered poll: the notice names the time of the last answered poll; refused again then answered clears it', async ({ page }) => {
       test.setTimeout(120_000);
       await answer(page, []);
