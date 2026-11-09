@@ -41,6 +41,8 @@ export function middleware(request: NextRequest) {
   const csp = buildCsp(nonce, { dev: process.env.NODE_ENV === 'development' });
   const headers = new Headers(request.headers);
   headers.set('x-nonce', nonce);
+  // The layout can't see the path otherwise. set() replaces anything the client sent.
+  headers.set('x-svrnty-path', pathname);
   headers.set('content-security-policy', csp);
 
   const response = route(request, headers);

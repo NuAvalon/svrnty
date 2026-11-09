@@ -1,4 +1,4 @@
-// Shown on the home page while svrnty isn't live. Plain text and one mailto link: no state, no script of its own.
+// Shown on the home page when SVRNTY_NOT_LIVE_BANNER=on (src/lib/not-live-banner.ts). Plain text and one mailto link: no state, no script of its own.
 const CONTACT = 'nuavalon@proton.me';
 
 export function NotLiveBanner() {

@@ -30,6 +30,8 @@ services:
         NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE: ${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE:-}
     image: svrnty:selfhost
     environment:
+      # "on" shows the "not live yet" notice on the home page. Read at runtime: restart to change it, no rebuild.
+      SVRNTY_NOT_LIVE_BANNER: ${SVRNTY_NOT_LIVE_BANNER:-off}
       # The Python crypto backend (the "registration" service). ALL /api/satellite/*
       # routes proxy here — register / bind / onion / route / allowed / trust-psi — so
       # it's REQUIRED for a full sovereign relay (without it

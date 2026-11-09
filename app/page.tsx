@@ -16,7 +16,6 @@ import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
 import { useMailNotifications } from '@/components/notes/useMailNotifications';
 import { TopNav } from '@/components/nav/TopNav';
-import { NotLiveBanner } from '@/components/NotLiveBanner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
@@ -76,7 +75,7 @@ const shellBg: CSSProperties = {
   fontFamily: E.fontSans,
 };
 
-function HomeContent() {
+export default function Home() {
   const [appState, setAppState] = useState<AppState>('checking');
   const [identity, setIdentity] = useState<any>(null);
   // The report note a backup import/restore leaves for the owner. Held here because the gate and the Identity tab each mount their own SoverentityFrontend.
@@ -1068,15 +1067,5 @@ function HomeContent() {
         </p>
       </footer>
     </div>
-  );
-}
-
-// One wrapper so the notice shows in every state of the page (checking, locked, gate, app).
-export default function Home() {
-  return (
-    <>
-      <NotLiveBanner />
-      <HomeContent />
-    </>
   );
 }
