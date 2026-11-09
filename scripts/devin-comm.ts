@@ -27,6 +27,7 @@ import { parseRelayList, relayBudgetShare, unconfirmedReason } from '../src/lib/
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { blockedInBook, recipientGateFromBook } from '../src/lib/sync/contact-update-gate';
+import { canonicalAuthorityPin } from '../src/lib/identity/authority-pin';
 import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -373,6 +374,7 @@ async function main() {
             passphrase: owner.passphrase,
             kemPublicKeyB64: myId.pq_kem_public_key,
             sigPublicKeyB64: myId.pq_sig_public_key,
+            ...(canonicalAuthorityPin(myId.next_authority_commitment) ? { nextAuthorityCommitment: canonicalAuthorityPin(myId.next_authority_commitment)! } : {}), // our own pin rides the signed response
           },
           target,
           { isBlocked: blockedInBook(store.listContacts()), relayBase: RELAY },
@@ -449,6 +451,7 @@ async function main() {
         trust_level: rec.trust_level,
         pq_sig_public_key: rec.pq_sig_public_key,
         pq_kem_public_key: rec.pq_kem_public_key,
+        ...(rec.next_authority_commitment ? { next_authority_commitment: rec.next_authority_commitment } : {}), // the pin the verified joiner response carried (canonical-checked at the arrival)
       });
       delete g[owner.fingerprint][fp];
       if (!Object.keys(g[owner.fingerprint]).length) delete g[owner.fingerprint];
