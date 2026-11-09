@@ -16,7 +16,7 @@ const ASK =
 const GLOBAL_LINE = 'Lets people see that your device received their notes, and roughly when you were online.';
 const CONTACT_LINE = 'Lets this person see that your device received their note, and roughly when you were online.';
 
-async function genesis(page: Page, name: string) {
+async function genesis(page: Page, name: string, beforeEnter?: () => Promise<void>) {
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
   await page.getByPlaceholder('Your name').fill(name);
@@ -26,6 +26,7 @@ async function genesis(page: Page, name: string) {
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
   await page.getByRole('button', { name: /^start$/i }).click();
   await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
+  if (beforeEnter) await beforeEnter(); // the identity is stored, the app (and the Delivery panel) is not mounted yet
   await page.getByRole('button', { name: /i have it/i }).click();
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 20_000 });
 }
@@ -49,6 +50,7 @@ async function activeFingerprint(page: Page): Promise<string> {
   return fp as string;
 }
 
+/** The documented plaintext "restored on this device" marker (what a restore path with no session key leaves). */
 async function plantRestoredMarker(page: Page, fp: string) {
   await page.evaluate(
     (f) =>
@@ -83,7 +85,7 @@ for (const [vpName, viewport] of VIEWPORTS) {
     test.setTimeout(150_000);
     if (viewport) test.use({ viewport });
 
-    test('upgrade notice shows once with the exact words, the switch flips and sticks', async ({ page }) => {
+    test('upgrade notice shows with the exact words, is dismissed, and the switch flips', async ({ page }) => {
       await genesis(page, 'Delivery Owner');
       await openIdentity(page);
       await expect(panel(page)).toHaveAttribute('data-state', 'on');
@@ -100,20 +102,18 @@ for (const [vpName, viewport] of VIEWPORTS) {
       await expect(page.getByTestId('delivery-off')).toHaveAttribute('aria-pressed', 'true');
       await expect(page.getByTestId('delivery-on')).toHaveAttribute('aria-pressed', 'false');
 
-      // read back from the sealed store, not from component state: leave the tab and come back
+      // a tab switch only: the panel may stay mounted, so this proves the screen keeps the choice, not a store read-back (that is the R2a store tests)
       await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
       await openIdentity(page);
       await expect(panel(page)).toHaveAttribute('data-state', 'off');
-      await expect(page.getByTestId('delivery-upgrade-notice')).toHaveCount(0); // once, not every visit
+      await expect(page.getByTestId('delivery-upgrade-notice')).toHaveCount(0);
     });
 
-    test('NEG: after a restore the owner is asked once, nothing is chosen for them, and No sticks', async ({ page }) => {
-      await genesis(page, 'Delivery Restored');
-      const fp = await activeFingerprint(page);
-      await plantRestoredMarker(page, fp);
+    test('NEG: after a restore the owner is asked, nothing is chosen for them, and No is kept across a tab switch', async ({ page }) => {
+      await genesis(page, 'Delivery Restored', async () => plantRestoredMarker(page, await activeFingerprint(page)));
       await openIdentity(page);
 
-      await expect(panel(page)).toHaveAttribute('data-state', 'unknown');
+      await expect(panel(page)).toHaveAttribute('data-state', 'ask');
       await expect(page.getByTestId('delivery-restore-ask')).toContainText(ASK);
       await expect(page.getByTestId('delivery-upgrade-notice')).toHaveCount(0);
       await expect(page.getByTestId('delivery-on')).toHaveCount(0); // no switch until the question is answered
@@ -125,15 +125,14 @@ for (const [vpName, viewport] of VIEWPORTS) {
 
       await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
       await openIdentity(page);
-      await expect(panel(page)).toHaveAttribute('data-state', 'off'); // asked once
+      await expect(panel(page)).toHaveAttribute('data-state', 'off');
       await expect(page.getByTestId('delivery-restore-ask')).toHaveCount(0);
     });
 
     test('restore ask: Yes turns it on', async ({ page }) => {
-      await genesis(page, 'Delivery Yes');
-      await plantRestoredMarker(page, await activeFingerprint(page));
+      await genesis(page, 'Delivery Yes', async () => plantRestoredMarker(page, await activeFingerprint(page)));
       await openIdentity(page);
-      await expect(panel(page)).toHaveAttribute('data-state', 'unknown');
+      await expect(panel(page)).toHaveAttribute('data-state', 'ask');
       await page.getByTestId('delivery-restore-yes').click();
       await expect(panel(page)).toHaveAttribute('data-state', 'on');
       await expect(page.getByTestId('delivery-upgrade-notice')).toHaveCount(0);
