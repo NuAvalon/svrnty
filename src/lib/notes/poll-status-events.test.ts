@@ -205,8 +205,8 @@ test('NEG v3: 3 × 401 → "refused" + the clock hint', async () => {
   assert.equal(n.hint, POLL_REFUSED_COPY.hint);
 });
 
-test('NEG 3 × 403 and 3 × 500 → "refused", NO clock hint: a wrong clock yields a 401, not these', async () => {
-  for (const code of [403, 500]) {
+test('NEG 3 × 403 and 3 × 400 → "refused", NO clock hint: a wrong clock yields a 401, not these', async () => {
+  for (const code of [403, 400]) {
     __resetPollStatusForTest();
     const f = relayKinds([code]);
     for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
@@ -214,6 +214,73 @@ test('NEG 3 × 403 and 3 × 500 → "refused", NO clock hint: a wrong clock yiel
     assert.equal(n.text, "Couldn't check for new messages. The relay refused this device's request.", String(code));
     assert.equal(n.hint, undefined, String(code));
   }
+});
+
+test('copy: a relay failure says the relay had a problem, verbatim, with NO clock hint', () => {
+  assert.deepEqual(pollRefusedNotice({ refused: true, lastOkAt: 42, kind: 'relay-error' }, fmt), {
+    text: "Couldn't check for new messages since T42. The relay ran into a problem; it will try again.",
+  });
+  assert.deepEqual(pollRefusedNotice({ refused: true, kind: 'relay-error' }, fmt), {
+    text: "Couldn't check for new messages. The relay ran into a problem; it will try again.",
+  });
+});
+
+test('copy: the relay-failure lines never claim a refusal or anything NEVER_SAY forbids', () => {
+  for (const line of [POLL_REFUSED_COPY.relayErrorSince('T1'), POLL_REFUSED_COPY.relayErrorNever]) {
+    assert.doesNotMatch(line, /refused/i);
+    for (const re of NEVER_SAY) assert.doesNotMatch(line, re);
+  }
+});
+
+test('NEG 3 × 500, 502, 504, 599 → the relay had a problem: never "refused", NO clock hint', async () => {
+  for (const code of [500, 502, 504, 599]) {
+    __resetPollStatusForTest();
+    const f = relayKinds([code]);
+    for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+    const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
+    assert.equal(n.text, "Couldn't check for new messages. The relay ran into a problem; it will try again.", String(code));
+    assert.equal(n.hint, undefined, String(code));
+  }
+});
+
+test('NEG 2 × 500 shows nothing yet: a relay failure needs the same 3 polls in a row', async () => {
+  const f = relayKinds([500]);
+  for (let i = 0; i < 2; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  assert.equal(getPollRefusedReport().refused, false);
+});
+
+test('NEG 499 is still a refusal: only a 5xx is the relay failing', () => {
+  for (let i = 0; i < 3; i++) reportPollStatus('rejected', 1000, 499);
+  const r = getPollRefusedReport();
+  assert.ok(r.refused && r.kind === 'refused');
+});
+
+test('NEG no status known: a rejected poll stays "refused", as before', () => {
+  for (let i = 0; i < 3; i++) reportPollStatus('rejected', 1000);
+  const r = getPollRefusedReport();
+  assert.ok(r.refused && r.kind === 'refused');
+});
+
+test('NEG the wording follows the LATEST failing poll: 401, 401, 500 → relay problem, no hint', async () => {
+  const f = relayKinds([401, 401, 500]);
+  for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
+  assert.match(n.text, /ran into a problem/);
+  assert.equal(n.hint, undefined);
+});
+
+test('NEG the wording follows the LATEST failing poll: 500, 500, 401 → refused + hint', async () => {
+  const f = relayKinds([500, 500, 401]);
+  for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
+  assert.match(n.text, /refused/);
+  assert.equal(n.hint, POLL_REFUSED_COPY.hint);
+});
+
+test('NEG an answered poll clears a relay-failure notice', async () => {
+  const f = relayKinds([500, 500, 500, 200]);
+  for (let i = 0; i < 4; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  assert.equal(getPollRefusedReport().refused, false);
 });
 
 test('NEG the hint follows the LATEST failing poll: 401, 401, 403 → no hint; 403, 403, 401 → hint', async () => {
