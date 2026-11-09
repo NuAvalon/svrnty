@@ -11,6 +11,9 @@ import { checkMailboxRateLimit, getClientIP } from '@/lib/relay/mailbox-rate-lim
 import { relayDiskFull } from '@/lib/relay/disk-watermark';
 import { dbPath } from '@/lib/relay/mailbox-store';
 import { logDeposit429 } from '@/lib/relay/deposit-429-log';
+import { readBodyCapped } from '@/lib/relay/read-body-capped';
+import { isValidMailboxId } from '@/lib/relay/mailbox-id';
+import { chargeDepositBudget, depositCharge, depositBudgetAllows } from '@/lib/relay/deposit-budget';
 
 // The uniform deposit ack — identical for every mailbox state (I-4). Never varies on R.
 const UNIFORM_ACK = { status: 'queued' as const };
@@ -38,11 +41,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Relay storage full.' }, { status: 429 });
     }
 
-    const body = await request.json().catch(() => null);
+    // Content-Length is optional, so the cap above can't be the only one: stop reading once a body passes it.
+    const raw = await readBodyCapped(request, cfg.maxPayloadBytes);
+    if (raw === null) return NextResponse.json({ error: 'Payload too large.' }, { status: 413 });
+    let body: { mailbox_id?: unknown; blob?: unknown } | null = null;
+    try { body = JSON.parse(new TextDecoder().decode(raw)); } catch { /* falls through to the 400 below */ }
     const mailboxId = body?.mailbox_id;
     const blob = body?.blob;
+    if (!isValidMailboxId(mailboxId)) return NextResponse.json({ error: 'Missing or invalid field.' }, { status: 400 });
 
-    const result = depositEnvelope(mailboxId, blob, now);
+    // One budget for everyone: refusing for the rest of this window beats filling the disk and refusing until the TTLs expire. Never per-mailbox (I-4).
+    const blobBytes = typeof blob === 'string' ? Buffer.byteLength(blob) : 0;
+    const charge = depositCharge(blobBytes);
+    if (!depositBudgetAllows(charge, now)) {
+      logDeposit429('global_budget', now);
+      return NextResponse.json({ error: 'Relay busy.' }, { status: 429 });
+    }
+
+    const result = depositEnvelope(mailboxId, blob as string, now);
     if (!result.ok) {
       if (result.status === 429) {
         logDeposit429('mailbox_cap', now);
@@ -51,6 +67,7 @@ export async function POST(request: Request) {
       if (result.status === 413) return NextResponse.json({ error: 'Payload too large.' }, { status: 413 });
       return NextResponse.json({ error: 'Missing or invalid field.' }, { status: 400 });
     }
+    chargeDepositBudget(charge, now);
     return NextResponse.json(UNIFORM_ACK);
   } catch {
     return NextResponse.json({ error: 'Failed to deposit.' }, { status: 500 });

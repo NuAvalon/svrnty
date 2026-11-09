@@ -10,9 +10,10 @@ import { CLIENT_IP_HEADER } from './client-ip';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { resetMailboxStore } from './mailbox-store';
+import { deriveMailboxId } from './mailbox-auth';
 
 const IP = '203.0.113.77'; // distinctive, so a leak is a plain substring match
-const MBX = 'mbx_429_log_probe';
+const MBX = deriveMailboxId('A'.repeat(64));
 const BLOB = 'BLOB_429_LOG_PROBE';
 
 let lines: string[] = [];
@@ -91,11 +92,11 @@ test('T4 no line carries the IP, the mailbox id or the blob (either reason)', as
   assert.equal(await deposit(IP), 429); // rate_limit
   process.env.RELAY_RATE_LIMIT_MAX = '100';
   process.env.RELAY_MAILBOX_CAP = '1';
-  assert.equal(await deposit('198.51.100.9', 'mbx_other'), 200);
-  assert.equal(await deposit('198.51.100.9', 'mbx_other'), 429); // mailbox_cap
+  assert.equal(await deposit('198.51.100.9', deriveMailboxId('C'.repeat(64))), 200);
+  assert.equal(await deposit('198.51.100.9', deriveMailboxId('C'.repeat(64))), 429); // mailbox_cap
   assert.ok(lines.length >= 2, 'both refusals logged (CONTROL: the capture saw output)');
   for (const l of lines) {
-    for (const secret of [IP, '198.51.100.9', MBX, 'mbx_other', BLOB]) {
+    for (const secret of [IP, '198.51.100.9', MBX, deriveMailboxId('C'.repeat(64)), BLOB]) {
       assert.ok(!l.includes(secret), `log line leaks ${secret}`);
     }
   }
@@ -126,8 +127,8 @@ test('T6 the 429 bodies are unchanged (each reason keeps its own existing body)'
   assert.deepEqual(await rl.json(), { error: 'Rate limit exceeded.' });
   process.env.RELAY_RATE_LIMIT_MAX = '100';
   process.env.RELAY_MAILBOX_CAP = '1';
-  await POST(mk('198.51.100.20', 'mbx_cap_body'));
-  const cap = await POST(mk('198.51.100.20', 'mbx_cap_body'));
+  await POST(mk('198.51.100.20', deriveMailboxId('D'.repeat(64))));
+  const cap = await POST(mk('198.51.100.20', deriveMailboxId('D'.repeat(64))));
   assert.equal(cap.status, 429);
   assert.deepEqual(await cap.json(), { error: 'Mailbox at capacity.' });
 });
@@ -139,8 +140,8 @@ test('T7 a flood inside one window writes ONE line per reason, and the next wind
   assert.equal(lines.length, 1, '1,000 rate_limit refusals in one window = 1 line');
   process.env.RELAY_RATE_LIMIT_MAX = '100000';
   process.env.RELAY_MAILBOX_CAP = '1';
-  await deposit('198.51.100.30', 'mbx_flood');
-  for (let i = 0; i < 1000; i++) assert.equal(await deposit('198.51.100.30', 'mbx_flood'), 429);
+  await deposit('198.51.100.30', deriveMailboxId('E'.repeat(64)));
+  for (let i = 0; i < 1000; i++) assert.equal(await deposit('198.51.100.30', deriveMailboxId('E'.repeat(64))), 429);
   assert.equal(lines.length, 2, 'and 1,000 mailbox_cap refusals add exactly one more (each reason has its own window)');
   clock += 60_000;
   process.env.RELAY_RATE_LIMIT_MAX = '1';
