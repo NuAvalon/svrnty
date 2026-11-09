@@ -144,11 +144,9 @@ test('K9 reject an encoding that does not decode to a curve point', async () => 
     if (!bj.unpackPoint(bytes)) bad = b64(bytes);
   }
   assert.ok(bad, 'found an off-curve y');
-  // The decoder's field sqrt never returns on a non-residue (measured), so a missing isSquare guard shows up as a HANG: race it, so the mutant fails fast.
-  const verdict = await Promise.race([
-    checkBeaconPublicKey(bad!),
-    new Promise((resolve) => setTimeout(() => resolve('HUNG'), 8000).unref()),
-  ]);
+  // The decoder's field sqrt never returns on a non-residue (measured). It blocks the event loop, so no timer can rescue the test: a missing
+  // isSquare guard shows up as the WHOLE FILE hanging until the runner's per-test timeout (mutant M1 below was caught that way, not by a named failure).
+  const verdict = await checkBeaconPublicKey(bad!);
   assert.deepEqual(verdict, { ok: false, reason: 'off-curve' });
 });
 
