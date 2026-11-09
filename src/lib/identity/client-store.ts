@@ -5,7 +5,7 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
-import { canonicalAuthorityPin } from './identity-card-sign';
+import { canonicalAuthorityPin } from './authority-pin';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.

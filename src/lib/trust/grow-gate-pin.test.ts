@@ -71,3 +71,10 @@ test('J1 [static] on the join link the gate branch checks the pin conflict BEFOR
   assert.match(between, /return;/, 'a conflict returns before the enqueue');
   assert.match(s.slice(enqueue, enqueue + 900), /nextAuthorityCommitment: pinMerge\.pin/, 'the arrival carries the MERGED pin (a held pin is never dropped)');
 });
+
+test('S1 [static] the storage layer takes no signing code for the pin: client-store does not import identity-card-sign, and the pin module has no imports', () => {
+  const store = readFileSync('src/lib/identity/client-store.ts', 'utf8');
+  assert.doesNotMatch(store, /from '\.\/identity-card-sign'/);
+  assert.match(store, /import \{ canonicalAuthorityPin \} from '\.\/authority-pin';/);
+  assert.doesNotMatch(readFileSync('src/lib/identity/authority-pin.ts', 'utf8'), /^\s*import\s/m);
+});

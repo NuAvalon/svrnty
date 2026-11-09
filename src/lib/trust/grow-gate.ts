@@ -28,7 +28,7 @@ import {
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import { emitContactChange } from '@/lib/contacts/contact-events';
-import { canonicalAuthorityPin } from '@/lib/identity/identity-card-sign';
+import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 
