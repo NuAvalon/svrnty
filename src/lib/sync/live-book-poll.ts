@@ -55,6 +55,7 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
+import { receiptAllowedNow } from '@/lib/sync/receipt-allowed';
 import { holdBackoff } from '@/lib/sync/hold-backoff';
 import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
 import { pollWriteUnlessSafety } from '@/lib/contacts/safety-write';
@@ -178,9 +179,10 @@ export interface NoteSeamDeps {
   /** The receipt outbox (default: the module one). Injectable so the rate window and the dedupe are testable on a fake clock. */
   receipts?: ReceiptOutbox;
   /**
-   * #714 R1 (G2): is this sender STILL admitted (in the book and not blocked) at the moment a queued receipt is about to leave? The receipt
-   * starts after the outbox's rate window, possibly well after the accept, so a block that lands in between must stop it. Default: re-read the
-   * contact from the encrypted book. A throw means "no": nothing is sent.
+   * #714 R1 (G2) + R2a (G3): may a queued receipt leave NOW? The receipt starts after the outbox's rate window, possibly well after the accept,
+   * so a block, or the Delivery setting being turned Off, that lands in between must stop it. Default (receiptAllowedNow): the sender is still
+   * admitted (in the book, not blocked) AND the setting allows it (the contact's choice over the global default), both re-read at this moment.
+   * A throw means "no": nothing is sent.
    */
   isAdmittedNow?: (fromFingerprint: string) => Promise<boolean>;
 }
@@ -301,7 +303,7 @@ export function buildNoteSeam(
       // #714 R1 (Flint #6128/#6130): ONLY the delivery that created the row answers it. The sender's receipt key is spent by the first receipt, and an honest
       // relay does not redeliver a stored-and-acked note, so a second delivery of the same note is not asked to re-send. G2: the sender is re-checked at SEND time.
       if (sendReceipt && created) {
-        const stillAdmitted = deps.isAdmittedNow ?? (async (fp: string) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)));
+        const stillAdmitted = deps.isAdmittedNow ?? ((fp: string) => receiptAllowedNow(owner.fingerprint, fp));
         (deps.receipts ?? receiptOutbox).enqueue(owner.fingerprint, `${wire.from_fingerprint}|${wire.note_id}`, async () => {
           let ok = false;
           try { ok = await stillAdmitted(wire.from_fingerprint); } catch { ok = false; } // can't tell => don't send

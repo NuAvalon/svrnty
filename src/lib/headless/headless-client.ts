@@ -20,6 +20,7 @@ import {
   type ReceiptResponseSeam,
 } from '@/lib/sync/consume-mailbox';
 import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/contact-update-envelope';
+import { mayEmitReceipt } from '@/lib/trust/delivery-receipt-setting';
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
@@ -259,7 +260,9 @@ export async function sendHeadlessReceipts(store: HeadlessStore, candidates: Rec
       persistedSeen.add(wire.note_id);
       recordHop(opts.hopTrailDir, 'persisted', { note_id: wire.note_id }, peer);
     }
-    if (!durable || !admitContact(store.getContactByFingerprint(wire.from_fingerprint))) {
+    const contactNow = store.getContactByFingerprint(wire.from_fingerprint);
+    // G2 + G3 (#714): still admitted AND the Delivery setting (the contact's choice over the book's default) allows it, both read NOW.
+    if (!durable || !mayEmitReceipt({ admitted: admitContact(contactNow), perContact: contactNow?.delivery_receipts, global: store.getDeliveryDefault() })) {
       out.skipped++;
       continue;
     }

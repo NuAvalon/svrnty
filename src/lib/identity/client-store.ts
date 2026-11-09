@@ -14,7 +14,7 @@ import type { VaultContents } from '../sync/vault';
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
-import { parseDeliveryDefault, type DeliveryDefault, type DeliveryDefaultRead } from '../trust/delivery-receipt-setting';
+import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
@@ -1665,6 +1665,9 @@ export interface SovereignBackup {
   // restore preserves onion mailbox continuity (no mailbox_fp churn on migration). Optional/absent on
   // pre-feature backups; a malformed value is skipped on import (a fresh mailbox inits on unlock).
   device_mailbox?: ReturnType<typeof serializeMailboxKeypair>;
+  // task #714 R2a: the owner's GLOBAL delivery-receipt default, so a restore keeps it. Optional/absent on older backups (a restore then asks).
+  // A plaintext file is untrusted: importAll accepts only 'off' from it. The passphrase-authenticated vault may carry any of the three.
+  delivery_receipts_default?: DeliveryDefaultValue;
   contacts: ContactRecord[];
 }
 
@@ -1678,6 +1681,9 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
     identity,
     contacts: await getAllContacts(fingerprint),
   };
+  // Only a record we could READ is exported; an absent or unreadable one is left out, never guessed.
+  const delivery = await readDeliveryDefault(fingerprint);
+  if (delivery.state === 'ok') backup.delivery_receipts_default = delivery.rec.value;
 
   if (includePrivateKeys) {
     backup.keys = await loadKey(fingerprint) ?? undefined;
@@ -1717,6 +1723,9 @@ export function contactFromPlaintextBackup(
   delete next.grow_gate;
   delete next.grow_invite_nonce;
   delete next.grow_mint_channel;
+  // An untrusted file may only TIGHTEN the delivery-receipt choice for a contact; 'on' (or anything else) is dropped.
+  const dr = restrictOnly(next.delivery_receipts);
+  if (dr) next.delivery_receipts = dr; else delete next.delivery_receipts;
   next.trust_level = 'known';
   next.verification = { method: 'none', verified_at: null };
   if (next.metadata && typeof next.metadata === 'object') {
@@ -1793,6 +1802,8 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
+  // A restore: the choice is UNKNOWN on this device unless the file tightens it (a plaintext file may only say 'off').
+  await writeDeliveryDefaultIfAbsent(fingerprint, restrictOnly(backup.delivery_receipts_default) === 'off' ? { v: 1, value: 'off' } : { v: 1, value: 'unknown' });
 
   if (backup.keys) {
     await storeKey(fingerprint, backup.keys.privateKey, backup.keys.passphrase);
@@ -1885,6 +1896,11 @@ export async function importVaultContentsReport(
   }
 
   await storeIdentity(fp, contents.identity);
+  // A restore: keep what the passphrase-authenticated vault carries (any of the three), else the choice is unknown here. Never overwrites a
+  // record this device already holds.
+  const carried = (contents.trustGraph as unknown as { delivery_receipts_default?: unknown } | null)?.delivery_receipts_default;
+  const carriedParsed = parseDeliveryDefault({ v: 1, value: carried });
+  await writeDeliveryDefaultIfAbsent(fp, { v: 1, value: carriedParsed.state === 'ok' ? carriedParsed.rec.value : 'unknown' });
 
   const classical = contents.keys?.classical;
   if (classical?.privateKey) {
