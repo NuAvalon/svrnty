@@ -3,6 +3,8 @@
 // Client encrypts with AES-256-GCM before sending. Server only stores opaque blobs.
 
 import { NextResponse } from 'next/server';
+import { getClientIP } from '@/lib/relay/client-ip'; // #707: only the Caddy-set header, never the leftmost XFF
+import { readBodyCapped } from '@/lib/relay/read-body-capped';
 
 // --- In-memory relay store (shared via globalThis with [code]/route.ts) ---
 interface RelayEntry {
@@ -57,13 +59,6 @@ function generateCode(): string {
   return code;
 }
 
-function getClientIP(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0].trim();
-  const real = request.headers.get('x-real-ip');
-  if (real) return real;
-  return 'unknown';
-}
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
@@ -102,7 +97,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json();
+    // Content-Length is optional, so the check above can't be the only one.
+    const raw = await readBodyCapped(request, MAX_PAYLOAD_BYTES);
+    if (raw === null) {
+      return NextResponse.json(
+        { error: 'Payload too large. Max 64KB.' },
+        { status: 413 }
+      );
+    }
+    const body = JSON.parse(new TextDecoder().decode(raw));
     const { encrypted } = body;
 
     if (!encrypted || typeof encrypted !== 'string') {

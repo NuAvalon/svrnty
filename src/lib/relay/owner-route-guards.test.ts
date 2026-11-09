@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OWNER_AUTH_HEADER } from './mailbox-auth';
+import { CLIENT_IP_HEADER } from './client-ip';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { HeadlessStore } from '@/lib/headless/headless-store';
 import { pollHeadlessOnce } from '@/lib/headless/headless-client';
@@ -83,7 +84,7 @@ const routes = async () => ({
   envelope: (await import('../../../app/api/relay/envelope/route')).POST,
   claim: (await import('../../../app/api/relay/claim/route')).POST,
 });
-const ipHeaders = (ip: string, extra: Record<string, string> = {}) => ({ 'x-forwarded-for': ip, ...extra });
+const ipHeaders = (ip: string, extra: Record<string, string> = {}) => ({ [CLIENT_IP_HEADER]: ip, ...extra });
 const queueReq = (mailboxId: string, ip: string, auth: Record<string, string> = {}) =>
   new Request(`http://r.test/api/relay/queue?mailbox_id=${encodeURIComponent(mailboxId)}`, { headers: ipHeaders(ip, auth) });
 const ackReq = (mailboxId: string, ids: string[], ip: string, auth: Record<string, string> = {}) =>
@@ -139,6 +140,17 @@ test('A4 one budget per IP across queue, ack and claim; another IP is unaffected
   assert.equal((await ack(ackReq(mbx, ['e1'], '203.0.113.1'))).status, 429, 'ack shares the exhausted budget');
   assert.equal((await claim(claimReq('203.0.113.1'))).status, 429, 'claim shares the exhausted budget');
   assert.equal((await queue(queueReq(mbx, '203.0.113.2'))).status, 401, 'a different IP still reaches auth');
+});
+
+test('A6 a forged X-Forwarded-For does not buy a fresh owner budget: only the header the edge sets counts', async () => {
+  process.env.RELAY_OWNER_RATE_LIMIT_MAX = '1';
+  const { queue } = await routes();
+  const mbx = deriveMailboxId(OWNER.fp);
+  const req = (forged: string) => new Request(`http://r.test/api/relay/queue?mailbox_id=${encodeURIComponent(mbx)}`, { headers: { [CLIENT_IP_HEADER]: '192.0.2.60', 'x-forwarded-for': forged } });
+  assert.equal((await queue(req('198.51.100.1'))).status, 401, 'first request is within budget');
+  assert.equal((await queue(req('198.51.100.2'))).status, 429, 'a new forged address is the same client');
+  const other = new Request(`http://r.test/api/relay/queue?mailbox_id=${encodeURIComponent(mbx)}`, { headers: { [CLIENT_IP_HEADER]: '192.0.2.61' } });
+  assert.equal((await queue(other)).status, 401, 'another real client has its own budget');
 });
 
 test('A5 the default budget is NOT the deposit limit (10/min): 40 polls in a minute from one IP all reach auth', async () => {

@@ -28,5 +28,6 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // api/relay is excluded because Next reads a matched request's whole body before the route runs, which would defeat the deposit route's own byte cap.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/relay).*)'],
 };

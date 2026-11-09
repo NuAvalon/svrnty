@@ -1,15 +1,19 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
+import { saveOwnerEmail } from '@/lib/identity/save-owner-email';
+import { recipientGateFromBook } from '@/lib/sync/contact-update-gate';
+import { admitContact } from '@/lib/trust/admit-contact';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
-import { base64ToUint8 } from '@/lib/crypto/pq';
+import { pqSigningSecretForSend } from '@/lib/identity/pq-signing-secret';
 import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
 import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
@@ -364,23 +368,18 @@ export function SoverentityFrontend({
     }
   }, [identity]);
 
-  // CUR-1 — local Signal/Site drafts + audience list for revise dialog
-  useEffect(() => {
+  // Who Revise can offer: the book as it stands, minus anyone a block applies to. Rebuilt each time the dialog opens, because a
+  // block happens long after this list was first read. Offering is only a courtesy: the send re-checks the book itself.
+  const refreshAudience = useCallback(async () => {
     const fp = identity?.identity?.fingerprint as string | undefined;
     if (!fp) {
-      setLocalMethods({});
       setAudience([]);
       return;
     }
-    setLocalMethods(loadLocalMethods(fp));
-    const bag = hydrateOwnerCard(fp, identity?.identity?.email);
-    setOwnerBag(bag);
-    setActiveLensId((prev) =>
-      prev && bag.lenses.some((l) => l.id === prev) ? prev : bag.defaultLensId,
-    );
-    void getAllContacts(fp).then((rows) => {
+    await getAllContacts(fp).then((rows) => {
       setAudience(
         rows
+          .filter(admitContact)
           .map((c) => {
             const peerFp = String(c.fingerprint || c.id || '').trim();
             if (!peerFp) return null;
@@ -400,8 +399,25 @@ export function SoverentityFrontend({
           })
           .filter((c): c is NonNullable<typeof c> => c != null)
       );
-    });
+    }).catch(() => setAudience([]));
   }, [identity]);
+
+  // CUR-1 — local Signal/Site drafts + audience list for revise dialog
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) {
+      setLocalMethods({});
+      setAudience([]);
+      return;
+    }
+    setLocalMethods(loadLocalMethods(fp));
+    const bag = hydrateOwnerCard(fp, identity?.identity?.email);
+    setOwnerBag(bag);
+    setActiveLensId((prev) =>
+      prev && bag.lenses.some((l) => l.id === prev) ? prev : bag.defaultLensId,
+    );
+    void refreshAudience();
+  }, [identity, refreshAudience]);
 
   const ownerFace = useMemo(
     () =>
@@ -640,6 +656,10 @@ export function SoverentityFrontend({
       setRestorePath('passphrase');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
+      if (isRestoreDomainRefusal(err)) {
+        setRestoreError(msg);
+        return;
+      }
       // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
       // DO-SECOND honest error (seed-only path).
       if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
@@ -824,6 +844,7 @@ export function SoverentityFrontend({
           const keyData = JSON.parse(new TextDecoder().decode(decrypted));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
+          await assertRestoreKeepsOwnerDomain(fp, vaultPassphrase, 'keeps-open-session');
           // 3a-pure (Blocker-C): keys must be encrypted at rest. Establish the session key from the
           // export password the user just entered (unless a session is already open — don't clobber
           // it). storeKey is fail-closed, so this guarantees no plaintext-at-rest window.
@@ -886,6 +907,10 @@ export function SoverentityFrontend({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
+      if (isRestoreDomainRefusal(err)) {
+        setRestoreError(msg);
+        return;
+      }
       const looksLikeDecryptFail =
         /decrypt|OperationError|passphrase|password|could not open vault/i.test(msg) ||
         (err instanceof DOMException && err.name === 'OperationError');
@@ -1763,7 +1788,9 @@ export function SoverentityFrontend({
     let pqSigningSecretKey: Uint8Array | undefined;
     try {
       const pq = await loadPQKeys(fp);
-      if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+      // ⚠ This is undefined for every normal identity TODAY (see pq-signing-secret.ts), so updates go out CLASSICAL and receivers apply them.
+      // Do NOT make it read the nested PQ key until receivers map pq_sig_public_key (the receiver-mapping change; verifiers first), or every update is dropped.
+      pqSigningSecretKey = pqSigningSecretForSend(pq);
     } catch {
       /* classical-only if the PQ half can't be read — never block the send on it */
     }
@@ -1776,6 +1803,7 @@ export function SoverentityFrontend({
     const bumped = { ...fresh, card_version: nextVersion };
     await storeIdentity(fp, bumped); // persist BEFORE the deposit — crash-safety
     setIdentity(bumped);
+    onIdentityUpdate?.(bumped); // the parent's copy replaces ours on a remount, so it has to carry the new version too
 
     const owner = {
       fingerprint: fp,
@@ -1796,10 +1824,13 @@ export function SoverentityFrontend({
     }));
 
     try {
+      // Decided here, from the book as it stands now, not from the list the dialog was opened with.
+      const admit = recipientGateFromBook(await getAllContacts(fp));
       const result = await sendContactUpdate(
         { version: nextVersion, delta: buildMethodDelta(req.kind, value) },
         owner,
         recipients,
+        admit,
       );
       const deposited = result.deposited.length;
       const skipped = result.skipped.length;
@@ -1876,7 +1907,7 @@ export function SoverentityFrontend({
           signal={localMethods.signal}
           site={localMethods.site}
           hasPqKeys={!!hasPqKeys}
-          onRevise={(kind) => setReviseKind(kind)}
+          onRevise={(kind) => { void refreshAudience().finally(() => setReviseKind(kind)); }}
           onExportVcf={handleExportOwnVcf}
           onShareIdentity={() => { void handleShareIdentityFromCard(); }}
           extraActions={(close) => (
@@ -1951,11 +1982,7 @@ export function SoverentityFrontend({
           onLocalSave={async (kind, value) => {
             const fp = identity.identity.fingerprint as string;
             if (kind === 'email') {
-              const next = {
-                ...identity,
-                identity: { ...identity.identity, email: value },
-              };
-              await storeIdentity(fp, next);
+              const next = await saveOwnerEmail(fp, value, identity, { load: loadIdentity, store: storeIdentity });
               setIdentity(next);
               onIdentityUpdate?.(next);
               return;
@@ -2022,11 +2049,7 @@ export function SoverentityFrontend({
             onBagChange={setOwnerBag}
             onEmailChange={async (value) => {
               const fp = identity.identity.fingerprint as string;
-              const next = {
-                ...identity,
-                identity: { ...identity.identity, email: value },
-              };
-              await storeIdentity(fp, next);
+              const next = await saveOwnerEmail(fp, value, identity, { load: loadIdentity, store: storeIdentity });
               setIdentity(next);
               onIdentityUpdate?.(next);
             }}

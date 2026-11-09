@@ -26,10 +26,11 @@ export type PollRefusedReport =
   | {
       refused: true;
       /**
-       * What the LATEST failing poll observed: a 401 ('refused-auth', the only refusal a wrong device clock can cause), any other non-OK
-       * status ('refused'), a 2xx whose body wasn't a list ('unreadable'), or a relay shedding load ('busy').
+       * What the LATEST failing poll observed: a 401 ('refused-auth', the only refusal a wrong device clock can cause), a 5xx ('relay-error':
+       * the relay failing, not rejecting this device; 503 never gets here, it is 'busy'), any other non-OK status ('refused'), a 2xx whose
+       * body wasn't a list ('unreadable'), or a relay shedding load ('busy').
        */
-      kind: 'refused-auth' | 'refused' | 'unreadable' | 'busy';
+      kind: 'refused-auth' | 'refused' | 'relay-error' | 'unreadable' | 'busy';
       /** Device time (ms) of the last poll the relay answered ('ok' or 'checked-waiting') in this session; absent if none. */
       lastOkAt?: number;
     };
@@ -73,7 +74,14 @@ export function reportPollStatus(status: PollOnceStatus, nowMs: number = Date.no
   if (status === 'rejected' || status === 'unreadable') {
     busySince = undefined; // a different answer from the relay: no longer "busy for 30 s straight"
     consecutiveRejected += 1;
-    const kind = status === 'unreadable' ? 'unreadable' : httpStatus === 401 ? 'refused-auth' : 'refused';
+    const kind =
+      status === 'unreadable'
+        ? 'unreadable'
+        : httpStatus === 401
+          ? 'refused-auth'
+          : httpStatus !== undefined && httpStatus >= 500
+            ? 'relay-error'
+            : 'refused';
     if (consecutiveRejected >= REFUSED_POLLS_BEFORE_NOTICE) set({ refused: true, lastOkAt, kind });
     return;
   }
