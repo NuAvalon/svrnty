@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 import { ACTIVITY_FUTURE_SLACK_MS } from '@/lib/messaging/thread-activity';
 
 const RELAY = 'http://relay.test/api/relay';

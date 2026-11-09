@@ -12,7 +12,8 @@ import { signNoteWire } from '@/lib/messaging/note-auth';
 import { sealNoteTo } from '@/lib/messaging/seal';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 import { headlessDeadLetterSink, DEAD_LETTER_FILE, __deadLetterWritesForTest } from './headless-dead-letter';
 
 const RELAY = 'http://relay.test/api/relay';

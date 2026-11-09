@@ -13,6 +13,7 @@ import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
 import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type OpenFailure, type RatchetIO, type StagedOpen } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
+import type { RecipientGate } from '@/lib/sync/contact-update-gate';
 
 export interface NoteSenderIdentity {
   fingerprint: string;
@@ -30,8 +31,9 @@ export interface NoteSenderIdentity {
  *  - 'unconfirmed'    the POST itself threw or timed out with no answer. The relay MAY have it: a network error after the server received the
  *                     bytes looks exactly like "never arrived", so this must never read as "not sent".
  *  - 'sent-not-saved' the relay accepted it (2xx), then writing the local copy failed. It IS sent; this device just has no record.
+ *  - 'blocked'        the address book, read when Send ran, refused this recipient. Nothing was built or sent, and no local copy exists.
  */
-export type NoteSendFailureKind = 'not-sent' | 'refused' | 'unconfirmed' | 'sent-not-saved';
+export type NoteSendFailureKind = 'not-sent' | 'refused' | 'unconfirmed' | 'sent-not-saved' | 'blocked';
 
 export class NoteSendError extends Error {
   readonly kind: NoteSendFailureKind;
@@ -76,6 +78,8 @@ export type SendNoteToPeerArgs = {
   /** The RECIPIENT's verified ML-KEM-1024 pubkey (base64). Present ⇒ the note is sealed PQ-hybrid (HNDL).
    *  ABSENT ⇒ fail-closed: the note is NOT deposited (never downgraded to classical). */
   peerPqKemPublicKey?: string;
+  /** Required: may this recipient be sent anything, per the address book as it stands at send time? A note to a blocked person hands them a message from someone hiding from them. */
+  admit: RecipientGate;
   body: string;
   threadId?: string;
   relayBase?: string;
@@ -105,6 +109,11 @@ export async function sendNoteToPeer(args: SendNoteToPeerArgs): Promise<SendNote
 }
 
 async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress): Promise<SendNoteToPeerResult> {
+  // First, before any ratchet, signature, seal or local row: a refused note must leave no trace. A missing or throwing check is 'not-sent' via the wrapper.
+  if (typeof args.admit !== 'function') throw new Error('recipient check is required');
+  if (!args.admit(args.peerFingerprint)) {
+    throw new NoteSendError('blocked', new Error('recipient is blocked or not in the address book'), { note_id: '', thread_id: args.threadId ?? '' });
+  }
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
   const thread_id = args.threadId ?? newThreadId();

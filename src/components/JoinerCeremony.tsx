@@ -42,8 +42,10 @@ import {
   initSessionKey,
   lockSession,
   enqueueGateArrival,
+  getAllContacts,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
+import { blockedInBook } from '@/lib/sync/contact-update-gate';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
@@ -100,6 +102,8 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
     const ownPub: string = id?.identity?.public_key || '';
     if (!ownPub) return; // no own key to present — cannot build a verifiable response
     const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
+    // A giver you blocked gets nothing back. Read now, inside this try: if the book can't be read, no deposit goes out (the flow is fail-soft).
+    const isBlocked = blockedInBook(await getAllContacts(ownerFp));
     const res = await sendJoinerResponse(
       {
         fingerprint: ownerFp,
@@ -122,6 +126,7 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         giverPqKemPublicKey: peer.pq?.pq_kem_public_key,
         inviteNonce: code,
       },
+      { isBlocked },
     );
     if (!res.ok) {
       console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);

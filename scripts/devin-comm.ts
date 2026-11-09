@@ -26,6 +26,7 @@ import { sendNoteFromHeadless, buildHeadlessConsumeDeps, pollHeadlessAllRelays, 
 import { parseRelayList, relayBudgetShare, unconfirmedReason } from '../src/lib/sync/relay-tiers';
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
+import { blockedInBook, recipientGateFromBook } from '../src/lib/sync/contact-update-gate';
 import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -374,7 +375,7 @@ async function main() {
             sigPublicKeyB64: myId.pq_sig_public_key,
           },
           target,
-          { relayBase: RELAY },
+          { isBlocked: blockedInBook(store.listContacts()), relayBase: RELAY },
         ),
       admit: (contact) => store.upsertContact(contact),
     });
@@ -463,6 +464,7 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    if (!recipientGateFromBook(store.listContacts())(fp)) { console.error(formatNotSent(fp, 'this contact is blocked')); process.exitCode = 1; return; }
     // The outer hybrid seal needs the peer's ML-KEM key, taken from the ADMITTED record and re-checked
     // against its fingerprint (#456). Resolve it BEFORE the ratchet chain is advanced + persisted: a refusal
     // must leave ratchet-sessions.json untouched, not burn an index for a message that was never sent.
@@ -499,6 +501,7 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    if (!recipientGateFromBook(store.listContacts())(fp)) { console.error(formatNotSent(fp, 'this contact is blocked')); process.exitCode = 1; return; }
     const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
     if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;

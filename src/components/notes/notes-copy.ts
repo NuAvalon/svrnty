@@ -43,6 +43,7 @@ export const NOTES_COPY = {
   // "Retrying won't send a second copy" line and NO Retry button: the relay ignores a client envelope id today (route.ts), so a resend CAN duplicate.
   sendFailed: 'Not sent. Nothing left this device. Your message is still in the box.',
   sendRefused: 'Not sent. The relay turned it down. Your message is still in the box.',
+  sendBlocked: 'Not sent. This contact is blocked or removed. Your message is still in the box.',
   sentNotSaved: "Sent to the relay, but this device couldn't save a copy. Don't send it again. Your text is below so you can copy it.",
   sendUnconfirmed: "Couldn't confirm it was sent. The relay may already have it.",
   unsavedTextLabel: 'Your message',

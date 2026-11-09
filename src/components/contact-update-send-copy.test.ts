@@ -51,5 +51,19 @@ test('nothing sent because everyone was blocked: no advice to try again', () => 
 test('nothing sent with mixed causes keeps the retry line and names the blocked count', () => {
   const r = contactUpdateSendMessage({ deposited: [], skipped: [{ fingerprint: 'F', reason: 'blocked' }], failed: [{ mailbox_id: 'm', status: 500 }] });
   assert.equal(r.ok, false);
-  assert.equal(r.message, "Couldn't deliver: 1 blocked or removed, 1 failed. Saved locally — try Send again later.");
+  assert.equal(r.message, "Couldn't deliver: 1 blocked or removed, 1 failed. Saved locally — try Send again later for the 1 that failed.");
+});
+
+test('the retry line counts only the ones that failed, because a blocked contact is refused every time', () => {
+  const r = contactUpdateSendMessage({
+    deposited: [],
+    skipped: [{ fingerprint: 'F', reason: 'blocked' }, { fingerprint: 'G', reason: 'blocked' }],
+    failed: [{ mailbox_id: 'm', status: 500 }],
+  });
+  assert.equal(r.message, "Couldn't deliver: 2 blocked or removed, 1 failed. Saved locally — try Send again later for the 1 that failed.");
+});
+
+test('when nothing is blocked the retry line stays as it was', () => {
+  const r = contactUpdateSendMessage({ deposited: [], skipped: [], failed: [{ mailbox_id: 'm', status: 500 }] });
+  assert.equal(r.message, "Couldn't deliver: 1 failed. Saved locally — try Send again later.");
 });

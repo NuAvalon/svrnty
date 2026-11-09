@@ -8,7 +8,8 @@ import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, pollHeadlessOnce } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 import { resetRewriteRefusedCount, rewriteRefusedCount } from '@/lib/messaging/rewrite-refused';
 import type { NoteRecord } from '@/lib/messaging/types';
 

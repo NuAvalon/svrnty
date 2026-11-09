@@ -27,6 +27,7 @@ import { depositWithFailover, mergeRelaySummaries, type DepositOutcome, type Rel
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { nextLastActivity } from '@/lib/messaging/thread-activity';
 import { admitContact } from '@/lib/trust/admit-contact';
+import { recipientGateFromBook } from '@/lib/sync/contact-update-gate';
 import { headlessDeadLetterSink } from './headless-dead-letter';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { parseReceiptWireV1, type ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
@@ -493,6 +494,10 @@ export async function sendNoteFromHeadless(args: {
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** which relay carried it (index in relayBases), null if none */ tier?: number | null; /** a failed attempt may still hold the note: never claim 'not sent' */ unconfirmed?: boolean; /** the HTTP status of the last relay that answered; absent if none answered (nothing posted, or every request threw) */ status?: number; /** which relays left it unconfirmed (host + status), for the status line */ unconfirmedBy?: UnconfirmedAttempt[] }> {
+  // First, before anything is signed or written: only someone this agent's book admits. Throws, so a refused note leaves no outbound row.
+  if (!recipientGateFromBook(args.store.listContacts())(args.peerFingerprint)) {
+    throw new Error('recipient is blocked or not in the address book; nothing was sent');
+  }
   const fetchImpl = args.fetchImpl ?? fetch;
   const relays = args.relayBases && args.relayBases.length > 0 ? args.relayBases : [args.relayBase ?? '/api/relay'];
   const now = () => new Date().toISOString();

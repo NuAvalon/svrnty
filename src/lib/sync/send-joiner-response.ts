@@ -128,8 +128,22 @@ export async function buildJoinerResponseDeposit(
 export async function sendJoinerResponse(
   sender: JoinerResponseSender,
   target: JoinerResponseTarget,
-  opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
+  opts: {
+    /** Required: has this giver been blocked? Someone unknown is NOT blocked; an invite usually comes from someone not yet in the book. */
+    isBlocked: (fingerprint: string) => boolean;
+    fetchImpl?: typeof fetch;
+    relayBase?: string;
+  },
 ): Promise<JoinerResponseSendResult> {
+  // Before anything is sealed. Reported, never thrown: the ceremony is fail-soft.
+  let blocked: boolean;
+  try {
+    blocked = !!opts.isBlocked(target.fingerprint);
+  } catch {
+    return { ok: false, status: 'blocked-check-failed' };
+  }
+  if (blocked) return { ok: false, status: 'blocked' };
+
   const doFetch = opts.fetchImpl ?? fetch;
   const relayBase = opts.relayBase ?? '/api/relay';
 
