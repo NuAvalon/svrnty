@@ -110,5 +110,9 @@ test('BR9 [static] the backup carries it: VaultKeys has an OPTIONAL beacon field
   assert.match(vault, /beacon\?: BeaconKeyRecord/);
   const dlg = readFileSync(new URL('../../components/export/VaultExportDialog.tsx', import.meta.url), 'utf8');
   assert.match(dlg, /getBeaconKeyRecord\(/);
-  assert.match(dlg, /beacon/);
+  const keysAt = dlg.indexOf('const vaultKeys = {');
+  const createAt = dlg.indexOf('createVaultContents(\n');
+  const keysBlock = dlg.slice(keysAt, dlg.indexOf('};', keysAt));
+  assert.ok(keysAt > -1 && createAt > keysAt, 'vaultKeys is built before the contents');
+  assert.match(keysBlock, /\.\.\.\(beaconKey \? \{ beacon: beaconKey \} : \{\}\)/, 'the beacon record is spread into vaultKeys ONLY when one exists');
 });
