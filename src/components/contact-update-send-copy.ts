@@ -11,13 +11,18 @@ export function contactUpdateSendMessage(
   const deposited = result.deposited.length;
   const failed = result.failed.length;
   const needsUpgrade = result.skipped.filter((s) => s.reason === 'no-pq-kem').length;
-  const noKey = result.skipped.length - needsUpgrade;
+  const blocked = result.skipped.filter((s) => s.reason === 'blocked').length;
+  const noKey = result.skipped.length - needsUpgrade - blocked;
   const plural = (n: number) => (n === 1 ? 'contact needs' : 'contacts need');
   // A legacy contact (pre-canonical card: no kem leg) is fixed by an UPDATED CARD from them, so name that remedy.
   const upgrade = (n: number) => `${n} ${plural(n)} to share an updated contact card (security upgrade)`;
   if (deposited === 0) {
+    if (blocked && !needsUpgrade && !noKey && !failed) {
+      return { ok: false, message: `Not sent: ${blocked} contact${blocked === 1 ? ' is' : 's are'} blocked or removed.` };
+    }
     const parts = [
       needsUpgrade ? upgrade(needsUpgrade) : '',
+      blocked ? `${blocked} blocked or removed` : '',
       noKey ? `${noKey} had no key` : '',
       failed ? `${failed} failed` : '',
     ].filter(Boolean);
@@ -31,6 +36,7 @@ export function contactUpdateSendMessage(
     message:
       `Sent to ${deposited} contact${deposited === 1 ? '' : 's'}` +
       (needsUpgrade ? `, ${upgrade(needsUpgrade)} (not sent)` : '') +
+      (blocked ? `, ${blocked} blocked or removed (not sent)` : '') +
       (noKey ? `, ${noKey} skipped (no key yet)` : '') +
       (failed ? `, ${failed} failed (retry)` : '') +
       '.',
