@@ -218,10 +218,10 @@ test('NEG 3 × 403 and 3 × 400 → "refused", NO clock hint: a wrong clock yiel
 
 test('copy: a relay failure says the relay had a problem, verbatim, with NO clock hint', () => {
   assert.deepEqual(pollRefusedNotice({ refused: true, lastOkAt: 42, kind: 'relay-error' }, fmt), {
-    text: "Couldn't check for new messages since T42. The relay ran into a problem; it will try again.",
+    text: "Couldn't check for new messages since T42. The relay ran into a problem. Trying again automatically.",
   });
   assert.deepEqual(pollRefusedNotice({ refused: true, kind: 'relay-error' }, fmt), {
-    text: "Couldn't check for new messages. The relay ran into a problem; it will try again.",
+    text: "Couldn't check for new messages. The relay ran into a problem. Trying again automatically.",
   });
 });
 
@@ -238,7 +238,7 @@ test('NEG 3 × 500, 502, 504, 599 → the relay had a problem: never "refused", 
     const f = relayKinds([code]);
     for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
     const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
-    assert.equal(n.text, "Couldn't check for new messages. The relay ran into a problem; it will try again.", String(code));
+    assert.equal(n.text, "Couldn't check for new messages. The relay ran into a problem. Trying again automatically.", String(code));
     assert.equal(n.hint, undefined, String(code));
   }
 });

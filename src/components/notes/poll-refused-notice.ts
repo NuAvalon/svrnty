@@ -10,8 +10,8 @@ export const POLL_REFUSED_COPY = {
   hint: "If your device's date and time are wrong, fixing them may help.",
   unreadableSince: (time: string) => `Couldn't check for new messages since ${time}. The relay's reply couldn't be read.`,
   unreadableNever: "Couldn't check for new messages. The relay's reply couldn't be read.",
-  relayErrorSince: (time: string) => `Couldn't check for new messages since ${time}. The relay ran into a problem; it will try again.`,
-  relayErrorNever: "Couldn't check for new messages. The relay ran into a problem; it will try again.",
+  relayErrorSince: (time: string) => `Couldn't check for new messages since ${time}. The relay ran into a problem. Trying again automatically.`,
+  relayErrorNever: "Couldn't check for new messages. The relay ran into a problem. Trying again automatically.",
   busy: 'Could not check right now.',
 } as const;
 
