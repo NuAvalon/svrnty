@@ -133,6 +133,8 @@ async function deriveHmacMasterSalt(keSalt: Uint8Array): Promise<Uint8Array> {
  * The derived CryptoKey is held in memory — lost on tab close.
  */
 export async function initSessionKey(passphrase: string): Promise<void> {
+  // First, before the key changes: the old verified set must never meet a new, unverified key.
+  _unlockVerifiedOwners = new Set();
   // Check if we have an existing salt stored for this browser
   const setting = await txGet<{ key: string; value: string }>('settings', 'key_encryption_salt');
   let salt: Uint8Array;
@@ -184,7 +186,7 @@ async function sessionVerifiesOwner(owner: string, contactRows: Array<Record<str
   for (const store of OWNER_KEY_STORES) {
     if (await keyRecordOpens(await txGet<unknown>(store, owner), _sessionKey, ENC_VERSION)) return true;
   }
-  for (const rec of contactRows.filter((r) => r.enc_version).slice(0, MAX_CONTACT_SAMPLES)) {
+  for (const rec of contactRows.filter((r) => r.enc_version && typeof r.ciphertext === 'string').slice(0, MAX_CONTACT_SAMPLES)) {
     try {
       await decryptContactIfNeeded(rec);
       return true;

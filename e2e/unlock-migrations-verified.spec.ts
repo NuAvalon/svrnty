@@ -99,6 +99,21 @@ test('an owner with nothing to verify is left as it was: no heal and no mailbox 
   expect(await row(page, 'device_mailbox', { field: 'fingerprint', value: other })).toEqual({ exists: false, encrypted: false });
 });
 
+test('a contact row marked encrypted but holding no ciphertext verifies nobody', async ({ page }) => {
+  test.setTimeout(240_000);
+  await genesis(page, 'Alice');
+  const other = 'd'.repeat(64);
+  await edit(page, { put: { store: 'identities', value: { fingerprint: other, data: { identity: { fingerprint: other, public_key: 'x', name: 'Other' } } } } });
+  await edit(page, { put: { store: 'contacts', value: { id: 'planted-1', fingerprint: 'e'.repeat(64), owner_fingerprint: other, enc_version: 1, name: 'Planted', added_at: new Date().toISOString() } } });
+  await edit(page, { put: { store: 'contacts', value: { id: 'legacy-2', fingerprint: 'f'.repeat(64), owner_fingerprint: other, name: 'Legacy', added_at: new Date().toISOString() } } });
+  await atLock(page);
+  await submit(page, RIGHT);
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(3_000);
+  expect(await row(page, 'contacts', { field: 'id', value: 'legacy-2' }), 'the planted row must not vouch for this owner').toEqual({ exists: true, encrypted: false });
+  expect((await row(page, 'device_mailbox', { field: 'fingerprint', value: other })).exists).toBe(false);
+});
+
 test('a verified owner still gets its missing device mailbox on unlock', async ({ page }) => {
   test.setTimeout(240_000);
   await genesis(page, 'Alice');

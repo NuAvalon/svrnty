@@ -20,6 +20,9 @@ test('initSessionKey decides who is verified before the first migration runs', (
   const first = s.indexOf('await migrateAndVerifyContactsOnUnlock()');
   assert.ok(decided > 0 && first > decided);
   assert.ok(s.indexOf('_sessionKey = await deriveSessionKey') < decided, 'it needs the session key');
+  const cleared = s.indexOf('_unlockVerifiedOwners = new Set()');
+  assert.ok(cleared > 0 && cleared < s.indexOf('_sessionKey = await deriveSessionKey'), 'the old verified set must be gone before the key changes');
+  assert.ok(cleared < s.indexOf('await txGet'), 'it is the first thing the function changes');
 });
 
 test('locking forgets who was verified', () => {
@@ -51,5 +54,6 @@ test('verification fails closed and reads only', () => {
   const one = fnBody('async function sessionVerifiesOwner(');
   assert.match(one, /keyRecordOpens\(/);
   assert.doesNotMatch(one, /txPut|txDelete/);
-  assert.match(one, /r\.enc_version/, 'a plaintext contact row proves nothing: decryptContactIfNeeded would return it unchanged');
+  assert.match(one, /r\.enc_version && typeof r\.ciphertext === 'string'/,
+    'a row without real ciphertext proves nothing: decryptContactIfNeeded would return it unchanged');
 });
