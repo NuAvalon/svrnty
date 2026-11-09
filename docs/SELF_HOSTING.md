@@ -180,6 +180,8 @@ If you don't schedule it, old messages stay on the server.
 
 ## Migrating a mailbox to another relay
 
+> **Not wired in the app yet.** This section describes the protocol. The code for it exists, but nothing in the running app calls it, so you can't move relays this way today, and people on different instances can't yet reach each other.
+
 Your mailbox (where peers deposit envelopes for you) is **advertised, not glued**: peers
 find it via a signed *mailbox pointer* you publish — changing relays means publishing a
 newer pointer, not moving identity. Your durable id and DID are untouched by a move.
