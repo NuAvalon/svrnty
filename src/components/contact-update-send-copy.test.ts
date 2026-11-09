@@ -29,3 +29,27 @@ test('claim-safe wording: never quantum-safe / PQ-secure before the Nov-5 gate',
   const r = contactUpdateSendMessage({ deposited: [], skipped: [skip('no-pq-kem')], failed: [] });
   assert.doesNotMatch(r.message, /quantum|PQ-secure|post-quantum/i);
 });
+
+
+test('a blocked skip is never described as a missing key', () => {
+  const r = contactUpdateSendMessage({ deposited: ['m'], skipped: [{ fingerprint: 'F', reason: 'blocked' }], failed: [] });
+  assert.equal(r.ok, true);
+  assert.equal(r.message, 'Sent to 1 contact, 1 blocked or removed (not sent).');
+});
+
+test('blocked and missing keys are counted separately', () => {
+  const r = contactUpdateSendMessage({ deposited: ['m'], skipped: [{ fingerprint: 'F', reason: 'blocked' }, { fingerprint: 'G', reason: 'no-public-key' }], failed: [] });
+  assert.equal(r.message, 'Sent to 1 contact, 1 blocked or removed (not sent), 1 skipped (no key yet).');
+});
+
+test('nothing sent because everyone was blocked: no advice to try again', () => {
+  const r = contactUpdateSendMessage({ deposited: [], skipped: [{ fingerprint: 'F', reason: 'blocked' }], failed: [] });
+  assert.equal(r.ok, false);
+  assert.equal(r.message, 'Not sent: 1 contact is blocked or removed.');
+});
+
+test('nothing sent with mixed causes keeps the retry line and names the blocked count', () => {
+  const r = contactUpdateSendMessage({ deposited: [], skipped: [{ fingerprint: 'F', reason: 'blocked' }], failed: [{ mailbox_id: 'm', status: 500 }] });
+  assert.equal(r.ok, false);
+  assert.equal(r.message, "Couldn't deliver: 1 blocked or removed, 1 failed. Saved locally — try Send again later.");
+});

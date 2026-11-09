@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
@@ -9,6 +9,8 @@ import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdent
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
+import { recipientGateFromBook } from '@/lib/sync/contact-update-gate';
+import { admitContact } from '@/lib/trust/admit-contact';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { pqSigningSecretForSend } from '@/lib/identity/pq-signing-secret';
 import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
@@ -365,23 +367,18 @@ export function SoverentityFrontend({
     }
   }, [identity]);
 
-  // CUR-1 — local Signal/Site drafts + audience list for revise dialog
-  useEffect(() => {
+  // Who Revise can offer: the book as it stands, minus anyone a block applies to. Rebuilt each time the dialog opens, because a
+  // block happens long after this list was first read. Offering is only a courtesy: the send re-checks the book itself.
+  const refreshAudience = useCallback(async () => {
     const fp = identity?.identity?.fingerprint as string | undefined;
     if (!fp) {
-      setLocalMethods({});
       setAudience([]);
       return;
     }
-    setLocalMethods(loadLocalMethods(fp));
-    const bag = hydrateOwnerCard(fp, identity?.identity?.email);
-    setOwnerBag(bag);
-    setActiveLensId((prev) =>
-      prev && bag.lenses.some((l) => l.id === prev) ? prev : bag.defaultLensId,
-    );
-    void getAllContacts(fp).then((rows) => {
+    await getAllContacts(fp).then((rows) => {
       setAudience(
         rows
+          .filter(admitContact)
           .map((c) => {
             const peerFp = String(c.fingerprint || c.id || '').trim();
             if (!peerFp) return null;
@@ -401,8 +398,25 @@ export function SoverentityFrontend({
           })
           .filter((c): c is NonNullable<typeof c> => c != null)
       );
-    });
+    }).catch(() => setAudience([]));
   }, [identity]);
+
+  // CUR-1 — local Signal/Site drafts + audience list for revise dialog
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) {
+      setLocalMethods({});
+      setAudience([]);
+      return;
+    }
+    setLocalMethods(loadLocalMethods(fp));
+    const bag = hydrateOwnerCard(fp, identity?.identity?.email);
+    setOwnerBag(bag);
+    setActiveLensId((prev) =>
+      prev && bag.lenses.some((l) => l.id === prev) ? prev : bag.defaultLensId,
+    );
+    void refreshAudience();
+  }, [identity, refreshAudience]);
 
   const ownerFace = useMemo(
     () =>
@@ -1808,10 +1822,13 @@ export function SoverentityFrontend({
     }));
 
     try {
+      // Decided here, from the book as it stands now, not from the list the dialog was opened with.
+      const admit = recipientGateFromBook(await getAllContacts(fp));
       const result = await sendContactUpdate(
         { version: nextVersion, delta: buildMethodDelta(req.kind, value) },
         owner,
         recipients,
+        admit,
       );
       const deposited = result.deposited.length;
       const skipped = result.skipped.length;
@@ -1888,7 +1905,7 @@ export function SoverentityFrontend({
           signal={localMethods.signal}
           site={localMethods.site}
           hasPqKeys={!!hasPqKeys}
-          onRevise={(kind) => setReviseKind(kind)}
+          onRevise={(kind) => { void refreshAudience().finally(() => setReviseKind(kind)); }}
           onExportVcf={handleExportOwnVcf}
           onShareIdentity={() => { void handleShareIdentityFromCard(); }}
           extraActions={(close) => (
