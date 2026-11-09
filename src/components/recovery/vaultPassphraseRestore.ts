@@ -20,6 +20,7 @@ import type { VaultContents } from '@/lib/sync/vault';
 import type { VaultContactsReport } from '@/lib/contacts/restore-report';
 import { reconstructCanonicalIdentityForRestore } from '@/lib/identity/fingerprint';
 import {
+  assertRestoreKeepsOwnerDomain,
   initSessionKey,
   isSessionUnlocked,
   importVaultContentsReport,
@@ -80,6 +81,9 @@ export async function restoreIdentityFromVaultReport(
     pqSigSecretKeyB64: pqBundle.signing.secretKey,
     claimedFingerprint: contents.identity?.identity?.fingerprint || '',
   });
+
+  // Never write this owner under a different passphrase than the rows already here: refuses before anything is derived or written.
+  await assertRestoreKeepsOwnerDomain(derivedFp, vaultPassphrase, 'keeps-open-session');
 
   // (b) At-rest equivalence: derive the session key from the passphrase BEFORE persisting
   //     so keys/pq_keys/vault are encrypted at rest. The passphrase IS the daily-unlock
