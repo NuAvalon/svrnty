@@ -110,6 +110,7 @@ def mount(app, data_dir, mode: str, client_ip: Callable[[Request], str], *, make
         return None
     if mode != "full":
         return _refuse("mode")
+    # This reads the environment only: a `--workers` flag on the uvicorn command line would not show here. The shipped CMD has none.
     if os.environ.get("WEB_CONCURRENCY", "1") != "1":   # the nonce key and used set live in ONE process (see Centurion.__init__)
         return _refuse("workers")
     vkey_path = os.environ.get("BEACON_VKEY_PATH", "")
