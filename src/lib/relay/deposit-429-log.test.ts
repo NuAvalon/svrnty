@@ -6,6 +6,7 @@
 // Run: npx tsx --test src/lib/relay/deposit-429-log.test.ts
 
 process.env.RELAY_DB_PATH = ':memory:'; // in-memory SQLite (the runner sets no NODE_ENV)
+import { CLIENT_IP_HEADER } from './client-ip';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { resetMailboxStore } from './mailbox-store';
@@ -42,7 +43,7 @@ async function deposit(ip: string, mbx = MBX): Promise<number> {
   const { POST } = await import('../../../app/api/relay/envelope/route');
   const res = await POST(new Request('http://r.test/api/relay/envelope', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+    headers: { 'content-type': 'application/json', [CLIENT_IP_HEADER]: ip },
     body: JSON.stringify({ mailbox_id: mbx, blob: BLOB }),
   }));
   return res.status;
@@ -103,11 +104,11 @@ test('T4 no line carries the IP, the mailbox id or the blob (either reason)', as
 test('T5 non-429 refusals (400 bad field, 413 too large) log nothing', async () => {
   const { POST } = await import('../../../app/api/relay/envelope/route');
   const bad = await POST(new Request('http://r.test/api/relay/envelope', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': IP }, body: JSON.stringify({ blob: BLOB }),
+    method: 'POST', headers: { 'content-type': 'application/json', [CLIENT_IP_HEADER]: IP }, body: JSON.stringify({ blob: BLOB }),
   }));
   assert.equal(bad.status, 400);
   const big = await POST(new Request('http://r.test/api/relay/envelope', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(10 * 1024 * 1024), 'x-forwarded-for': IP }, body: '{}',
+    method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(10 * 1024 * 1024), [CLIENT_IP_HEADER]: IP }, body: '{}',
   }));
   assert.equal(big.status, 413);
   assert.deepEqual(lines, []);
@@ -116,7 +117,7 @@ test('T5 non-429 refusals (400 bad field, 413 too large) log nothing', async () 
 test('T6 the 429 bodies are unchanged (each reason keeps its own existing body)', async () => {
   const { POST } = await import('../../../app/api/relay/envelope/route');
   const mk = (ip: string, mbx: string) => new Request('http://r.test/api/relay/envelope', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip }, body: JSON.stringify({ mailbox_id: mbx, blob: BLOB }),
+    method: 'POST', headers: { 'content-type': 'application/json', [CLIENT_IP_HEADER]: ip }, body: JSON.stringify({ mailbox_id: mbx, blob: BLOB }),
   });
   process.env.RELAY_RATE_LIMIT_MAX = '1';
   await POST(mk(IP, MBX));

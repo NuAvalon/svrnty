@@ -8,6 +8,8 @@ import { NextResponse } from 'next/server';
 import { depositEnvelope } from '@/lib/relay/mailbox-store';
 import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { checkMailboxRateLimit, getClientIP } from '@/lib/relay/mailbox-rate-limit';
+import { relayDiskFull } from '@/lib/relay/disk-watermark';
+import { dbPath } from '@/lib/relay/mailbox-store';
 import { logDeposit429 } from '@/lib/relay/deposit-429-log';
 
 // The uniform deposit ack — identical for every mailbox state (I-4). Never varies on R.
@@ -27,6 +29,13 @@ export async function POST(request: Request) {
     if (!checkMailboxRateLimit(getClientIP(request), now)) {
       logDeposit429('rate_limit', now);
       return NextResponse.json({ error: 'Rate limit exceeded.' }, { status: 429 });
+    }
+
+    // L4: a global refusal while the data filesystem is above the watermark. 429 so the sender sees a definite "Not sent" (Hypatia
+    // #2204); never per-mailbox. Polls and acks are not affected (they free the disk).
+    if (relayDiskFull(dbPath(), now)) {
+      logDeposit429('disk_full', now);
+      return NextResponse.json({ error: 'Relay storage full.' }, { status: 429 });
     }
 
     const body = await request.json().catch(() => null);

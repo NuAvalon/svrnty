@@ -9,23 +9,27 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { NextRequest } from 'next/server';
 import { forwardedClientIp } from './forward-client-ip';
+import { CLIENT_IP_HEADER } from '@/lib/relay/client-ip';
 
 const req = (headers: Record<string, string>) => new NextRequest('http://localhost/api/satellite/x', { headers });
 
-test('F1 forwards the FIRST X-Forwarded-For entry (the one the edge wrote), and only that one', () => {
-  assert.deepEqual(forwardedClientIp(req({ 'x-forwarded-for': '203.0.113.7' })), { 'X-Forwarded-For': '203.0.113.7' });
-  assert.deepEqual(forwardedClientIp(req({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1' })), { 'X-Forwarded-For': '203.0.113.7' });
-  assert.deepEqual(forwardedClientIp(req({ 'x-forwarded-for': '2001:db8::1' })), { 'X-Forwarded-For': '2001:db8::1' });
+const edge = (ip: string) => ({ [CLIENT_IP_HEADER]: ip });
+
+test('F1 forwards the address the edge set, and a client-supplied X-Forwarded-For never replaces it', () => {
+  assert.deepEqual(forwardedClientIp(req(edge('203.0.113.7'))), { 'X-Forwarded-For': '203.0.113.7' });
+  assert.deepEqual(forwardedClientIp(req(edge('2001:db8::1'))), { 'X-Forwarded-For': '2001:db8::1' });
+  assert.deepEqual(forwardedClientIp(req({ ...edge('203.0.113.7'), 'x-forwarded-for': '198.51.100.99' })), { 'X-Forwarded-For': '203.0.113.7' });
 });
 
-test('F2 falls back to X-Real-IP, then forwards nothing', () => {
-  assert.deepEqual(forwardedClientIp(req({ 'x-real-ip': '198.51.100.5' })), { 'X-Forwarded-For': '198.51.100.5' });
+test('F2 with no edge-set address nothing is forwarded, whatever X-Forwarded-For or X-Real-IP say', () => {
+  assert.deepEqual(forwardedClientIp(req({ 'x-forwarded-for': '203.0.113.7' })), {});
+  assert.deepEqual(forwardedClientIp(req({ 'x-real-ip': '198.51.100.5' })), {});
   assert.deepEqual(forwardedClientIp(req({})), {});
 });
 
 test('F3 a value that is not an IP is never forwarded', () => {
   for (const v of ['unknown', 'not-an-ip', '203.0.113.7:443', '1.2.3.4.5', ' ', 'evil.example']) {
-    assert.deepEqual(forwardedClientIp(req({ 'x-forwarded-for': v })), {}, v);
+    assert.deepEqual(forwardedClientIp(req(edge(v))), {}, v);
   }
 });
 
@@ -80,7 +84,7 @@ test('F5 end to end: the PSI proxy sends the client IP to the satellite', async 
   }) as typeof fetch;
   try {
     const r = new NextRequest('http://localhost/api/satellite/trust/psi/result/abc', {
-      headers: { 'x-forwarded-for': '203.0.113.9', 'X-Signature': 's' },
+      headers: { ...edge('203.0.113.9'), 'X-Signature': 's' },
     });
     await GET(r, { params: Promise.resolve({ path: ['result', 'abc'] }) });
   } finally {
