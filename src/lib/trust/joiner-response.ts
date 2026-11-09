@@ -60,6 +60,7 @@ import {
   type JoinerResponseEnvelope,
 } from '../format/envelope';
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
+import { canonicalAuthorityPin } from '../identity/authority-pin';
 import { fingerprintMatchesKey, KEM_PUB_LEN } from '../identity/fingerprint';
 import { base64ToUint8 } from '../crypto/pq';
 import {
@@ -99,6 +100,8 @@ export interface PendingJoiner {
    *  canonical joiner with "fingerprint↔key binding failed". Present for any joiner that passed verify
    *  (fingerprintMatchesKey is canonical-only → both PQ legs are required to reach this return). */
   pqKemPublicKey?: Uint8Array;
+  /** The joiner's own next-authority pin, from the signed envelope (canonical 64 lowercase hex; absent when the joiner sent none). The Gate keeps it on the arrival. */
+  authorityPin?: string;
   displayName: string;
   inviteNonce: string;
   ts: string;
@@ -115,7 +118,8 @@ export class JoinerResponseSignError extends Error {
       | 'bad-joiner-name'
       | 'bad-giver-fingerprint'
       | 'bad-invite-nonce'
-      | 'bad-pq-key',
+      | 'bad-pq-key'
+      | 'bad-authority-pin',
     detail?: string,
   ) {
     super(detail ? `joiner-response build refused (${reason}): ${detail}` : `joiner-response build refused (${reason})`);
@@ -135,6 +139,8 @@ export interface BuildJoinerResponseArgs {
   /** base64(ML-KEM-1024 pubkey, 1568B); §5 canonical-fp binding — thread with the sig key so the giver
    *  recomputes the 64-hex canonical id (SHA256(sign‖enc‖kem‖sig)) and Invariant-1 matches a canonical joiner. */
   joinerPqKemPublicKey?: string;
+  /** The joiner's own next-authority pin (64 lowercase hex). Pass iff the identity has one; OMITTED from the envelope when absent. */
+  joinerNextAuthorityCommitment?: string;
   /** The joiner's self-asserted display name (KNOWN = unverified; may be empty). */
   joinerName: string;
   /** The giver's durable fingerprint — binds the response to its intended recipient. */
@@ -170,6 +176,8 @@ export function buildJoinerResponseEnvelope(args: BuildJoinerResponseArgs): Join
     throw new JoinerResponseSignError('bad-pq-key', 'present but empty');
   if (args.joinerPqKemPublicKey !== undefined && !isNonEmptyString(args.joinerPqKemPublicKey))
     throw new JoinerResponseSignError('bad-pq-key', 'kem present but empty');
+  if (args.joinerNextAuthorityCommitment !== undefined && !canonicalAuthorityPin(args.joinerNextAuthorityCommitment))
+    throw new JoinerResponseSignError('bad-authority-pin', 'not 64 lowercase hex');
 
   const env: JoinerResponseEnvelope = {
     joiner_fingerprint: args.joinerFp,
@@ -182,6 +190,7 @@ export function buildJoinerResponseEnvelope(args: BuildJoinerResponseArgs): Join
   };
   if (args.joinerPqSigPublicKey !== undefined) env.joiner_pq_sig_public_key = args.joinerPqSigPublicKey;
   if (args.joinerPqKemPublicKey !== undefined) env.joiner_pq_kem_public_key = args.joinerPqKemPublicKey;
+  if (args.joinerNextAuthorityCommitment !== undefined) env.joiner_next_authority_commitment = args.joinerNextAuthorityCommitment;
   return env;
 }
 
@@ -275,6 +284,8 @@ function isWellFormed(signed: unknown): signed is SignedJoinerResponse {
       return false; // undecodable base64 ⇒ reject
     }
   }
+  // The joiner's own pin: optional, but if present it must be canonical (64 lowercase hex), else the whole response is dropped here, like the KEM key.
+  if (e.joiner_next_authority_commitment !== undefined && !canonicalAuthorityPin(e.joiner_next_authority_commitment)) return false;
   if (!isPlainObject(signature)) return false;
   if (typeof (signature as Record<string, unknown>).classical !== 'string') return false;
   return true;
@@ -452,12 +463,14 @@ export async function verifyJoinerResponse(
   }
   if (!ok) return null;
 
+  const authorityPin = canonicalAuthorityPin(envelope.joiner_next_authority_commitment);
   return {
     fingerprint: envelope.joiner_fingerprint,
     epoch: envelope.joiner_epoch,
     publicKeyArmored: envelope.joiner_public_key,
     ...(pqSigningPublicKey ? { pqSigningPublicKey } : {}),
     ...(pqKemPublicKey ? { pqKemPublicKey } : {}),
+    ...(authorityPin ? { authorityPin } : {}),
     displayName: envelope.joiner_display_name,
     inviteNonce: envelope.invite_nonce,
     ts: envelope.ts,

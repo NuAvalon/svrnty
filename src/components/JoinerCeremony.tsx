@@ -52,6 +52,7 @@ import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { clampArrivalName, mergeArrivalPin } from '@/lib/trust/grow-gate';
@@ -108,6 +109,7 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
     const ownPub: string = id?.identity?.public_key || '';
     if (!ownPub) return; // no own key to present — cannot build a verifiable response
     const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
+    const ownPin = canonicalAuthorityPin(id?.next_authority_commitment ?? id?.identity?.next_authority_commitment);
     // A giver you blocked gets nothing back. Read now, inside this try: if the book can't be read, no deposit goes out (the flow is fail-soft).
     const isBlocked = blockedInBook(await getAllContacts(ownerFp));
     const res = await sendJoinerResponse(
@@ -123,6 +125,8 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         ...(id?.post_quantum?.kem_public_key && id?.post_quantum?.sig_public_key
           ? { kemPublicKeyB64: id.post_quantum.kem_public_key, sigPublicKeyB64: id.post_quantum.sig_public_key }
           : {}),
+        // Our own pin, read the way the card builder reads it (wrapper first, then the nested identity). Only a canonical value goes out.
+        ...(ownPin ? { nextAuthorityCommitment: ownPin } : {}),
       },
       {
         fingerprint: peer.fingerprint,

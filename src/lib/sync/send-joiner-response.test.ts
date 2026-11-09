@@ -231,3 +231,18 @@ test('a check that throws deposits nothing, and does not throw into the ceremony
   assert.deepEqual(res, { ok: false, status: 'blocked-check-failed' });
   assert.equal(seen.posts, 0);
 });
+
+// ── The joiner's own authority pin: the sender's value reaches the giver's verified PendingJoiner ──
+test('buildJoinerResponseDeposit: a sender nextAuthorityCommitment arrives as PendingJoiner.authorityPin; none given, none arrives', async () => {
+  const PIN = 'c3'.repeat(32);
+  const giver = { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass, hybrid: aliceHybrid };
+  const withPin = await buildJoinerResponseDeposit({ ...bobSender(), nextAuthorityCommitment: PIN }, aliceTarget());
+  assert.ok(withPin);
+  const a = await verifyJoinerResponse(withPin!.blob, giver, (n) => n === CODE);
+  assert.ok(a, 'control: a response carrying the pin verifies');
+  assert.equal((a as any).authorityPin, PIN);
+  const without = await buildJoinerResponseDeposit(bobSender(), aliceTarget());
+  const b = await verifyJoinerResponse(without!.blob, giver, (n) => n === CODE);
+  assert.ok(b);
+  assert.equal('authorityPin' in (b as object), false);
+});

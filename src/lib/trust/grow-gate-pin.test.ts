@@ -78,3 +78,23 @@ test('S1 [static] the storage layer takes no signing code for the pin: client-st
   assert.match(store, /import \{ canonicalAuthorityPin \} from '\.\/authority-pin';/);
   assert.doesNotMatch(readFileSync('src/lib/identity/authority-pin.ts', 'utf8'), /^\s*import\s/m);
 });
+
+// ── Someone who joins through MY invite: the pin from the verified joiner response lands on the Gate arrival ──
+import { arrivalFromPendingJoiner } from './grow-gate';
+const pj = (over: Record<string, unknown> = {}) => ({ fingerprint: 'dd'.repeat(32), epoch: 0, publicKeyArmored: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nAAA\n-----END PGP PUBLIC KEY BLOCK-----', displayName: 'Alice', inviteNonce: 'CODE9', ts: '2026-11-09T00:00:00.000Z', ...over }) as any;
+test('A1 arrivalFromPendingJoiner carries a canonical authorityPin, and none when the joiner sent none or a bad one', () => {
+  assert.equal(arrivalFromPendingJoiner(pj({ authorityPin: PIN1 }), 'remote').nextAuthorityCommitment, PIN1);
+  assert.equal('nextAuthorityCommitment' in arrivalFromPendingJoiner(pj(), 'remote'), false);
+  for (const bad of ['A1'.repeat(32), 'a1'.repeat(31), '', 7]) assert.equal('nextAuthorityCommitment' in arrivalFromPendingJoiner(pj({ authorityPin: bad }), 'remote'), false, String(bad));
+});
+test('A2 the arrival the Gate stores for a joiner carries the pin through to the admitted contact record', () => {
+  const arr = arrivalFromPendingJoiner(pj({ authorityPin: PIN2 }), 'remote');
+  assert.equal(buildAdmitRecord(arr).next_authority_commitment, PIN2);
+});
+
+test('J2 [static] the join ceremony sends the joiner\'s OWN pin: read wrapper-first like the card builder, canonical only, passed into the response sender', () => {
+  const s = readFileSync('src/components/JoinerCeremony.tsx', 'utf8');
+  assert.match(s, /const ownPin = canonicalAuthorityPin\(id\?\.next_authority_commitment \?\? id\?\.identity\?\.next_authority_commitment\);/);
+  assert.match(s, /\.\.\.\(ownPin \? \{ nextAuthorityCommitment: ownPin \} : \{\}\),/);
+  assert.ok(s.indexOf('const ownPin') < s.indexOf('await sendJoinerResponse('), 'the pin is read before the response is built');
+});

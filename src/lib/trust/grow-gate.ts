@@ -225,6 +225,9 @@ export function arrivalFromPendingJoiner(
   // canonical fingerprintMatchesKey (needs BOTH PQ legs) refuses the joiner ("binding failed").
   const kem = pqToB64(pj.pqKemPublicKey);
   if (kem) arrival.pqKemPublicKey = kem;
+  // The joiner's own pin, from the signed response (canonical only): the Gate keeps it so Admit can put it on the contact.
+  const pin = canonicalAuthorityPin(pj.authorityPin);
+  if (pin) arrival.nextAuthorityCommitment = pin;
   return arrival;
 }
 
