@@ -202,6 +202,33 @@ export interface AcceptedReceipt {
   from_fingerprint: string; // the delivering recipient's fingerprint (for the repaint)
 }
 
+/**
+ * LENS-PAYLOAD routing seam (lenses-v1.3, contract R7) — the mailbox's FIFTH inbound type. A lens
+ * payload is sealed to the owner with the SAME hybrid envelope, so it would otherwise decrypt
+ * NON-NULL via the contact-update decryptor (to a 2048-byte non-JSON cell) and be dropped on its
+ * missing `envelope.fingerprint` → silently ack-DELETED. This seam routes it FIRST, by its own
+ * type-checked opener (uniform 'lens' cell + payload header).
+ *   • verify — open + type-check the blob as a lens payload. Returns the raw UNVERIFIED payload
+ *     bytes, or null for a non-lens blob (a signed update is JSON, not a uniform cell — it can
+ *     never eat one). Does NOT authenticate — the fp inside is attacker-chosen until the MAC verifies.
+ *   • accept — custody whitelist + the directional pair-MAC, then apply (hello → capability record;
+ *     methods → contact record). Returns which lens outcome it reached, or null if DROPPED
+ *     (unverified / stranger / blocked — silent, the SAME custody as a stranger contact-update).
+ *     THROWS only on store I/O → retryable.
+ * Optional: a client that omits it (an OLD CLIENT) keeps the exact prior behaviour — a lens blob
+ * falls to the contact-update path, fails the JSON parse, and is dropped: it does not crash and it
+ * never shows a partial card as complete (R7).
+ */
+export interface LensResponseSeam {
+  verify: (blob: string) => Promise<Uint8Array | null>;
+  accept: (wire: Uint8Array) => Promise<
+    | { applied: true; id: string; fingerprint: string; ignited: boolean }
+    | { hello: true }
+    | { stale: true }
+    | null
+  >;
+}
+
 /** Emitted after a receipt is verified + the note marked delivered, so the inbox repaints the status. */
 export interface ReceiptLiveEvent {
   note_id: string;
@@ -281,6 +308,7 @@ export interface ConsumeDeps {
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
   receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
+  lens?: LensResponseSeam; // lenses-v1.3 routing (flag-off draft); omit → lens cells drop via the contact-update path (the safe old-client behaviour, R7)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
@@ -1032,6 +1060,37 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       }
     }
     // wire null → not a receipt → fall through to the contact-update consume path.
+  }
+
+  // LENS-PAYLOAD ROUTING (lenses-v1.3) — same discipline as the seams above. verify returns the raw
+  // payload only for a uniform 'lens' cell, so it can never eat a signed update (JSON ≠ cell).
+  // accept authenticates (pair-MAC) then applies; the outcome maps: applied → an apply (repaint),
+  // hello / stale → benign terminals (consumed, not a loss), null → 'unverified-frame' (no fp
+  // travels: the claimed sender was never authenticated — F3).
+  if (deps.lens) {
+    let wire: Uint8Array | null;
+    try {
+      wire = await deps.lens.verify(blob);
+    } catch {
+      wire = null; // a throwing lens-verify is treated as not-a-lens → fall through (fail-safe)
+    }
+    if (wire) {
+      try {
+        if (dead()) return { kind: 'retryable' };
+        const res = await deps.lens.accept(wire);
+        if (res && 'applied' in res) {
+          return { kind: 'applied', event: { id: res.id, fingerprint: res.fingerprint, ignited: res.ignited } };
+        }
+        if (res && 'hello' in res) return { kind: 'terminal', cls: { benign: 'lens-hello' } };
+        if (res && 'stale' in res) return { kind: 'terminal', cls: { benign: 'lens-stale' } };
+        return { kind: 'terminal', cls: { reason: 'unverified-frame' } };
+      } catch (err) {
+        // A store I/O failure while persisting a VERIFIED lens payload → leave for retry (at-least-once).
+        console.error('[return-channel] lens accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // wire null → not a lens payload → fall through to the contact-update consume path.
   }
 
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
