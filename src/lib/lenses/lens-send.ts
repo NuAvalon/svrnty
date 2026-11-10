@@ -59,31 +59,40 @@ export interface LensDeposit {
   blob: string;
 }
 
-export type LensSkipReason =
-  | 'bad-fingerprint'
-  | 'blocked'
-  | 'no-public-key'
-  | 'no-pq-kem'
-  | 'no-pair-secret'
-  | 'too-large'
-  | 'encode-failed'
-  | 'encrypt-failed'
-  | 'hello-throttled';
+/** The complete skip-reason set (order stable — the sender-line map test iterates this array). */
+export const LENS_SKIP_REASONS = [
+  'bad-fingerprint',
+  'blocked',
+  'no-public-key',
+  'no-pq-kem',
+  'no-pair-secret',
+  'too-large',
+  'encode-failed',
+  'encrypt-failed',
+  'hello-throttled',
+] as const;
+export type LensSkipReason = (typeof LENS_SKIP_REASONS)[number];
 
-export type LensHoldReason =
-  /** No grant record, an unreadable one, or a grant naming a deleted lens (R2): ZERO methods go —
-   *  no payload is built and no seq is bumped. The sender assigns + confirms a lens to release. */
-  | 'no-record'
+/** The complete hold-reason set (order stable — the sender-line map test iterates this array). */
+export const LENS_HOLD_REASONS = [
+  /** No grant record, or a grant naming a deleted lens (R2): ZERO methods go — no payload is built
+   *  and no seq is bumped. The sender assigns + confirms a lens to release. */
+  'no-record',
+  /** The grant book itself could not be read (corrupt, or a throwing store): same fail-closed hold,
+   *  its own reason so the sender sees "the lenses couldn't be read" rather than "nothing is set". */
+  'book-unreadable',
   /** The peer has not shown it can take lens payloads (R7). */
-  | 'no-capability'
+  'no-capability',
   /** Every method the lens would expose still awaits a widening confirm — nothing deliverable. */
-  | 'unconfirmed'
+  'unconfirmed',
   /** The granted lens resolves but exposes no methods at all — a zero-method payload would only
    *  leak that an update happened, so nothing is built (same "not an empty list sent" rule). */
-  | 'empty-lens'
+  'empty-lens',
   /** R8a composer hold: the lens carries two methods in ONE slot (same kind AND label). The owner
    *  must label them first — never send a payload that silently keeps only the last. */
-  | 'shared-slot';
+  'shared-slot',
+] as const;
+export type LensHoldReason = (typeof LENS_HOLD_REASONS)[number];
 
 export interface LensSendPlan {
   deposits: LensDeposit[];
@@ -170,6 +179,10 @@ export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<Le
     }
     if (!args.admit(fp)) {
       skipped.push({ fingerprint: fp, reason: 'blocked' }); // R5: the gate is the only path
+      continue;
+    }
+    if (book.unreadable === true) {
+      held.push({ fingerprint: fp, reason: 'book-unreadable' }); // corrupt/unreadable book: same fail-closed hold, own reason
       continue;
     }
     const lens = lensForSend(args.bag, book, fp);

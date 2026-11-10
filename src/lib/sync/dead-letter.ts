@@ -30,7 +30,7 @@ export type DeadLetterReason =
  * Only these reasons come AFTER the sender was authenticated, so only they may carry a fingerprint (F3: the sender fields of an
  * unopened or unverified envelope are attacker-controlled and must never be stored or shown).
  */
-export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset', 'lens-method-cap', 'lens-shared-slot']);
+export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset']);
 
 /**
  * Terminal outcomes that CONSUME a blob without losing a message: the content is already stored, or it was never a message.

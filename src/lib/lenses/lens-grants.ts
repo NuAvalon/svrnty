@@ -55,6 +55,10 @@ export interface LensGrantBook {
   grants: Record<string, LensGrant>;
   /** last 'methods' seq accepted per SENDER fingerprint — the receive-side replay floor. */
   inSeq?: Record<string, number>;
+  /** Load-time marker, never persisted: the stored book was PRESENT but could not be read (corrupt
+   *  or a throwing store). The send filter still fails closed (zero methods, held, no seq bump)
+   *  but reports 'book-unreadable' instead of 'no-record' so the sender can see the difference. */
+  unreadable?: boolean;
 }
 
 export interface LensGrantStorage {
@@ -111,7 +115,7 @@ export async function loadLensGrants(ownerFingerprint: string, storage?: LensGra
     if (!raw) return empty;
     const parsed = JSON.parse(raw) as LensGrantBook;
     if (!parsed || typeof parsed !== 'object' || parsed.v !== 1 || typeof parsed.grants !== 'object' || parsed.grants === null) {
-      return empty;
+      return { ...empty, unreadable: true };
     }
     // Sanitize each row: unknown keys are dropped; a non-canonical fingerprint key is dropped.
     const grants: Record<string, LensGrant> = {};
@@ -141,7 +145,7 @@ export async function loadLensGrants(ownerFingerprint: string, storage?: LensGra
     }
     return { v: 1, grants, inSeq };
   } catch {
-    return empty;
+    return { ...empty, unreadable: true };
   }
 }
 
@@ -206,6 +210,7 @@ export function helloDue(book: LensGrantBook, recipientFingerprint: string, capV
   const fp = normalize(recipientFingerprint);
   const h = fp ? book.grants[fp]?.hello : undefined;
   if (!h || h.v !== capVersion) return true;
+  if (book.grants[fp]?.capable === true) return false; // R7a: their hello came back — retry only "if nothing came back"
   if (h.n >= 2) return false;
   return nowSeconds - h.at >= LENS_HELLO_RETRY_S;
 }

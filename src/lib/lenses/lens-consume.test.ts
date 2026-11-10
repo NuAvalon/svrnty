@@ -340,3 +340,22 @@ test('F3: self-send at open — a payload whose sender IS the receiver refuses "
   const opened = openLensPayload(raw, { sPair, fpSender: fp, fpReceiver: fp });
   assert.deepEqual(opened, { ok: false, reason: 'self' });
 });
+
+test('R3-E2: a payload that LANDS clears the stopped state — updates resume', () => {
+  const stopped = contact({ contact_info: { lens_stopped: true, lens_methods: { [lensMethodKey({ kind: 'email' })]: { kind: 'email', value: 'a@x' } } } });
+  const next = applyLensMethods(stopped, [{ kind: 'email', value: 'b@y' }], '2026-11-10T00:00:00Z')!;
+  const ci = next.contact_info as Record<string, unknown>;
+  assert.equal(ci.lens_stopped, undefined, 'a landing payload clears the R8a stopped state');
+  assert.equal((ci.lens_methods as Record<string, { value: string }>)[lensMethodKey({ kind: 'email' })].value, 'b@y');
+});
+
+test('R3-E3: re-sending the SAME value keeps the earlier changed mark and its "Was:"', () => {
+  const c = contact({ contact_info: {} });
+  const first = applyLensMethods(c, [{ kind: 'custom', value: 'A', label: 'pgp' }], '2026-11-10T00:00:00Z')!;
+  const second = applyLensMethods(first, [{ kind: 'custom', value: 'B', label: 'pgp' }], '2026-11-10T01:00:00Z')!;
+  const third = applyLensMethods(second, [{ kind: 'custom', value: 'B', label: 'pgp' }], '2026-11-10T02:00:00Z')!;
+  const lm = (third.contact_info as Record<string, unknown>).lens_methods as Record<string, { value: string; was?: string }>;
+  const key = lensMethodKey({ kind: 'custom', label: 'pgp' });
+  assert.equal(lm[key].value, 'B');
+  assert.equal(lm[key].was, 'A', 'the changed mark stands across a re-send of the new value');
+});

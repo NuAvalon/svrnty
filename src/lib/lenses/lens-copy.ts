@@ -9,6 +9,9 @@
 // (Contract-side rule names below use the R6-copy sub-items; the contract's R6a/R6b review rules
 // live in the apply/display logic, not here — the labels were relabelled so they no longer clash.)
 
+import { methodKindLabel, type OwnerMethodKind } from '@/components/identity/owner-card';
+import type { LensHoldReason, LensSkipReason } from './lens-send';
+
 /** contract R6 (send side) — before WIDENING a recipient's lens, per recipient (and per newly
  *  exposed method). */
 export function lensWideningWarning(name: string, method: string): string {
@@ -41,9 +44,13 @@ export function lensTooLargeLine(name: string): string {
 }
 
 /** R8a composer ask — a lens carrying two methods in one slot (same kind AND label) is held until
- *  the owner labels them; the noun adapts to the kind ("email addresses" for email). */
+ *  the owner labels them; the noun adapts to the kind ("email addresses" for email, the DISPLAY
+ *  label for the rest — "Link entries", never the raw kind id). */
 export function lensSharedSlotLine(kind: string): string {
-  const noun = kind === 'phone' ? 'phone numbers' : kind === 'email' ? 'email addresses' : `${kind} entries`;
+  const noun =
+    kind === 'phone' ? 'phone numbers'
+    : kind === 'email' ? 'email addresses'
+    : `${methodKindLabel(kind as OwnerMethodKind)} entries`;
   return `Two ${noun} in this lens have the same label. Give each one its own label before you send it.`;
 }
 
@@ -70,4 +77,49 @@ export function lensChangedWasLine(oldValue: string): string {
  *  it the contact's updates simply stop, which reads like a Freeze or a Remove nobody made. */
 export function lensStoppedLine(name: string): string {
   return `Updates from ${name} can't be shown here any more. Ask them for their current card.`;
+}
+
+type SenderLineArgs = { name: string; kind?: string };
+type SenderLine = (a: SenderLineArgs) => string | null;
+
+const KEYS_MISSING_LINE: SenderLine = ({ name }) =>
+  `This can't be sent to ${name}: this device doesn't have the keys needed to seal it for them. Ask them for their current card.`;
+
+const DEVICE_ERROR_LINE: SenderLine = ({ name }) =>
+  `This couldn't be sent to ${name} because of an error on this device. Nothing went to them. Try again.`;
+
+/**
+ * The sender's view of "it hasn't gone": one line per send outcome, or an EXPLICIT null when the
+ * outcome needs no line on purpose. COMPLETE over LensHoldReason + LensSkipReason — a reason added
+ * to either set without an entry here throws (the map is typed complete), so the map can't drift
+ * behind the contract. Rendered by the send-outcome component in the wiring PR.
+ *
+ * Deliberate nulls: 'no-record' (a missing grant or a deleted lens needs the Revise flow, not a
+ * line), 'unconfirmed' (it routes to the per-method widening confirm), 'blocked' (the sender chose
+ * it), 'hello-throttled' (hello budget only — never on a methods send).
+ */
+const LENS_SENDER_LINES: Record<LensHoldReason | LensSkipReason, SenderLine> = {
+  'no-record': () => null,
+  'book-unreadable': ({ name }) => `Your lenses couldn't be read on this device, so nothing was sent to ${name}.`,
+  'no-capability': ({ name }) => `Not sent to ${name} yet. Their app hasn't shown it can take this, so it's held here until it does.`,
+  'unconfirmed': () => null,
+  'empty-lens': ({ name }) => `This lens has nothing in it, so nothing was sent to ${name}.`,
+  'shared-slot': ({ kind }) => lensSharedSlotLine(kind ?? 'custom'),
+  'bad-fingerprint': KEYS_MISSING_LINE,
+  'blocked': () => null,
+  'no-public-key': KEYS_MISSING_LINE,
+  'no-pq-kem': KEYS_MISSING_LINE,
+  'no-pair-secret': KEYS_MISSING_LINE,
+  'too-large': ({ name }) => lensTooLargeLine(name),
+  'encode-failed': DEVICE_ERROR_LINE,
+  'encrypt-failed': DEVICE_ERROR_LINE,
+  'hello-throttled': () => null,
+};
+
+/**
+ * The sender line for one send outcome. `name` is the recipient's display name; `kind` is the
+ * method kind (required only for 'shared-slot' — the noun comes from its display label).
+ */
+export function lensSenderLine(reason: LensHoldReason | LensSkipReason, args: SenderLineArgs): string | null {
+  return LENS_SENDER_LINES[reason](args);
 }

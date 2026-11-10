@@ -64,10 +64,10 @@ test('R2 ruling: NO record ⇒ ZERO methods and the update is HELD — no payloa
   assert.equal(lensForSend(bag, book, r.fingerprint), null);
 });
 
-test('R2 ruling: an UNREADABLE record holds identically (empty book ⇒ discloses nothing to anyone)', async () => {
+test('R2 ruling: an EMPTY record holds identically (empty book ⇒ discloses nothing to anyone)', async () => {
   const r = await hybridOf();
-  // loadLensGrants reads corrupt rows as the empty book — so this IS the unreadable case: every
-  // recipient is held no-record and nothing goes out (the restore-with-empty-book case too).
+  // loadLensGrants reads a corrupt book as empty + flagged unreadable (review-3: 'book-unreadable');
+  // an ABSENT or legitimately empty book has no flag — still 'no-record'.
   const empty = bookWith({});
   const plan = await buildLensDeposits({
     ownerFingerprint: OWNER, bag, book: empty,
@@ -402,4 +402,98 @@ test('R7a hello rate: two calls send ONE hello; one retry after the envelope lif
   assert.equal(retry.book.grants[r.fingerprint]!.hello!.n, 2);
   const third = await call(retry.book, NOW + 30 * 86400);
   assert.equal(third.deposits.length, 0, 'budget spent — nothing until the capability version changes');
+});
+
+// ---------- lenses v1.7 review-3: sender-line map, unreadable book, no-pq-kem, hello retry ----------
+
+import { lensSenderLine } from './lens-copy';
+import { LENS_HOLD_REASONS, LENS_SKIP_REASONS } from './lens-send';
+import { LENS_CAPABILITY_VERSION } from './lens-wire';
+import { helloDue, loadLensGrants, markHelloSent } from './lens-grants';
+
+test('R3-B: every hold + skip reason maps to a sender line or an explicit null', () => {
+  for (const r of [...LENS_HOLD_REASONS, ...LENS_SKIP_REASONS]) {
+    const line = lensSenderLine(r, { name: 'Ada', kind: 'url' });
+    assert.ok(line === null || typeof line === 'string', `reason maps to neither: ${r}`);
+  }
+});
+
+test('R3-B: the sanctioned sender lines, exact per reason', () => {
+  const name = 'Ada';
+  assert.equal(lensSenderLine('book-unreadable', { name }), "Your lenses couldn't be read on this device, so nothing was sent to Ada.");
+  assert.equal(lensSenderLine('no-capability', { name }), "Not sent to Ada yet. Their app hasn't shown it can take this, so it's held here until it does.");
+  assert.equal(lensSenderLine('empty-lens', { name }), 'This lens has nothing in it, so nothing was sent to Ada.');
+  assert.equal(lensSenderLine('shared-slot', { name, kind: 'url' }),
+    'Two Link entries in this lens have the same label. Give each one its own label before you send it.',
+    'the noun is the DISPLAY label ("Link"), never the raw kind id ("url")');
+  assert.equal(lensSenderLine('shared-slot', { name, kind: 'phone' }),
+    'Two phone numbers in this lens have the same label. Give each one its own label before you send it.');
+  const keys = "This can't be sent to Ada: this device doesn't have the keys needed to seal it for them. Ask them for their current card.";
+  for (const r of ['bad-fingerprint', 'no-public-key', 'no-pq-kem', 'no-pair-secret'] as const)
+    assert.equal(lensSenderLine(r, { name }), keys, `one key-shape line never names the missing key (${r})`);
+  const err = "This couldn't be sent to Ada because of an error on this device. Nothing went to them. Try again.";
+  for (const r of ['encode-failed', 'encrypt-failed'] as const) assert.equal(lensSenderLine(r, { name }), err);
+  assert.equal(lensSenderLine('too-large', { name }), lensTooLargeLine(name));
+  for (const r of ['no-record', 'unconfirmed', 'blocked', 'hello-throttled'] as const)
+    assert.equal(lensSenderLine(r, { name }), null, `${r} has no line on purpose`);
+});
+
+test('R3-B: a corrupt grant book holds as book-unreadable — nothing sent, seq unchanged', async () => {
+  const r = await hybridOf();
+  const storage = { getItem: async () => 'not-json{{{', setItem: async () => {} };
+  const book = await loadLensGrants(OWNER, storage);
+  assert.equal(book.unreadable, true, 'a present-but-junk store marks the book unreadable');
+  const plan = await buildLensDeposits({
+    ownerFingerprint: OWNER, bag, book,
+    recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, nowSeconds: () => NOW,
+  });
+  assert.equal(plan.deposits.length, 0, 'unreadable book: zero methods go — fail-closed exactly as R2 says');
+  assert.deepEqual(plan.held, [{ fingerprint: r.fingerprint, reason: 'book-unreadable' }]);
+  assert.equal(plan.book.grants[r.fingerprint]?.seq, undefined, 'no seq bump');
+});
+
+test('R3-B: an ABSENT book is not unreadable — no-record, not book-unreadable', async () => {
+  const storage = { getItem: async () => null, setItem: async () => {} };
+  const book = await loadLensGrants(OWNER, storage);
+  assert.equal(book.unreadable, undefined, 'no file = a fresh book, not a corrupt one');
+});
+
+test('R3-B: no-pq-kem is a skip, never a downgrade — no deposit, no classical-only seal', async () => {
+  const r = await hybridOf();
+  const noPq = { fingerprint: r.fingerprint, publicKeyArmored: r.publicKeyArmored }; // NO pqKemPublicKey
+  const book = markPeerCapable(setRecipientLens(bookWith({}), r.fingerprint, 'lens-everyone'), r.fingerprint);
+  const plan = await buildLensDeposits({
+    ownerFingerprint: OWNER, bag, book,
+    recipients: [noPq],
+    admit: admitAll, sPairFor: () => sPair, nowSeconds: () => NOW,
+  });
+  assert.equal(plan.deposits.length, 0, 'a recipient with no ML-KEM key gets NO deposit at all');
+  assert.deepEqual(plan.skipped, [{ fingerprint: r.fingerprint, reason: 'no-pq-kem' }],
+    'skip reason is no-pq-kem — a classical-seal fallback produces a deposit or a different reason (red)');
+});
+
+test('R3-C/R7a: the hello retry is skipped when the contact already said hello back (capable)', async () => {
+  const r = await hybridOf();
+  const sentAt = NOW - 8 * 86400; // hello went out 8 days ago — the retry window is open...
+  const book = markPeerCapable(markHelloSent(bookWith({}), r.fingerprint, LENS_CAPABILITY_VERSION, sentAt), r.fingerprint);
+  assert.equal(helloDue(book, r.fingerprint, LENS_CAPABILITY_VERSION, NOW), false, 'their hello came back — no retry');
+  const out = await buildLensHelloDeposits({
+    ownerFingerprint: OWNER, recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, book, nowSeconds: () => NOW,
+  });
+  assert.equal(out.deposits.length, 0);
+  assert.deepEqual(out.skipped, [{ fingerprint: r.fingerprint, reason: 'hello-throttled' }]);
+  assert.equal(out.book, book, 'a skipped hello writes no marker');
+});
+
+test('R3-C/R7a: the FIRST hello still goes to a capable contact — nothing yet announced', async () => {
+  const r = await hybridOf();
+  const book = markPeerCapable(bookWith({}), r.fingerprint); // capable, but no hello marker at all
+  assert.equal(helloDue(book, r.fingerprint, LENS_CAPABILITY_VERSION, NOW), true);
+  const out = await buildLensHelloDeposits({
+    ownerFingerprint: OWNER, recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, book, nowSeconds: () => NOW,
+  });
+  assert.equal(out.deposits.length, 1, 'capable means they said hello — we still owe ours once');
 });

@@ -12,6 +12,8 @@ import {
   lensGrantKey,
   lensSentKeys,
   loadLensGrants,
+  helloDue,
+  markHelloSent,
   markPeerCapable,
   nextLensSeq,
   peerIsCapable,
@@ -88,7 +90,8 @@ test('R1: the record rides no wire path (source guard — unchanged boundary)', 
 test('R2: corrupt or unreadable records read as EMPTY — identical to no record', async () => {
   const s = memStorage();
   s.map.set(lensGrantKey(OWNER), '{not json');
-  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {} });
+  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {}, unreadable: true },
+    'empty for the FILTER, but marked unreadable so the send reports book-unreadable, not no-record');
   s.map.set(lensGrantKey(OWNER), '{"v":2,"grants":{}}'); // wrong version
   assert.deepEqual((await loadLensGrants(OWNER, s)).grants, {});
   s.map.set(lensGrantKey(OWNER), '{"v":1,"grants":{"not-a-fp":{"lens":"x"},"' + FP_A + '":{"lens":17}}}');
@@ -151,4 +154,23 @@ test('receive floor: acceptInSeq accepts strictly-greater seqs and refuses a far
   // poison the floor (inside the bound still accepts).
   assert.equal(acceptInSeq(emptyBook(), FP_A, NOW + LENS_MAX_FUTURE_SEQ_S + 1, NOW), null);
   assert.notEqual(acceptInSeq(emptyBook(), FP_A, NOW + LENS_MAX_FUTURE_SEQ_S, NOW), null);
+});
+
+test('R3-E4: a new capability version resets the hello budget — even spent, even capable', () => {
+  const fp = 'a'.repeat(64);
+  const spent = markHelloSent(markHelloSent({ v: 1, grants: {} }, fp, 7, 1000), fp, 7, 2000); // n=2 @ v7
+  assert.equal(helloDue(spent, fp, 7, 2000 + 8 * 86400), false, 'budget spent at this version');
+  assert.equal(helloDue(spent, fp, 8, 2000), true, 'a new capability version is due again');
+  const capableAndSpent = markPeerCapable(spent, fp);
+  assert.equal(helloDue(capableAndSpent, fp, 8, 2000), true, 'version bump outranks the capable-skip');
+});
+
+test('R3-C: a hello marker plus a capable peer is not due — no marker, or no capability, stays due', () => {
+  const fp = 'a'.repeat(64);
+  const marked = markHelloSent({ v: 1, grants: {} }, fp, 7, 1000);
+  const capableMarked = markPeerCapable(marked, fp);
+  const after = 1000 + 8 * 86400;
+  assert.equal(helloDue(capableMarked, fp, 7, after), false, 'their hello came back — skip the retry');
+  assert.equal(helloDue(marked, fp, 7, after), true, 'nothing came back — the one retry fires after the envelope life');
+  assert.equal(helloDue(markPeerCapable({ v: 1, grants: {} }, fp), fp, 7, after), true, 'never announced ⇒ still due');
 });

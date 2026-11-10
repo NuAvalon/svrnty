@@ -1085,9 +1085,10 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         if (res && 'hello' in res) return { kind: 'terminal', cls: { benign: 'lens-hello' } };
         if (res && 'stale' in res) return { kind: 'terminal', cls: { benign: 'lens-stale' } };
         // R8a: a MAC-VERIFIED refusal is never 'unverified-frame' — each refusal carries its own
-        // reason (and the fp: the pair-MAC already authenticated the sender).
+        // reason. NO fingerprint is stored: the lens pair-MAC is classical-only, so these reasons
+        // are NOT in AUTHENTICATED_REASONS — the stopped state names the contact through the seam.
         if (res && 'refused' in res) {
-          return { kind: 'terminal', cls: { reason: res.refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot', fp: res.fingerprint } };
+          return { kind: 'terminal', cls: { reason: res.refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot' } };
         }
         return { kind: 'terminal', cls: { reason: 'unverified-frame' } };
       } catch (err) {

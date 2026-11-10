@@ -31,6 +31,7 @@ test('C2 every reason maps to exactly one group; unverified-frame to none', () =
   const want: Record<DeadLetterReason, string | null> = {
     'unknown-format': 'U', 'decrypt-failed': 'U', 'missing-key': 'U', 'verify-failed': 'U', 'unverified-frame': null,
     'not-in-book': 'S', 'ratchet-unopenable': 'R', 'ratchet-local': 'R', 'ratchet-desync': 'R', 'session-reset': 'R', expired: 'X',
+    'lens-method-cap': null, 'lens-shared-slot': null,
   };
   for (const r of DEAD_LETTER_REASONS) assert.equal(groupFor(r), want[r], r);
 });

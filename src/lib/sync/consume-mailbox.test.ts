@@ -412,3 +412,34 @@ test('#720 benign terminal: a contact-update that is stale (already applied) is 
   assert.deepEqual(recorded, [], 'a stale update is consumed content, not a loss: no record');
   assert.equal(summary.deadLettered, 0);
 });
+
+// ---------- lenses v1.7 review-3, gap E1: refused lens payloads through consumeInboundContactUpdates ----------
+
+import { isMessageReason, type DeadLetterRow } from './dead-letter';
+
+test('R3-E1: each refused lens payload is recorded under its OWN reason — NO fingerprint, never a message', async () => {
+  const recorded: DeadLetterRow[] = [];
+  let call = 0;
+  const lens = {
+    verify: async () => new Uint8Array([1, 2, 3]),
+    accept: async () =>
+      call++ === 0
+        ? { refused: 'method-cap' as const, fingerprint: bob.fingerprint }
+        : { refused: 'shared-slot' as const, fingerprint: bob.fingerprint },
+  };
+  const ackLog: string[][] = [];
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    lens,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }, { envelope_id: 'e2', blob: 'BLOB2' }], ackLog),
+  }));
+  assert.equal(recorded.length, 2);
+  assert.equal(recorded[0].reason, 'lens-method-cap', 'method-cap keeps its own reason — never collapsed or swapped');
+  assert.equal(recorded[1].reason, 'lens-shared-slot', 'shared-slot keeps its own reason');
+  for (const row of recorded) {
+    assert.equal(row.fp, undefined, 'classical-only pair-MAC — no sender fingerprint is stored (A ruling)');
+    assert.equal(isMessageReason(row.reason), false, `${row.reason} is a non-message: it can never feed a message count`);
+  }
+  assert.deepEqual(ackLog, [['e1', 'e2']], 'both terminal rows were acked after recording');
+  assert.equal(summary.deadLettered, 2);
+});
