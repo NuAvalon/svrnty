@@ -48,7 +48,6 @@ GRACE_SECONDS = 600
 EPOCH_CAP_MAX, EPOCH_CAP_MIN = 1_000_000, 10_000
 BYTES_PER_DEPOSIT = 500          # measured with real-length values, indexes included
 _POSITIVE = re.compile(r"[1-9][0-9]{0,9}")
-_RETENTION_INTERVAL = re.compile(r"[0-9]{1,10}", re.ASCII)
 MAX_BODY_BYTES = 16 * 1024
 VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"
 AUTH_JS = Path(__file__).resolve().parent / "beacon-verifier" / "auth.mjs"
@@ -124,7 +123,7 @@ def parse_retention_interval(raw: str | None) -> tuple[int, str | None]:
     this path deletes data, so a typo must never switch it on."""
     if raw is None or raw == "" or raw == "0":
         return 0, None
-    if not _RETENTION_INTERVAL.fullmatch(raw):
+    if not _POSITIVE.fullmatch(raw):
         return 0, "not-a-number"
     if int(raw) < RETENTION_MIN_INTERVAL_S or len(raw) > 9:
         return 0, "out-of-range"
@@ -482,14 +481,18 @@ class Centurion:
     # ---- retention: only ever called by retention_loop, which starts only if the toggle is set ----
     def purge_closed(self) -> dict:
         """Delete rows of epochs past the retention cutoff, keeping per-epoch counts, then truncate the WAL. Security alarms are never
-        touched. Counts only in the result. A failure deletes nothing and is reported as not scrubbed."""
+        touched. Counts only in the result. A failure in the delete removes nothing, is reported as not scrubbed and raises. If only the
+        truncate fails, the rows are gone, so the real counts are reported, with scrubbed False."""
         now = self.clock()
         try:
             deposits, matches = self._delete_closed(retention_cutoff(now))
-            scrubbed = self._scrub()
         except BaseException:
             self._retention["scrubbed"] = False
             raise
+        try:
+            scrubbed = self._scrub()
+        except Exception:
+            scrubbed = False
         self._retention.update(last_purge_at=_now_iso(now), deposits_deleted=deposits, matches_deleted=matches, scrubbed=scrubbed)
         return dict(self._retention)
 

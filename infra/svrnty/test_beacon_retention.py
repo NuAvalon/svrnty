@@ -71,7 +71,7 @@ def test_a_valid_interval_is_read(raw, want):
     assert bc.parse_retention_interval(raw) == (want, None)
 
 
-@pytest.mark.parametrize("raw", ["59", "1", "-1", "1e3", " 60", "60 ", "0x40", "abc", "٦٠", "99999999999", "60.0"])
+@pytest.mark.parametrize("raw", ["59", "1", "-1", "1e3", " 60", "60 ", "0x40", "abc", "٦٠", "99999999999", "60.0", "0060", "00"])
 def test_anything_else_is_off_with_a_refusal(raw):
     interval, refusal = bc.parse_retention_interval(raw)
     assert interval == 0 and refusal
@@ -204,6 +204,21 @@ def test_a_failed_purge_deletes_nothing_and_says_so(cen):
     with pytest.raises(sqlite3.Error):
         cen.purge_closed()
     assert count(cen, "beacon_deposits") == 2 and count(cen, "beacon_matches") == 1 and count(cen, "beacon_epoch_totals") == 0
+    assert cen.retention_status()["scrubbed"] is False
+
+
+def test_a_scrub_that_raises_after_the_delete_reports_what_really_happened(cen, monkeypatch):
+    dep(cen, E, "11", "1")
+    dep(cen, E, "11", "2")
+    cen.clk.t = at(E + 3)
+
+    def boom():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(cen, "_scrub", boom)
+    out = cen.purge_closed()                                       # the delete committed: this is not a failure to report as one
+    assert out["deposits_deleted"] == 2 and out["matches_deleted"] == 1 and out["scrubbed"] is False and out["last_purge_at"]
+    assert count(cen, "beacon_deposits") == 0 and count(cen, "beacon_epoch_totals") == 1
     assert cen.retention_status()["scrubbed"] is False
 
 
