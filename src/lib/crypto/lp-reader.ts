@@ -20,7 +20,8 @@ export type LpParseReason =
   | 'unsafe-integer'     // a u64 above Number.MAX_SAFE_INTEGER
   | 'bad-utf8'           // a text field is not valid UTF-8
   | 'bad-header'         // wrong magic, version or kind
-  | 'bad-field';         // a field has the right width but the wrong shape (set by the caller)
+  | 'bad-field'          // a field has the right width but the wrong shape (set by the caller)
+  | 'non-canonical';     // the object parses but is not the one canonical encoding of what it says (set by the caller)
 
 export class LpParseError extends Error {
   constructor(public readonly reason: LpParseReason) {
@@ -29,20 +30,25 @@ export class LpParseError extends Error {
   }
 }
 
-const UTF8_FATAL = new TextDecoder('utf-8', { fatal: true });
+// ignoreBOM: a leading U+FEFF is KEPT, so a text field means exactly its bytes (the default decoder strips it, which would make two byte strings read the same).
+const UTF8_FATAL = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export class LpReader {
   private off = 0;
+  private readonly bytes: Uint8Array;
 
-  constructor(private readonly bytes: Uint8Array) {
+  constructor(bytes: Uint8Array) {
     if (!(bytes instanceof Uint8Array)) throw new LpParseError('bad-field');
+    // One private copy up front. A Node Buffer is a Uint8Array whose slice() is a VIEW, and a caller may reuse or change its buffer while
+    // the parse runs: copying once makes every later read, and every returned field, independent of the caller's memory.
+    this.bytes = Uint8Array.from(bytes);
   }
 
   get remaining(): number {
     return this.bytes.length - this.off;
   }
 
-  /** Exactly n bytes (a copy, so the caller cannot alias the input). */
+  /** Exactly n bytes (a copy of the reader's own private copy, so no caller ever holds a view of any other memory). */
   readFixed(n: number): Uint8Array {
     if (!Number.isSafeInteger(n) || n < 0) throw new LpParseError('bad-field');
     if (this.remaining < n) throw new LpParseError('truncated');
@@ -70,6 +76,7 @@ export class LpReader {
 
   /** LP(x): a u32 length, checked against the maximum and against what is left, then the bytes. */
   readLp(maxLen: number): Uint8Array {
+    if (!Number.isSafeInteger(maxLen) || maxLen < 0) throw new LpParseError('bad-field'); // NaN or undefined would silently skip the maximum
     const len = this.readU32();
     if (len > maxLen) throw new LpParseError('length-over-max');
     if (len > this.remaining) throw new LpParseError('length-overrun');

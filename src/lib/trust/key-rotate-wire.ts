@@ -98,7 +98,7 @@ export function encodeKeyRotate(s: RotationSuccessorInput): Uint8Array {
   const a = auth as { auth_pubkeys: { sign: string; pq_sig: string }; sig_by_authority: string };
   if (!Number.isSafeInteger(s.prior_epoch) || s.prior_epoch < 0) throw new KeyRotateRefused('bad-epoch');
   if (!Number.isSafeInteger(s.successor_epoch) || s.successor_epoch < 0) throw new KeyRotateRefused('bad-epoch');
-  if (typeof s.new_public_key !== 'string' || s.new_public_key.length === 0) throw new KeyRotateRefused('bad-key');
+  if (typeof s.new_public_key !== 'string' || !isArmoredPublicKeyShape(s.new_public_key)) throw new KeyRotateRefused('bad-key');
   const armored = new TextEncoder().encode(s.new_public_key);
   if (armored.length > KEY_ROTATE_ARMORED_MAX) throw new KeyRotateRefused('key-too-large');
   const sig = hexExact(a.sig_by_authority, ED_SIG_LEN + DSA_SIG_LEN);
@@ -146,7 +146,12 @@ export class UnverifiedKeyRotate {
     if (!input) throw new KeyRotateRefused('no-fields');
     try {
       const adopted = await verifyRotationSuccessor(input, known);
-      return Object.freeze({ adopted, successor: Object.freeze({ ...input }) });
+      const auth = input.auth as { kind: 'rotation'; auth_pubkeys: { sign: string; pq_sig: string }; sig_by_authority: string };
+      const successor = Object.freeze({
+        ...input,
+        auth: Object.freeze({ ...auth, auth_pubkeys: Object.freeze({ ...auth.auth_pubkeys }) }),
+      }) as Readonly<RotationSuccessorInput>;
+      return Object.freeze({ adopted: Object.freeze({ ...adopted }), successor });
     } catch (e) {
       if (e instanceof ContactUpdateRejected) throw new KeyRotateRefused(e.reason); // the verifier's detail text can hold input: dropped
       throw new KeyRotateRefused('verify-failed');
@@ -167,14 +172,14 @@ export function parseKeyRotate(bytes: Uint8Array): UnverifiedKeyRotate {
   const newFp = r.readFixed(FP_LEN);
   const nextCommit = r.readFixed(FP_LEN);
   const armored = r.readLpUtf8(KEY_ROTATE_ARMORED_MAX);
-  if (armored.length === 0) throw new LpParseError('bad-field');
+  if (!isArmoredPublicKeyShape(armored)) throw new LpParseError('bad-field');
   const kem = r.readFixed(KEM_PUB_LEN);
   const dsaPub = r.readFixed(DSA_PUB_LEN);
   const authEd = r.readFixed(ED_PUB_LEN);
   const authDsa = r.readFixed(DSA_PUB_LEN);
   const sig = r.readFixed(ED_SIG_LEN + DSA_SIG_LEN);
   r.finish();
-  return UnverifiedKeyRotate.__make({
+  const input: RotationSuccessorInput = {
     durable_id: bytesToHex(durable),
     prior_epoch: priorEpoch,
     successor_epoch: successorEpoch,
@@ -188,5 +193,28 @@ export function parseKeyRotate(bytes: Uint8Array): UnverifiedKeyRotate {
       auth_pubkeys: { sign: bytesToHex(authEd), pq_sig: bytesToHex(authDsa) },
       sig_by_authority: bytesToHex(sig),
     },
-  });
+  };
+  assertCanonical(input, bytes);
+  return UnverifiedKeyRotate.__make(input);
+}
+
+/** The armored key is plain ASCII (newline and printable only) between the standard header and footer: no BOM, no CR, nothing that two byte strings could share. */
+const ARMOR_HEAD = '-----BEGIN PGP PUBLIC KEY BLOCK-----';
+const ARMOR_FOOT = '-----END PGP PUBLIC KEY BLOCK-----';
+function isArmoredPublicKeyShape(s: string): boolean {
+  if (!s.startsWith(ARMOR_HEAD)) return false;
+  if (!(s.endsWith(ARMOR_FOOT) || s.endsWith(ARMOR_FOOT + '\n'))) return false;
+  return /^[\n\x20-\x7e]*$/.test(s);
+}
+
+/** @internal The parsed object must encode back to EXACTLY the bytes it came from: one byte string per meaning. */
+export function assertCanonical(input: RotationSuccessorInput, bytes: Uint8Array): void {
+  let again: Uint8Array;
+  try {
+    again = encodeKeyRotate(input);
+  } catch {
+    throw new LpParseError('non-canonical');
+  }
+  if (again.length !== bytes.length) throw new LpParseError('non-canonical');
+  for (let i = 0; i < again.length; i++) if (again[i] !== bytes[i]) throw new LpParseError('non-canonical');
 }

@@ -29,6 +29,7 @@ import {
 import {
   encodeKeyRotate,
   parseKeyRotate,
+  assertCanonical,
   UnverifiedKeyRotate,
   KeyRotateRefused,
   KEY_ROTATE_ARMORED_MAX,
@@ -157,7 +158,7 @@ test('K3 strict parse: every malformation is refused with a stable reason', () =
 
 test('K4 a refusal never echoes the input: the message is the reason and nothing else', async () => {
   const marker = 'ATTACKER-CONTROLLED-MARKER';
-  const odd = { ...KAT_INPUT, new_public_key: marker };
+  const odd = { ...KAT_INPUT, new_public_key: '-----BEGIN PGP PUBLIC KEY BLOCK-----\n' + marker + '\n-----END PGP PUBLIC KEY BLOCK-----' };
   const b = encodeKeyRotate(odd);
   const lpAt = 4 + 32 + 8 + 8 + 32 + 32;
   b[lpAt + 4] = 0xff; // invalid UTF-8 inside the marker region
@@ -269,4 +270,46 @@ test('K11 encode refuses non-canonical text for the public keys (the same bytes 
   assert.notEqual(alt, b64);
   assert.throws(() => encodeKeyRotate({ ...KAT_INPUT, new_pq_kem_public_key: alt }), (e: unknown) => e instanceof KeyRotateRefused);
   assert.throws(() => encodeKeyRotate({ ...KAT_INPUT, durable_id: 'AB'.repeat(32) }), (e: unknown) => e instanceof KeyRotateRefused && e.reason === 'bad-hex32', 'upper-case hex is refused');
+});
+
+test('K12 the armored key is plain ASCII between the standard header and footer: a BOM, CR or non-ASCII byte is refused', () => {
+  const reason = (b: Uint8Array) => { try { parseKeyRotate(b); } catch (e) { return e instanceof LpParseError ? e.reason : 'other'; } return 'accepted'; };
+  const withKey = (key: string) => {
+    const head = encodeKeyRotate(KAT_INPUT);
+    const lpAt = 4 + 32 + 8 + 8 + 32 + 32;
+    const oldLen = new DataView(head.buffer).getUint32(lpAt, false);
+    const k = new TextEncoder().encode(key);
+    const out = new Uint8Array(head.length - oldLen + k.length);
+    out.set(head.subarray(0, lpAt), 0);
+    new DataView(out.buffer).setUint32(lpAt, k.length, false);
+    out.set(k, lpAt + 4);
+    out.set(head.subarray(lpAt + 4 + oldLen), lpAt + 4 + k.length);
+    return out;
+  };
+  const good = KAT_INPUT.new_public_key;
+  assert.equal(reason(withKey(good)), 'accepted');
+  assert.equal(reason(withKey('\uFEFF' + good)), 'bad-field', 'a leading BOM is kept by the decoder and then refused by the shape rule');
+  assert.equal(reason(withKey(good.replace('KAT', 'K\rAT'))), 'bad-field', 'CR');
+  assert.equal(reason(withKey(good.replace('KAT', 'KÃT'))), 'bad-field', 'non-ASCII');
+  assert.equal(reason(withKey('x' + good)), 'bad-field', 'must start with the header');
+  assert.equal(reason(withKey(good + 'x')), 'bad-field', 'must end with the footer');
+});
+
+test('K13 the canonical re-encode guard works: a parsed object that encodes to different bytes is refused', () => {
+  const bytes = encodeKeyRotate(KAT_INPUT);
+  assertCanonical(KAT_INPUT, bytes);
+  const other = bytes.slice(); other[10] ^= 1;
+  assert.throws(() => assertCanonical(KAT_INPUT, other), (e: unknown) => e instanceof LpParseError && e.reason === 'non-canonical');
+  assert.throws(() => assertCanonical(KAT_INPUT, bytes.slice(0, bytes.length - 1)), (e: unknown) => e instanceof LpParseError && e.reason === 'non-canonical');
+});
+
+test('K14 the verified successor is deeply frozen: no level can be changed or shared with the held fields', async () => {
+  const { successor, known } = await realRotation();
+  const v = await parseKeyRotate(encodeKeyRotate(successor)).verify(known);
+  assert.ok(Object.isFrozen(v) && Object.isFrozen(v.adopted) && Object.isFrozen(v.successor));
+  const auth = v.successor.auth as { auth_pubkeys: object };
+  assert.ok(Object.isFrozen(auth) && Object.isFrozen(auth.auth_pubkeys));
+  assert.throws(() => { (auth.auth_pubkeys as { sign: string }).sign = 'x'; }, TypeError);
+  const v2 = await parseKeyRotate(encodeKeyRotate(successor)).verify(known);
+  assert.notEqual(v2.successor.auth, v.successor.auth, 'a second verify of the same bytes returns independent objects');
 });

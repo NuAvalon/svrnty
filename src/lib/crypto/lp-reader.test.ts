@@ -47,3 +47,23 @@ test('R5 a refusal is the reason and nothing else', () => {
     assert.ok(!(e as Error).message.includes('de') && !(e as Error).message.includes('9'));
   }
 });
+
+test('R6 a Node Buffer input is copied once: changing it after, or during, the parse changes nothing', () => {
+  const buf = Buffer.from([1, 2, 3, 4, 5, 6]);
+  const r = new LpReader(buf);
+  buf[2] = 99; buf[5] = 77;
+  const a = r.readFixed(3);
+  const b = r.readFixed(3);
+  assert.deepEqual([...a, ...b], [1, 2, 3, 4, 5, 6]);
+  a[0] = 42; // and what it returns is a copy of the private copy
+  assert.equal(new LpReader(buf).readFixed(1)[0], 1);
+});
+
+test('R7 a leading BOM in a text field is KEPT, so a field means exactly its bytes', () => {
+  assert.equal(new LpReader(new Uint8Array([0, 0, 0, 4, 0xef, 0xbb, 0xbf, 0x41])).readLpUtf8(8), '\uFEFFA');
+});
+
+test('R8 a maximum that is not a safe non-negative integer is refused, never skipped', () => {
+  const bytes = new Uint8Array([0, 0, 0, 1, 7]);
+  for (const bad of [NaN, undefined as unknown as number, -1, 1.5, Infinity]) assert.equal(reason(() => new LpReader(bytes).readLp(bad)), 'bad-field');
+});
