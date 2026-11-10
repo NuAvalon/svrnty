@@ -29,19 +29,22 @@
  *    object out). Only AUTHORITY-signed claims ever enter it, so a thief holding the identity key alone cannot fill it.
  *  - A refusal carries a reason code only, never any part of the input.
  */
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
-import { parsePointerV2, pointerV2Prefix, type VerifiedPointerV2 } from './pointer-v2-wire';
+import { parsePointerV2, type VerifiedPointerV2 } from './pointer-v2-wire';
 import { parseKeyRotate } from './key-rotate-wire';
-import type { AdoptedRotationIdentity, KnownContactIdentity, RotationSuccessorInput } from './contact-update';
+import { parseApprove, type VerifiedApprove } from './approve-wire';
+import { digestOfPointer, digestOfSuccessor } from './claim-digest';
+import type { AdoptedRotationIdentity, KnownContactIdentity } from './contact-update';
 import { canonicalPubsFromArmoredPublicKey } from '../identity/fingerprint';
-import { rotationSigningInput } from '../format/envelope';
+
+export { digestOfPointer, digestOfSuccessor };
 
 export const POINTER_CEILING_STEP = 16;
 export const POINTER_ALLOWANCE_WEEKS_MAX = 64;
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** Bound of `pending` (a bound, not a protocol constant). A key holds ONE digest: a second different valid one is a conflict, not a second entry. */
 export const PENDING_MAX_KEYS = 8;
+/** Most digests kept in one SUCCESSOR conflict (the adopted claim plus later different ones): evidence is appended, never replaced. */
+export const SUCCESSOR_CONFLICT_MAX_DIGESTS = 4;
 
 export type PendingKind = 'pointer' | 'successor';
 
@@ -99,7 +102,7 @@ export interface HeldIdentity {
   readonly rekeyPending: boolean;
 }
 
-export type IncomingKind = 'pointer' | 'successor';
+export type IncomingKind = 'pointer' | 'successor' | 'approve';
 export interface Incoming { readonly kind: IncomingKind; readonly bytes: Uint8Array }
 export interface ReceiveOptions {
   /** A conflict is settled by the receiver's own choice of ONE claim: pass its digest and deliver that object again. */
@@ -110,7 +113,8 @@ export type Decision =
   | { readonly action: 'adopt'; readonly kind: 'successor'; readonly digest: string; readonly adopted: AdoptedRotationIdentity; readonly next: HeldIdentity }
   | { readonly action: 'accept'; readonly kind: 'pointer'; readonly digest: string; readonly pointer: VerifiedPointerV2; readonly idempotent: boolean; readonly next?: HeldIdentity }
   | { readonly action: 'pend'; readonly kind: 'pointer'; readonly digest: string; readonly pointer: VerifiedPointerV2; readonly windowRequired: true; readonly relayChange: { readonly from: string; readonly to: string }; readonly next?: HeldIdentity }
-  | { readonly action: 'hold'; readonly reason: 'successor-ahead' }
+  | { readonly action: 'approved'; readonly kind: 'pointer'; readonly digest: string; readonly pointer: VerifiedPointerV2; readonly idempotent: boolean; readonly relayChange?: { readonly from: string; readonly to: string }; readonly next?: HeldIdentity }
+  | { readonly action: 'hold'; readonly reason: 'successor-ahead' | 'approve-ahead' }
   | { readonly action: 'stale'; readonly reason: 'stale-successor' | 'stale-identity-epoch' | 'stale-pointer' }
   | { readonly action: 'conflict'; readonly next: HeldIdentity }
   | { readonly action: 'refuse'; readonly reason: string };
@@ -118,29 +122,6 @@ export type Decision =
 const refuse = (reason: string): Decision => Object.freeze({ action: 'refuse', reason });
 const HEX64 = /^[0-9a-f]{64}$/;
 const isEpoch = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
-
-/** Digest of a pointer's SIGNED CLAIM (the signed prefix). The one helper pending, conflicts and an APPROVE record all use. */
-export const digestOfPointer = (v: VerifiedPointerV2): string =>
-  bytesToHex(sha256(pointerV2Prefix({
-    mailboxId: hexToBytes(v.mailboxId.slice('mbx2_'.length)),
-    relay: v.relay,
-    identityEpoch: v.identityEpoch,
-    pointerEpoch: v.pointerEpoch,
-    x25519Pub: v.x25519Pub,
-    mlkem1024Ek: v.mlkem1024Ek,
-    hasAuthority: v.authoritySigned,
-  })));
-
-/** Digest of a successor's SIGNED CLAIM (the canonical rotation signing input under the pin it was verified against). */
-export const digestOfSuccessor = (s: Readonly<RotationSuccessorInput>, priorPin: string): string =>
-  bytesToHex(sha256(utf8ToBytes(rotationSigningInput({
-    durable_id: s.durable_id,
-    prior_epoch: s.prior_epoch,
-    prior_authority_commitment: priorPin,
-    successor_epoch: s.successor_epoch,
-    new_fingerprint: s.new_fingerprint,
-    next_authority_commitment: s.next_authority_commitment,
-  }))));
 
 /** Whole weeks since the contact last accepted, clamped. A clock that went backward, or no accept yet, gives 0. */
 export function pointerAllowance(lastAcceptedAtMs: number | null, nowMs: number): number {
@@ -182,6 +163,7 @@ export async function receive(held: HeldIdentity, incoming: Incoming, nowMs: num
     if (!(incoming?.bytes instanceof Uint8Array)) return refuse('bad-input');
     if (incoming.kind === 'successor') return await receiveSuccessor(held, incoming.bytes, nowMs, opts);
     if (incoming.kind === 'pointer') return receivePointer(held, incoming.bytes, nowMs, opts);
+    if (incoming.kind === 'approve') return receiveApprove(held, incoming.bytes, nowMs);
     return refuse('bad-kind');
   } catch {
     return refuse('receive-failed'); // never a part of the input
@@ -213,7 +195,9 @@ async function receiveSuccessor(held: HeldIdentity, bytes: Uint8Array, nowMs: nu
       const d = digestOfSuccessor(pv.successor, la.priorPin);
       const known = held.conflicts.find((x) => x.kind === 'successor');
       if (d === la.digest || (known && known.digests.includes(d))) return Object.freeze({ action: 'stale', reason: 'stale-successor' });
-      return Object.freeze({ action: 'conflict', next: without(held, { conflicts: withConflict(held.conflicts, Object.freeze({ kind: 'successor', identityEpoch: claimed, epoch: claimed, digests: Object.freeze([la.digest, d]) })) }) });
+      const digests = [...(known ? known.digests : [la.digest]), d];
+      if (digests.length > SUCCESSOR_CONFLICT_MAX_DIGESTS) return Object.freeze({ action: 'stale', reason: 'stale-successor' }); // evidence is kept, not replaced; past the cap there is nothing more to add
+      return Object.freeze({ action: 'conflict', next: without(held, { conflicts: withConflict(held.conflicts, Object.freeze({ kind: 'successor', identityEpoch: claimed, epoch: claimed, digests: Object.freeze(digests) })) }) });
     }
     return Object.freeze({ action: 'stale', reason: 'stale-successor' });
   }
@@ -269,6 +253,8 @@ function receivePointer(held: HeldIdentity, bytes: Uint8Array, nowMs: number, op
   const h = held.pointerEpoch;
   const settling = held.conflicts.some((x) => x.kind === 'pointer'); // the conflict gate let this object pass: it is the receiver's own choice
   if (h !== null && e < h && !settling) return Object.freeze({ action: 'stale', reason: 'stale-pointer' });
+  // Only a claim the receiver could ACCEPT may enter a conflict: an identity-only pointer naming another relay never could.
+  if (!v.authoritySigned && v.relay !== held.relay) return refuse('relay-change-needs-authority');
   if (h !== null && e === h && !settling) {
     if (digest === held.heldPointerDigest) return Object.freeze({ action: 'accept', kind: 'pointer', digest, pointer: v, idempotent: true });
     return Object.freeze({ action: 'conflict', next: without(held, { conflicts: withConflict(held.conflicts, Object.freeze({ kind: 'pointer', identityEpoch: v.identityEpoch, epoch: e, digests: Object.freeze([held.heldPointerDigest ?? '', digest].filter((d) => d !== '')) })) }) });
@@ -279,13 +265,21 @@ function receivePointer(held: HeldIdentity, bytes: Uint8Array, nowMs: number, op
   }
   if (h === null && !v.authoritySigned && e > POINTER_CEILING_STEP + pointerAllowance(held.lastAcceptedAtMs, nowMs)) return refuse('above-ceiling');
   if (v.relay !== held.relay) {
-    if (!v.authoritySigned) return refuse('relay-change-needs-authority');
+    const relayChange = Object.freeze({ from: held.relay, to: v.relay });
+    if (settling) {
+      // The receiver chose this claim: the conflict ends and the pending entry is RESET to the chosen digest (never left holding both).
+      const i = held.pending.findIndex((x) => x.kind === 'pointer' && x.identityEpoch === v.identityEpoch && x.epoch === e);
+      const old = i >= 0 ? held.pending[i] : null;
+      if (!old && held.pending.length >= PENDING_MAX_KEYS) return refuse('pending-full');
+      const entry = Object.freeze({ kind: 'pointer' as const, identityEpoch: v.identityEpoch, epoch: e, digests: Object.freeze([digest]), firstSeenAtMs: old && old.digests[0] === digest ? old.firstSeenAtMs : nowMs });
+      const pending = Object.freeze(i >= 0 ? held.pending.map((x, j) => (j === i ? entry : x)) : [...held.pending, entry]);
+      return Object.freeze({ action: 'pend', kind: 'pointer', digest, pointer: v, windowRequired: true as const, relayChange, next: without(held, { pending, conflicts: Object.freeze(held.conflicts.filter((x) => x.kind !== 'pointer')) }) });
+    }
     const p = pendingAdd(held, 'pointer', v.identityEpoch, e, digest, nowMs);
     if (p.r === 'full') return refuse('pending-full');
     if (p.r === 'conflict') {
       return Object.freeze({ action: 'conflict', next: without(held, { conflicts: withConflict(held.conflicts, Object.freeze({ kind: 'pointer', identityEpoch: v.identityEpoch, epoch: e, digests: Object.freeze([...p.digests]) })) }) });
     }
-    const relayChange = Object.freeze({ from: held.relay, to: v.relay });
     return Object.freeze({
       action: 'pend', kind: 'pointer', digest, pointer: v, windowRequired: true as const, relayChange,
       ...(p.r === 'added' ? { next: without(held, { pending: p.pending }) } : {}),
@@ -295,8 +289,44 @@ function receivePointer(held: HeldIdentity, bytes: Uint8Array, nowMs: number, op
     pointerEpoch: e,
     heldPointerDigest: digest,
     lastAcceptedAtMs: nowMs,
-    pending: Object.freeze(held.pending.filter((x) => !(x.kind === 'pointer' && x.identityEpoch === v.identityEpoch && x.epoch <= e))),
+    // Only an AUTHORITY-signed accept may drop a pending authority-signed move: a lower authority never cancels a higher one.
+    pending: v.authoritySigned ? Object.freeze(held.pending.filter((x) => !(x.kind === 'pointer' && x.identityEpoch === v.identityEpoch && x.epoch <= e))) : held.pending,
     conflicts: Object.freeze(held.conflicts.filter((x) => x.kind !== 'pointer')),
   });
   return Object.freeze({ action: 'accept', kind: 'pointer', digest, pointer: v, idempotent: false, next });
+}
+
+/**
+ * APPROVE (D2 v1.6): one self-contained record carrying the owner-authority AND the identity signatures over a pointer that moves the relay.
+ * It is exempt from the conflict gate and from pending-full: it exists to settle and to supersede, so neither a conflict nor a full pending list
+ * can lock it out. On success the approved claim is adopted NOW (W waived, the relay change applied); pending attempts and conflicts at or
+ * below its epoch are dropped; a pending attempt at a HIGHER epoch stays under its own window; the same record again is a no-op.
+ */
+function receiveApprove(held: HeldIdentity, bytes: Uint8Array, nowMs: number): Decision {
+  let parsed;
+  try { parsed = parseApprove(bytes); } catch (e) { return refuse('malformed:' + (e && typeof (e as { reason?: unknown }).reason === 'string' ? (e as { reason: string }).reason : 'parse')); }
+  let v: VerifiedApprove;
+  try {
+    v = parsed.verify({ held: { durableId: held.durableId, identityEpoch: held.identityEpoch, identityKeys: held.identityKeys, ownerAuthorityPin: held.ownerAuthorityPin } });
+  } catch (e) {
+    const reason = e && typeof (e as { reason?: unknown }).reason === 'string' ? (e as { reason: string }).reason : 'verify-failed';
+    if (reason === 'stale-identity-epoch') return Object.freeze({ action: 'stale', reason: 'stale-identity-epoch' });
+    if (reason === 'identity-epoch-ahead') return Object.freeze({ action: 'hold', reason: 'approve-ahead' }); // keys we do not hold yet: write nothing
+    return refuse(reason);
+  }
+  const p = v.pointer;
+  const e = p.pointerEpoch;
+  const h = held.pointerEpoch;
+  if (h !== null && e < h) return Object.freeze({ action: 'stale', reason: 'stale-pointer' });
+  if (h !== null && e === h && v.claimDigest === held.heldPointerDigest) return Object.freeze({ action: 'approved', kind: 'pointer', digest: v.claimDigest, pointer: p, idempotent: true });
+  const relayChange = p.relay !== held.relay ? Object.freeze({ from: held.relay, to: p.relay }) : undefined;
+  const next = without(held, {
+    pointerEpoch: e,
+    heldPointerDigest: v.claimDigest,
+    relay: p.relay,
+    lastAcceptedAtMs: nowMs,
+    pending: Object.freeze(held.pending.filter((x) => !(x.kind === 'pointer' && x.identityEpoch === v.identityEpoch && x.epoch <= e))),
+    conflicts: Object.freeze(held.conflicts.filter((x) => !(x.kind === 'pointer' && x.identityEpoch === v.identityEpoch && x.epoch <= e))),
+  });
+  return Object.freeze({ action: 'approved', kind: 'pointer', digest: v.claimDigest, pointer: p, idempotent: false, ...(relayChange ? { relayChange } : {}), next });
 }

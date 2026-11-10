@@ -254,7 +254,7 @@ test('K10 dark: nothing outside tests imports the codec modules', () => {
       if (statSync(p).isDirectory()) { if (n !== 'node_modules') walk(p); continue; }
       if (!/\.(ts|tsx)$/.test(n) || /\.test\.(ts|tsx)$/.test(n)) continue;
       const s = readFileSync(p, 'utf8');
-      if (/from ['"][^'"]*(key-rotate-wire|lp-reader)['"]/.test(s) && !/(key-rotate-wire|pointer-v2-wire|lp-reader|rotation-receive)\.ts$/.test(p)) hits.push(p); // the sibling codecs and rotation-receive (itself guarded dark by its own test) may import the shared reader; nothing else may import either
+      if (/from ['"][^'"]*(key-rotate-wire|lp-reader)['"]/.test(s) && !/(key-rotate-wire|pointer-v2-wire|lp-reader)\.ts$/.test(p) && !['rotation-receive', 'approve-wire'].some((n) => p.endsWith('/src/lib/trust/' + n + '.ts'))) hits.push(p); // the sibling codecs and rotation-receive (itself guarded dark by its own test) may import the shared reader; nothing else may import either
     }
   };
   walk(root);

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
-import { randomBytes, bytesToHex } from '@noble/hashes/utils.js';
+import { randomBytes, bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { deriveNextAuthorityCommitment, deriveNextAuthorityKeypair, encodeAuthorityPubkeys, signRotationAuthority, mintCanonicalFingerprint, canonicalPubsFromArmoredPublicKey } from '../identity/fingerprint';
@@ -18,8 +18,11 @@ import { rotationSigningInput } from '../format/envelope';
 import { ownerAuthorityCommitment } from '../crypto/owner-authority-commitment';
 import type { RotationSuccessorInput } from './contact-update';
 import { encodeKeyRotate } from './key-rotate-wire';
+import { encodeApprove, approveBody, approveSigningInput } from './approve-wire';
+import { pointerClaimDigest } from './claim-digest';
+import { parsePointerV2 } from './pointer-v2-wire';
 import { encodePointerV2, pointerV2Prefix, pointerV2SigningInput, type HybridSig, type PointerV2Fields } from './pointer-v2-wire';
-import { receive, pointerAllowance, POINTER_CEILING_STEP, PENDING_MAX_KEYS, WEEK_MS, type HeldIdentity, type PendingEntry, type Decision } from './rotation-receive';
+import { receive, pointerAllowance, POINTER_CEILING_STEP, PENDING_MAX_KEYS, SUCCESSOR_CONFLICT_MAX_DIGESTS, WEEK_MS, type HeldIdentity, type PendingEntry, type Decision } from './rotation-receive';
 
 // ---------- helpers ----------
 const deepFreeze = <T,>(o: T): T => {
@@ -59,6 +62,7 @@ function successorFor(master: Uint8Array, durableId: string, epoch: number, next
 async function chain() {
   const master = randomBytes(32);
   const g = await makeOperational('g0'), o1 = await makeOperational('g1'), o1b = await makeOperational('g1b'), o2 = await makeOperational('g2');
+  const o1c = await makeOperational('g1c'), o1d = await makeOperational('g1d'), o1e = await makeOperational('g1e');
   const gp = await canonicalPubsFromArmoredPublicKey(g.publicKey, g.kemB64, g.sigB64);
   const held: HeldIdentity = deepFreeze({
     durableId: g.fingerprint, identityEpoch: 0, identityKeys: { edPublic: gp.signPub, dsaPublic: gp.sigPub }, operationalFingerprint: g.fingerprint,
@@ -67,9 +71,10 @@ async function chain() {
   });
   const s1 = successorFor(master, g.fingerprint, 1, o1);
   const s1b = successorFor(master, g.fingerprint, 1, o1b); // a DIFFERENT valid successor for the same epoch (same master)
+  const s1c = successorFor(master, g.fingerprint, 1, o1c), s1d = successorFor(master, g.fingerprint, 1, o1d), s1e = successorFor(master, g.fingerprint, 1, o1e);
   const s2 = successorFor(master, g.fingerprint, 2, o2);
   const s3 = successorFor(master, g.fingerprint, 3, o2); // only its epoch matters: it is ahead
-  return { master, g, o1, o1b, o2, held, s1, s1b, s2, s3 };
+  return { master, g, o1, o1b, o2, held, s1, s1b, s1c, s1d, s1e, s2, s3 };
 }
 let CH: Awaited<ReturnType<typeof chain>>;
 const ch = async () => (CH ??= await chain());
@@ -95,7 +100,16 @@ function ptrWorld() {
     const authority = o.authority ? { edPublic: authPub.edPublic, dsaPublic: authPub.dsaPublic, sig: sign(pointerV2SigningInput(prefix, true), auth.edSecret, auth.dsa.secretKey) } : undefined;
     return { kind: 'pointer' as const, bytes: encodePointerV2(f, idSig, authority) };
   };
-  return { held, make };
+  /** An APPROVE record for `held`, over a pointer made by `make` with an authority block; signed by the world's identity and authority secrets. */
+  const approveFor = (h: HeldIdentity, pointer: { bytes: Uint8Array }, o: { epoch?: number; idSigner?: { edSecret: Uint8Array; dsaSecret: Uint8Array } } = {}) => {
+    const subject = pointer.bytes;
+    const verified = parsePointerV2(subject).verify({ identity: h.identityKeys, authorityPin: h.ownerAuthorityPin });
+    const f = { kind: 1, durableId: hexToBytes(h.durableId), identityEpoch: o.epoch ?? h.identityEpoch, claimDigest: pointerClaimDigest(verified), subject };
+    const body = approveBody(f);
+    const is = o.idSigner ?? { edSecret, dsaSecret: dsa.secretKey };
+    return { kind: 'approve' as const, bytes: encodeApprove(f, authPub, sign(approveSigningInput(body, 'identity'), is.edSecret, is.dsaSecret), sign(approveSigningInput(body, 'authority'), auth.edSecret, auth.dsa.secretKey)) };
+  };
+  return { held, make, approveFor };
 }
 const heldWithPointer = async (w: ReturnType<typeof ptrWorld>, e = 10, over = {}) => {
   const first = await receive(w.held({ pointerEpoch: null }), w.make({ epoch: e }), NOW);
@@ -104,13 +118,13 @@ const heldWithPointer = async (w: ReturnType<typeof ptrWorld>, e = 10, over = {}
 };
 
 // ---------- 0. the module is pure and dark ----------
-test('Q0 pure: no clock, no randomness, no storage, no network, no process; imports only the codecs, the verifier seam and hashing', () => {
+test('Q0 pure: no clock, no randomness, no storage, no network, no process; imports only the codecs, the digest helper and the canonical-keys helper', () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'rotation-receive.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
   for (const bad of ['Date.now', 'new Date', 'Math.random', 'getRandomValues', 'randomBytes', 'fetch(', 'indexedDB', 'localStorage', 'sessionStorage', 'process.', 'setTimeout', 'XMLHttpRequest', 'require(', 'readFileSync']) {
     assert.ok(!src.includes(bad), 'must not use ' + bad);
   }
   const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]).sort();
-  assert.deepEqual(imports, ['../format/envelope', '../identity/fingerprint', './contact-update', './key-rotate-wire', './pointer-v2-wire', '@noble/hashes/sha2.js', '@noble/hashes/utils.js']);
+  assert.deepEqual(imports, ['../identity/fingerprint', './approve-wire', './claim-digest', './contact-update', './key-rotate-wire', './pointer-v2-wire']);
 });
 
 test('Q0b dark: nothing outside tests imports rotation-receive', () => {
@@ -121,7 +135,7 @@ test('Q0b dark: nothing outside tests imports rotation-receive', () => {
       if (n === 'node_modules' || n === '.next' || n === '.git') continue;
       const p = join(d, n); const st = statSync(p);
       if (st.isDirectory()) { walk(p); continue; }
-      if (!/\.(ts|tsx|mjs|js)$/.test(n) || /\.test\.|\.spec\./.test(n) || /rotation-receive\.ts$/.test(p)) continue;
+      if (!/\.(ts|tsx|mjs|js)$/.test(n) || /\.test\.|\.spec\./.test(n) || p.endsWith('/src/lib/trust/rotation-receive.ts')) continue;
       if (/from ['"][^'"]*rotation-receive['"]/.test(readFileSync(p, 'utf8'))) hits.push(p);
     }
   };
@@ -146,6 +160,8 @@ test('S1 adopt: the next successor verifies and the new state is complete; the h
   assert.equal(n.lastAdopted?.epoch, 1);
   assert.equal(n.lastAdopted?.priorPin, c.held.rotationPin);
   assert.equal(n.relay, c.held.relay, 'a plain rotation does not move the relay');
+  const claim = rotationSigningInput({ durable_id: c.s1.durable_id, prior_epoch: 0, prior_authority_commitment: c.held.rotationPin, successor_epoch: 1, new_fingerprint: c.o1.fingerprint, next_authority_commitment: deriveNextAuthorityCommitment(c.master, 2) });
+  assert.equal(n.lastAdopted?.digest, bytesToHex(sha256(new TextEncoder().encode(claim))), 'the successor digest is SHA-256 of the canonical rotation signing input, computed here independently of the helper');
   assert.deepEqual(Array.from(n.identityKeys.dsaPublic), Array.from(b64d(c.o1.sigB64)), 'the new ML-DSA key is the one the successor carries');
   assert.equal(n.identityKeys.edPublic.length, 32);
   assert.notEqual(n, c.held);
@@ -204,6 +220,25 @@ test('S4 CONFLICT (Flint #7291): a different VALID successor for the epoch just 
   assert.equal(nextOf(d2).conflicts.length, 1, 'the successor conflict stays recorded after the next adopt');
   // delivering the same second claim again is not a new conflict
   assert.equal(act(await receive(deepFreeze({ ...n }), succ(c.s1b), NOW + 6)), 'stale:stale-successor');
+});
+
+test('S4b (Flint #7317 a) a third, fourth, fifth different valid successor APPENDS to the conflict (the second digest is kept), up to a cap', async () => {
+  const c = await ch();
+  let h: HeldIdentity = deepFreeze({ ...nextOf(await receive(c.held, succ(c.s1), NOW)) });
+  const seen: string[] = [h.lastAdopted!.digest];
+  for (const [i, s] of [c.s1b, c.s1c, c.s1d].entries()) {
+    const d = await receive(h, succ(s), NOW + i);
+    assert.equal(d.action, 'conflict', 'claim ' + (i + 2));
+    h = deepFreeze({ ...nextOf(d) });
+    const ds = h.conflicts.find((x) => x.kind === 'successor')!.digests;
+    assert.equal(ds.length, i + 2);
+    assert.deepEqual(ds.slice(0, seen.length), seen, 'earlier digests are kept, in order');
+    seen.push(ds[ds.length - 1]);
+  }
+  assert.equal(new Set(seen).size, SUCCESSOR_CONFLICT_MAX_DIGESTS, 'four different claims');
+  assert.equal(act(await receive(h, succ(c.s1e), NOW + 9)), 'stale:stale-successor', 'past the cap there is nothing more to add');
+  assert.equal(h.conflicts.find((x) => x.kind === 'successor')!.digests.length, SUCCESSOR_CONFLICT_MAX_DIGESTS);
+  assert.equal(act(await receive(h, succ(c.s1c), NOW + 9)), 'stale:stale-successor', 'a claim already recorded is not added again');
 });
 
 test('S5 ahead: epoch + 2 is HELD, never adopted, nothing stored; the codec epoch is only a routing claim', async () => {
@@ -359,6 +394,35 @@ test('P6 relay: identity-only may not name another relay; an authority-signed ch
   assert.equal(nextOf(c).relay, 'https://relay.example.org');
 });
 
+test('P6c a conflict between the HELD pointer and an authority-signed relay change at the same epoch: settle either side; settling the relay change needs room in pending', async () => {
+  const w = ptrWorld();
+  const heldBytes = w.make({ epoch: 10 });
+  const first = await receive(w.held({ pointerEpoch: null }), heldBytes, NOW);
+  const H = (first as { digest: string }).digest;
+  const h = w.held({ pointerEpoch: 10, heldPointerDigest: H });
+  const X = w.make({ epoch: 10, relay: 'https://other.example.net', authority: true });
+  const d = await receive(h, X, NOW + 1);
+  assert.equal(d.action, 'conflict', 'an authority-signed claim at the held epoch that differs from it');
+  const open = deepFreeze({ ...nextOf(d) });
+  const [dH, dX] = open.conflicts[0].digests;
+  assert.equal(dH, H);
+  // settle the relay change: it needs a pending entry, and refuses (changing nothing) when pending is full
+  const full: PendingEntry[] = Array.from({ length: PENDING_MAX_KEYS }, (_, i) => ({ kind: 'pointer', identityEpoch: 1, epoch: 100 + i, digests: [bytesToHex(sha256(Uint8Array.of(i)))], firstSeenAtMs: NOW }));
+  const refused = await receive(deepFreeze({ ...open, pending: full }), X, NOW + 5, { settleDigest: dX });
+  assert.equal(act(refused), 'refuse:pending-full');
+  assert.ok(!('next' in refused));
+  const ok = await receive(open, X, NOW + 5, { settleDigest: dX });
+  assert.equal(ok.action, 'pend');
+  assert.deepEqual(nextOf(ok).conflicts, []);
+  assert.deepEqual(nextOf(ok).pending.map((e) => [e.epoch, e.digests, e.firstSeenAtMs]), [[10, [dX], NOW + 5]]);
+  assert.equal(nextOf(ok).relay, 'https://relay.example.org', 'nothing moved the relay');
+  // settle the HELD claim instead: it is accepted, the conflict ends, the pending list is untouched
+  const keep = await receive(open, heldBytes, NOW + 6, { settleDigest: dH });
+  assert.equal(keep.action, 'accept');
+  assert.deepEqual(nextOf(keep).conflicts, []);
+  assert.equal(nextOf(keep).heldPointerDigest, H);
+});
+
 test('P7 pending is bounded and never evicts; the owner\'s escape (a successor, a same-relay pointer) still works with it full', async () => {
   const w = ptrWorld();
   assert.equal(PENDING_MAX_KEYS, 8, 'the agreed bound (Flint #7288)');
@@ -378,12 +442,62 @@ test('P7 pending is bounded and never evicts; the owner\'s escape (a successor, 
   assert.deepEqual(nextOf(a).pending, [], 'and clears it: pending belongs to the old keys');
 });
 
-test('P8 an accepted pointer clears the pending entries at or below its epoch, for its identity epoch only', async () => {
+test('P8 (Flint #7317 R2) only an AUTHORITY-signed accept clears pending entries at or below its epoch; an identity-only accept leaves a pending authority move alone', async () => {
   const w = ptrWorld();
   const mk = (identityEpoch: number, epoch: number): PendingEntry => ({ kind: 'pointer', identityEpoch, epoch, digests: ['ee'.repeat(32)], firstSeenAtMs: NOW });
-  const h = await heldWithPointer(w, 10, { pending: [mk(1, 11), mk(1, 12), mk(1, 20), mk(0, 11)] });
-  const n = nextOf(await receive(h, w.make({ epoch: 12 }), NOW + 1));
-  assert.deepEqual(n.pending.map((e) => [e.identityEpoch, e.epoch]), [[1, 20], [0, 11]]);
+  const pending = [mk(1, 11), mk(1, 12), mk(1, 20), mk(0, 11)];
+  const h = await heldWithPointer(w, 10, { pending });
+  const idOnly = await receive(h, w.make({ epoch: 12 }), NOW + 1);
+  assert.equal(act(idOnly), 'accept');
+  assert.deepEqual(nextOf(idOnly).pending.map((e) => [e.identityEpoch, e.epoch]), [[1, 11], [1, 12], [1, 20], [0, 11]], 'a phone thief\'s same-relay pointer cannot cancel the owner\'s pending move');
+  assert.equal(nextOf(idOnly).pointerEpoch, 12, 'but the pointer is accepted');
+  const auth = await receive(h, w.make({ epoch: 12, authority: true }), NOW + 1);
+  assert.equal(act(auth), 'accept');
+  assert.deepEqual(nextOf(auth).pending.map((e) => [e.identityEpoch, e.epoch]), [[1, 20], [0, 11]], 'an authority-signed accept clears at or below its epoch, for its identity epoch only');
+});
+
+test('P8b (Flint #7317 R3) an identity-only pointer at the held epoch naming another relay is REFUSED, never a conflict', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const d = await receive(h, w.make({ epoch: 10, relay: 'https://other.example.net', x: 0x55 }), NOW);
+  assert.equal(act(d), 'refuse:relay-change-needs-authority');
+  assert.ok(!('next' in d));
+  const after = await receive(h, w.make({ epoch: 10 }), NOW);
+  assert.equal(act(after), 'accept', 'and the honest same claim is still idempotent');
+});
+
+test('P6b (Flint #7317 R1) a relay-change conflict can be settled by EITHER claim; the pending entry resets to the chosen digest and pointers resume', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const A = w.make({ epoch: 11, relay: 'https://other.example.net', authority: true });
+  const B = w.make({ epoch: 11, relay: 'https://third.example.net', authority: true });
+  const dA = await receive(h, A, NOW + 1);
+  assert.equal(dA.action, 'pend');
+  const nA = deepFreeze({ ...nextOf(dA) });
+  const dB = await receive(nA, B, NOW + 2);
+  assert.equal(dB.action, 'conflict');
+  const open = deepFreeze({ ...nextOf(dB) });
+  const [digA, digB] = open.conflicts[0].digests;
+  assert.equal(act(await receive(open, w.make({ epoch: 12 }), NOW + 3)), 'refuse:conflict-open', 'frozen while open');
+  // settle the FIRST claim (the pending entry already holds it)
+  const sA = await receive(open, A, NOW + 50, { settleDigest: digA });
+  assert.equal(sA.action, 'pend', 'still a pending relay change: the window is not built');
+  const nSA = nextOf(sA);
+  assert.deepEqual(nSA.conflicts, [], 'the conflict is gone');
+  assert.deepEqual(nSA.pending[0].digests, [digA]);
+  assert.equal(nSA.pending[0].firstSeenAtMs, NOW + 1, 'the first-seen time of the chosen claim is kept');
+  // settle the SECOND claim: the entry is reset to it, with a fresh first-seen time
+  const sB = await receive(open, B, NOW + 60, { settleDigest: digB });
+  const nSB = nextOf(sB);
+  assert.deepEqual(nSB.conflicts, []);
+  assert.deepEqual(nSB.pending.map((e) => e.digests), [[digB]]);
+  assert.equal(nSB.pending[0].firstSeenAtMs, NOW + 60);
+  assert.equal(nSB.relay, 'https://relay.example.org', 'nothing moved the relay');
+  // and the contact takes pointers again
+  assert.equal(act(await receive(deepFreeze({ ...nSA }), w.make({ epoch: 12 }), NOW + 70)), 'accept');
+  assert.equal(act(await receive(deepFreeze({ ...nSB }), w.make({ epoch: 12 }), NOW + 70)), 'accept');
+  // a digest outside the conflict still settles nothing
+  assert.equal(act(await receive(open, w.make({ epoch: 11, relay: 'https://x.example.net', authority: true }), NOW + 5, { settleDigest: 'ab'.repeat(32) })), 'refuse:conflict-open');
 });
 
 test('P9 a re-signed identical pointer is the SAME claim: idempotent, not a conflict (ML-DSA signatures are randomized)', async () => {
@@ -426,4 +540,111 @@ test('X2 effects: a decision with a next state returns a NEW object and the inpu
   assert.equal(JSON.stringify(h), before);
   assert.ok(Object.isFrozen(d));
   assert.ok(Object.isFrozen(nextOf(d)));
+});
+
+// ---------- 4. APPROVE (D2 v1.6) through the one receive function ----------
+const pendingAt = (epochs: number[]): PendingEntry[] => epochs.map((epoch, i) => ({ kind: 'pointer' as const, identityEpoch: 1, epoch, digests: [bytesToHex(sha256(Uint8Array.of(i, epoch)))], firstSeenAtMs: NOW }));
+
+test('AP1 APPROVE adopts a pending relay move at once: the relay moves, W is waived, the pending entry is gone', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const X = w.make({ epoch: 11, relay: 'https://other.example.net', authority: true });
+  const dP = await receive(h, X, NOW + 1);
+  assert.equal(dP.action, 'pend');
+  const nP = deepFreeze({ ...nextOf(dP) });
+  assert.equal(nP.relay, 'https://relay.example.org');
+  const d = await receive(nP, w.approveFor(nP, X), NOW + 10);
+  assert.equal(d.action, 'approved');
+  assert.equal((d as { idempotent: boolean }).idempotent, false);
+  assert.deepEqual((d as { relayChange: unknown }).relayChange, { from: 'https://relay.example.org', to: 'https://other.example.net' });
+  const n = nextOf(d);
+  assert.equal(n.relay, 'https://other.example.net');
+  assert.equal(n.pointerEpoch, 11);
+  assert.equal(n.heldPointerDigest, (dP as { digest: string }).digest, 'the digest the pending slot used is the digest APPROVE names');
+  assert.equal(n.lastAcceptedAtMs, NOW + 10);
+  assert.deepEqual(n.pending, []);
+  assert.equal(nP.relay, 'https://relay.example.org', 'the input is untouched');
+});
+
+test('AP2 APPROVE is exempt from pending-full; it drops pending at or below its epoch and keeps a HIGHER pending attempt', async () => {
+  const w = ptrWorld();
+  const pending = pendingAt([5, 6, 102, 103, 104, 105, 106, 107]);
+  assert.equal(pending.length, PENDING_MAX_KEYS);
+  const h = await heldWithPointer(w, 10, { pending });
+  const X = w.make({ epoch: 11, relay: 'https://other.example.net', authority: true });
+  assert.equal(act(await receive(h, X, NOW)), 'refuse:pending-full', 'the same move without APPROVE is refused');
+  const d = await receive(h, w.approveFor(h, X), NOW + 1);
+  assert.equal(d.action, 'approved', 'with APPROVE it goes through');
+  assert.deepEqual(nextOf(d).pending.map((e) => e.epoch), [102, 103, 104, 105, 106, 107], 'epochs 5 and 6 dropped; the higher attempts stay under their own window');
+});
+
+test('AP3 APPROVE settles a conflict at its epoch in its claim\'s favour, even a claim never seen; a conflict above its epoch stays open', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const A = w.make({ epoch: 11, relay: 'https://other.example.net', authority: true });
+  const B = w.make({ epoch: 11, relay: 'https://third.example.net', authority: true });
+  const nA = deepFreeze({ ...nextOf(await receive(h, A, NOW + 1)) });
+  const open = deepFreeze({ ...nextOf(await receive(nA, B, NOW + 2)) });
+  assert.equal(open.conflicts.length, 1);
+  assert.equal(act(await receive(open, w.make({ epoch: 12 }), NOW + 3)), 'refuse:conflict-open', 'pointers are frozen');
+  const dA = await receive(open, w.approveFor(open, A), NOW + 4);
+  assert.equal(dA.action, 'approved', 'APPROVE passes the conflict gate');
+  assert.deepEqual(nextOf(dA).conflicts, []);
+  assert.deepEqual(nextOf(dA).pending, []);
+  assert.equal(nextOf(dA).relay, 'https://other.example.net');
+  const C = w.make({ epoch: 11, relay: 'https://fourth.example.net', authority: true });
+  const dC = await receive(open, w.approveFor(open, C), NOW + 4);
+  assert.equal(dC.action, 'approved', 'a claim nobody has sent yet can be approved too');
+  assert.equal(nextOf(dC).relay, 'https://fourth.example.net');
+  assert.equal(act(await receive(deepFreeze({ ...nextOf(dA) }), w.make({ epoch: 12, relay: 'https://other.example.net' }), NOW + 9)), 'accept', 'pointers resume');
+  // conflicts at other epochs: one at or below the approved epoch is superseded, one above stays
+  const two = deepFreeze({ ...open, conflicts: [{ kind: 'pointer' as const, identityEpoch: 1, epoch: 9, digests: ['aa'.repeat(32), 'bb'.repeat(32)] }] });
+  assert.deepEqual(nextOf(await receive(two, w.approveFor(two, A), NOW)).conflicts, []);
+  const above = deepFreeze({ ...open, conflicts: [{ kind: 'pointer' as const, identityEpoch: 1, epoch: 20, digests: ['aa'.repeat(32), 'bb'.repeat(32)] }] });
+  assert.deepEqual(nextOf(await receive(above, w.approveFor(above, A), NOW)).conflicts.map((c) => c.epoch), [20]);
+});
+
+test('AP4 the same record again, or the same claim re-approved with fresh signatures, is a no-op', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const X = w.make({ epoch: 11, relay: 'https://other.example.net', authority: true });
+  const rec = w.approveFor(h, X);
+  const first = await receive(h, rec, NOW);
+  const n = deepFreeze({ ...nextOf(first) });
+  for (const again of [rec, w.approveFor(h, X)]) {
+    const d = await receive(n, again, NOW + 5);
+    assert.equal(d.action, 'approved');
+    assert.equal((d as { idempotent: boolean }).idempotent, true);
+    assert.ok(!('next' in d), 'nothing changes');
+  }
+});
+
+test('AP5 stale, ahead and refused: each is a code and changes nothing', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const X = w.make({ epoch: 11, relay: 'https://other.example.net', authority: true });
+  assert.equal(act(await receive(h, w.approveFor(h, X, { epoch: 0 }), NOW)), 'stale:stale-identity-epoch');
+  const ahead = await receive(h, w.approveFor(h, X, { epoch: 2 }), NOW);
+  assert.equal(act(ahead), 'hold:approve-ahead');
+  assert.ok(!('next' in ahead));
+  const attacker = { edSecret: randomBytes(32), dsaSecret: ml_dsa87.keygen(randomBytes(32)).secretKey };
+  assert.equal(act(await receive(h, w.approveFor(h, X, { idSigner: attacker }), NOW)), 'refuse:bad-identity-sig');
+  const noPin = deepFreeze({ ...h, ownerAuthorityPin: undefined });
+  assert.equal(act(await receive(noPin, w.approveFor(h, X), NOW)), 'refuse:no-authority-pin');
+  assert.equal(act(await receive(h, w.approveFor(h, w.make({ epoch: 11, authority: false })), NOW)), 'refuse:subject-not-authority-signed');
+  const older = await receive(h, w.approveFor(h, w.make({ epoch: 9, relay: 'https://other.example.net', authority: true })), NOW);
+  assert.equal(act(older), 'stale:stale-pointer', 'an APPROVE cannot move the held pointer backwards');
+  assert.ok(!('next' in older));
+  assert.equal(act(await receive(h, { kind: 'approve', bytes: new TextEncoder().encode('MARKER-ATTACKER-STRING') }, NOW)).startsWith('refuse:malformed:'), true);
+});
+
+test('AP6 an APPROVE at the held pointer epoch with a DIFFERENT claim replaces it (the settle-the-conflict case) and applies its relay', async () => {
+  const w = ptrWorld();
+  const h = await heldWithPointer(w, 10);
+  const X = w.make({ epoch: 10, relay: 'https://other.example.net', authority: true });
+  const d = await receive(h, w.approveFor(h, X), NOW + 2);
+  assert.equal(d.action, 'approved');
+  assert.equal(nextOf(d).relay, 'https://other.example.net');
+  assert.equal(nextOf(d).pointerEpoch, 10);
+  assert.notEqual(nextOf(d).heldPointerDigest, h.heldPointerDigest);
 });
