@@ -22,6 +22,8 @@ class Stub:
     """Stands in for the Centurion wherever only the routing is under test."""
     def __init__(self, sha="", out=bc.ACCEPTED):
         self.vkey_sha, self.out, self.calls, self.exc, self.alarms = sha, out, [], None, 0
+        self.retention = {"interval_s": 0, "last_purge_at": None, "deposits_deleted": 0, "matches_deleted": 0, "scrubbed": None,
+                          "totals": {"deposits": 0, "matches": 0, "withdrawn": 0}}
 
     def handle(self, op, raw, ip):
         self.calls.append((op, raw, ip))
@@ -33,6 +35,11 @@ class Stub:
         if self.exc:
             raise self.exc
         return self.alarms
+
+    def retention_status(self):
+        if self.exc:
+            raise self.exc
+        return dict(self.retention, interval_s=getattr(self, "retention_interval", 0))
 
 
 @pytest.fixture
@@ -366,7 +373,8 @@ def test_health_with_no_admin_key_configured_refuses_everyone(world, monkeypatch
 def test_health_ok_is_counts_only(world):
     app, _ = do_mount(world)
     j = TestClient(app).get("/admin/beacon/health", headers=HK).json()
-    assert set(j) == {"status", "vkey", "alarms", "db_bytes", "disk_free_bytes"}
+    assert set(j) == {"status", "vkey", "alarms", "db_bytes", "disk_free_bytes", "retention"}
+    assert j["retention"]["interval_s"] == 0 and j["retention"]["last_purge_at"] is None
     assert j["status"] == "ok" and j["alarms"] == 0 and j["vkey"] == "rehearsal"
     assert isinstance(j["disk_free_bytes"], int)
 
@@ -385,6 +393,68 @@ def test_health_warns_on_low_disk_and_alarm_outranks_it(world, monkeypatch):
     assert c.get("/admin/beacon/health", headers=HK).json()["status"] == "WARN"
     world["stub"].alarms = 1
     assert c.get("/admin/beacon/health", headers=HK).json()["status"] == "ALARM"
+
+
+def test_health_warns_when_the_last_purge_did_not_scrub(world):
+    world["stub"].retention["scrubbed"] = False
+    app, _ = do_mount(world)
+    j = TestClient(app).get("/admin/beacon/health", headers=HK).json()
+    assert j["status"] == "WARN" and j["retention"]["scrubbed"] is False
+    world["stub"].alarms = 1
+    assert TestClient(app).get("/admin/beacon/health", headers=HK).json()["status"] == "ALARM"
+
+
+def beacon_threads():
+    return [t for t in threading.enumerate() if t.name == "beacon-retention"]
+
+
+def test_retention_off_when_unset_starts_no_thread(world, monkeypatch, capsys):
+    monkeypatch.delenv(bc.RETENTION_ENV, raising=False)
+    before = len(beacon_threads())
+    _, m = do_mount(world)
+    assert m is not None and len(beacon_threads()) == before
+    assert world["stub"].retention_interval == 0
+    assert "retention OFF" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("raw", ["0", "59", "banana"])
+def test_retention_stays_off_for_zero_or_a_bad_value(world, monkeypatch, raw):
+    monkeypatch.setenv(bc.RETENTION_ENV, raw)
+    before = len(beacon_threads())
+    do_mount(world)
+    assert len(beacon_threads()) == before and world["stub"].retention_interval == 0
+
+
+def test_retention_starts_one_daemon_thread_when_set(world, monkeypatch, capsys):
+    monkeypatch.setenv(bc.RETENTION_ENV, "86400")
+    started = []
+    monkeypatch.setattr(bc, "retention_loop", lambda *a, **k: started.append(a))
+    do_mount(world)
+    deadline = time.time() + 5
+    while not started and time.time() < deadline:
+        time.sleep(0.01)
+    assert started == [(world["stub"], 86400)] and world["stub"].retention_interval == 86400
+    assert "retention: ON every 86400s" in capsys.readouterr().out
+
+
+def test_the_retention_thread_cannot_hold_the_process_open(world, monkeypatch):
+    monkeypatch.setenv(bc.RETENTION_ENV, "86400")
+    release = threading.Event()
+    monkeypatch.setattr(bc, "retention_loop", lambda *a, **k: release.wait(5))
+    do_mount(world)
+    try:
+        assert [t.daemon for t in beacon_threads()] == [True]
+    finally:
+        release.set()
+
+
+def test_retention_needs_every_mount_precondition(world, monkeypatch):
+    monkeypatch.setenv(bc.RETENTION_ENV, "86400")
+    started = []
+    monkeypatch.setattr(bc, "retention_loop", lambda *a, **k: started.append(a))
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")                  # a refused mount must not start the purge
+    _, m = do_mount(world)
+    assert m is None and started == []
 
 
 def test_health_that_cannot_see_does_not_say_ok(world):
