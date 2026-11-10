@@ -77,12 +77,15 @@ export interface PairRecord {
   /** lifetime fact for the note layer: a poll ever answered match OR a withdraw answered match (v2 s3). */
   observedMatch: boolean;
   /** the epoch of the row whose match answer was FIRST observed; CLEARED by a 'removed' latch (v3 A2 —
-   * a Remove then a re-Trust restarts the clock), unchanged by 'frozen'. matchSince() serves it. */
-  firstMatchEpoch?: string;
+   * a Remove then a re-Trust restarts the clock), unchanged by 'frozen'. matchSince() serves it.
+   * null is the G2 TOMBSTONE: a stored null wins the merge over any stale epoch — a delete would
+   * only resurrect the old clock under `ours ?? cur`. */
+  firstMatchEpoch?: string | null;
   /** epochs whose (slot,N) is spent — a 'withdrawn' deposit answer; never re-deposited (v1 s2). */
   spentEpochs: string[];
-  /** a deposit is owed: the tap wanted one and a transient answer kept it out (retried at renewal). */
-  pendingDeposit: boolean;
+  /** L12b: epochs with a recorded FINAL refusal (NO_RETRY / point:* / locally-impossible body) —
+   * no retry in that epoch, owed again at the next. Owed is DERIVED from state; no flag. */
+  refusedEpochs: string[];
   rows: RowRecord[];
   pendingWithdraws: PendingWithdraw[];
   /** rowIds this writer deliberately dropped (refused-drop / L11 close) — without it the L6b
@@ -96,10 +99,10 @@ export interface PairRecord {
 export interface BeaconStorePort {
   get(pairId: string): Promise<PairRecord | undefined>;
   put(rec: PairRecord): Promise<void>;
-  /** v3 L6b: atomic compare-and-swap — write `next` only if the stored record still carries
+  /** v3 L6b/G11: atomic compare-and-swap — write `next` only if the stored record still carries
    * `expectedVersion`. Two open tabs share the durable store, so a client-side queue can't
-   * serialise them; stores that can't CAS may omit this and get merge-then-put instead. */
-  cas?(pairId: string, expectedVersion: number, next: PairRecord): Promise<boolean>;
+   * serialise them. REQUIRED: commit wins a CAS or fails loudly; there is no plain-put fallback. */
+  cas(pairId: string, expectedVersion: number, next: PairRecord): Promise<boolean>;
   pairs(): Promise<PairRecord[]>;
 }
 /** The sealed-store facet: x and one-time seeds never leave it. */
@@ -144,7 +147,10 @@ type Answer =
   | { kind: 'busy' } | { kind: 'unreadable' };
 export type TrustResult =
   | { kind: 'deposited' } | { kind: 'spent' } | { kind: 'pending' } | { kind: 'failed' }
-  | { kind: 'busy' } | { kind: 'latched' } | { kind: 'unconfirmed' } | { kind: 'unsent' };
+  | { kind: 'busy' } | { kind: 'latched' } | { kind: 'unconfirmed' } | { kind: 'unsent' }
+  /** G9/L10b: the held row lives under a key this client does not have — it cannot light for this
+   * client until the epoch closes. NOT 'deposited': it is false to the person. */
+  | { kind: 'unreachable' };
 export interface BeaconClient {
   trustAtTap(pairId: string): Promise<TrustResult>;
   removeAtTap(pairId: string): Promise<{ observedMatch: boolean }>;
@@ -160,7 +166,7 @@ export interface BeaconClient {
 }
 
 const fresh = (pairId: string): PairRecord =>
-  ({ pairId, observedMatch: false, spentEpochs: [], pendingDeposit: false, rows: [], pendingWithdraws: [] });
+  ({ pairId, observedMatch: false, spentEpochs: [], refusedEpochs: [], rows: [], pendingWithdraws: [] });
 
 export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const base = (deps.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
@@ -185,12 +191,18 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     return out;
   };
 
-  const getRec = async (pairId: string) => (await deps.store.get(pairId)) ?? fresh(pairId);
+  const getRec = async (pairId: string) => {
+    const r = (await deps.store.get(pairId)) ?? fresh(pairId);
+    r.refusedEpochs ??= [];
+    return r;
+  };
 
-  /** v3 L6b: writes to a pair's record are serialised — compare-and-swap on `version` when the
-   * store supports it, else a merge-then-put so an older tap's save can never REPLACE a record
-   * that changed after it read it (pendingWithdraws written by removeAtTap survive). The merge
-   * unions the append-only fields and keeps our newest row states. */
+  /** v3 L6b/G3: writes to a pair's record are serialised — compare-and-swap on `version`. The merge
+   * unions the append-only fields; row states are MONOTONE (standing -> withdrawn -> released),
+   * so a stale copy can never move a row backward — merge per row by rank, not "ours is newer". */
+  const ROW_RANK: Record<RowRecord['state'], number> = {
+    unknown: 0, standing: 1, matched: 2, unreachable: 2, withdrawn: 3, spent: 3,
+  };
   const dropRow = (rec: PairRecord, row: RowRecord): void => {
     rec.rows = rec.rows.filter((r) => r !== row);
     (rec.deletedRows ??= []).push(row.rowId);
@@ -199,40 +211,42 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     if (!cur) return ours;
     const del = new Set(ours.deletedRows ?? []);
     const rows = new Map(cur.rows.filter((r) => !del.has(r.rowId)).map((r) => [r.rowId, r]));
-    for (const r of ours.rows) rows.set(r.rowId, r);                 // our view is newer per row
+    for (const r of ours.rows) {
+      const prior = rows.get(r.rowId);
+      if (!prior || ROW_RANK[r.state] >= ROW_RANK[prior.state]) rows.set(r.rowId, r);
+    }
     const delW = new Set(ours.deletedWithdraws ?? []);
     const wds = new Map(cur.pendingWithdraws.filter((w) => !delW.has(w.rowId)).map((w) => [w.rowId, w]));
     for (const w of ours.pendingWithdraws) wds.set(w.rowId, w);
     return {
       ...ours,
       observedMatch: cur.observedMatch || ours.observedMatch,
-      firstMatchEpoch: ours.firstMatchEpoch ?? cur.firstMatchEpoch,
+      // G2: a null firstMatchEpoch is the clear-tombstone — it wins over any stale stored epoch;
+      // only an untouched (undefined) field defers to the stored clock.
+      firstMatchEpoch: ours.firstMatchEpoch !== undefined ? ours.firstMatchEpoch : cur.firstMatchEpoch,
       spentEpochs: [...new Set([...cur.spentEpochs, ...ours.spentEpochs])],
-      pendingDeposit: cur.pendingDeposit || ours.pendingDeposit,
+      refusedEpochs: [...new Set([...(cur.refusedEpochs ?? []), ...(ours.refusedEpochs ?? [])])],
       rows: [...rows.values()],
       pendingWithdraws: [...wds.values()],
       deletedRows: [...new Set([...(cur.deletedRows ?? []), ...(ours.deletedRows ?? [])])],
       deletedWithdraws: [...new Set([...(cur.deletedWithdraws ?? []), ...(ours.deletedWithdraws ?? [])])],
     };
   };
+  /** G11: the store port requires `cas` — commit either wins a compare-and-swap or fails loudly;
+   * never a plain-put fallback, and after 8 lost swaps it throws. A save that failed BEFORE a
+   * deposit leaves means nothing is sent (callers map it to 'busy' with 0 requests). */
   const commit = async (rec: PairRecord): Promise<void> => {
-    if (deps.store.cas) {
-      for (let i = 0; i < 8; i++) {
-        const cur = await deps.store.get(rec.pairId);
-        const base = cur?.version ?? 0;
-        const next = mergeRec(cur, rec);
-        next.version = base + 1;
-        if (await deps.store.cas(rec.pairId, base, next)) {
-          Object.assign(rec, next);
-          return;
-        }
+    for (let i = 0; i < 8; i++) {
+      const cur = await deps.store.get(rec.pairId);
+      const base = cur?.version ?? 0;
+      const next = mergeRec(cur, rec);
+      next.version = base + 1;
+      if (await deps.store.cas(rec.pairId, base, next)) {
+        Object.assign(rec, next);
+        return;
       }
     }
-    const cur = await deps.store.get(rec.pairId);
-    const merged = mergeRec(cur, rec);
-    merged.version = (cur?.version ?? 0) + 1;
-    await deps.store.put(merged);
-    Object.assign(rec, merged);
+    throw new Error(`beacon commit: CAS lost 8 attempts for ${rec.pairId}`);
   };
 
   /** Latch gates: 'removed' stops every wire action for the pair (L3); 'frozen' only masks the local match view —
@@ -335,18 +349,34 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     return r;
   };
 
-  /** deposit for one epoch if no row covers it and it isn't spent.
-   * v3 L10: the 'unknown' row (rowId + pinned oneTimePk + derived H_e/N) is saved durably BEFORE
-   * the deposit fetch leaves — a lost answer never loses the row. Only a refused body means
-   * not-stored (drop + release); every other outcome is UNKNOWN and retries with the SAME K.
-   * v3 L2c: after the fetch returns the latch is re-read BEFORE recording — a Remove mid-flight
-   * ends with a withdraw sent or durably queued. Returns the wire answer, or a sentinel. */
-  async function depositEpoch(rec: PairRecord, epoch: bigint): Promise<Answer | 'skipped' | 'unsent' | 'latched'> {
+  /** Deposit outcomes richer than the wire answer — mapped to TrustResult at the tap. */
+  type DepositOutcome =
+    | 'spent-epoch'            // (slot,N) spent for this epoch — owed never (G5)
+    | 'refused-epoch'          // a FINAL refusal is recorded for this epoch (L12b) — owed next epoch
+    | 'covered'                // a standing/matched row covers the epoch
+    | 'covered-unreachable'    // only an 'unreachable' row covers it — no re-mint (L8c/G8)
+    | 'unsent'                 // no secrets or the proof threw — derived-owed retries it later
+    | 'unsaved'                // the write-ahead save lost CAS 8x — nothing was sent (G11)
+    | 'latched'                // the latch was seen before the fetch left (G6)
+    | 'already-fresh';         // 'already' to a FRESH mint — unreachable (G9)
+
+  /** L12: owed is DERIVED from state — deposit for one epoch unless it is spent, finally-refused
+   * for the epoch, or already covered (standing/matched; an 'unreachable' row covers too, L8c).
+   * A row left 'unknown' is retried with its pinned K (L10). NO_RETRY/point:* answers land in
+   * refusedEpochs — per (pair,epoch), owed again next epoch; no flag can stick (G4).
+   * L2c: the latch is re-read before the fetch leaves AND after it returns, before it is applied.
+   * G6: a latch seen BEFORE the fetch leaves drops a fresh mint + releases its seed and queues NO
+   * withdraw — a withdraw is queued only for a stored 'unknown' row (an earlier call may have
+   * sent it) or when the fetch returned. */
+  async function depositEpoch(rec: PairRecord, epoch: bigint): Promise<Answer | DepositOutcome> {
     const e = String(epoch);
-    if (rec.spentEpochs.includes(e)) return 'skipped';
-    if (rec.rows.some((r) => r.epoch === e && (r.state === 'standing' || r.state === 'matched'))) return 'skipped';
+    if (rec.spentEpochs.includes(e)) return 'spent-epoch';
+    if ((rec.refusedEpochs ?? []).includes(e)) return 'refused-epoch';
+    const cover = rec.rows.filter((r) => r.epoch === e);
+    if (cover.some((r) => r.state === 'standing' || r.state === 'matched')) return 'covered';
+    if (cover.length > 0 && cover.every((r) => r.state === 'unreachable')) return 'covered-unreachable';
     const sec = await deps.secrets.depositSecrets(rec.pairId);
-    if (!sec) { rec.pendingDeposit = true; return 'unsent'; }
+    if (!sec) return 'unsent';
     // pinned-K: an 'unknown' row for this epoch is the retry's row — same K, new proof.
     let row = rec.rows.find((r) => r.epoch === e && r.state === 'unknown');
     let freshMint = false;
@@ -364,7 +394,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         dropRow(rec, row);
         await deps.secrets.releaseRow(row!.rowId);
       }
-      rec.pendingDeposit = true;
       return 'unsent';
     }
     row.H_e = String(built.signals.H_e);
@@ -372,14 +401,22 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     if (built.body.length > MAX_DEPOSIT_BYTES || new TextEncoder().encode(built.body).length > MAX_DEPOSIT_BYTES) {
       dropRow(rec, row);
       if (freshMint) await deps.secrets.releaseRow(row.rowId);
+      if (!(rec.refusedEpochs ??= []).includes(e)) rec.refusedEpochs.push(e);  // deterministic bad body: always repeats
+      try { await commit(rec); } catch { return 'unsaved'; }
       return { kind: 'refused', reason: 'wire' };                     // locally indistinguishable: never send it
     }
     // L10 write-ahead: the 'unknown' row is durable BEFORE the fetch leaves (seed stays sealed).
+    // G11: if this save fails, NOTHING is sent — the tap reports 'busy' with 0 requests.
     if (freshMint) rec.rows.push(row);
-    await commit(rec);
-    if (await removed(rec.pairId)) {                                  // v2 L2a: a tap mid-proof sends nothing — but L2c queues the withdraw
-      queueWithdraw(rec, row.rowId, 0);
-      await commit(rec);
+    try { await commit(rec); } catch { return 'unsaved'; }
+    if (await removed(rec.pairId)) {                                  // G6: latch seen before the fetch leaves —
+      if (freshMint) {                                                // drop the fresh mint + release its seed; NO withdraw
+        dropRow(rec, row);
+        await deps.secrets.releaseRow(row.rowId);
+      } else {
+        queueWithdraw(rec, row.rowId, 0);                             // stored 'unknown': an earlier call may have sent it
+      }
+      try { await commit(rec); } catch { return 'unsaved'; }
       return 'latched';
     }
     const a = await post('deposit', built.body);
@@ -390,12 +427,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         // L10b: the server keeps the FIRST K — 'already' to a fresh mint means the held row is
         // under a key we don't have. 'unreachable': never polled, never withdrawn, no un-trust note.
         row.state = 'unreachable';
-        rec.pendingDeposit = false;
         await commit(rec);
-        return a;
+        return 'already-fresh';
       }
       row.state = 'standing';
-      rec.pendingDeposit = false;
       if (latchedNow) {
         if ((await withdrawRow(rec, row)) === 'queued') queueWithdraw(rec, row.rowId, 0);
       }
@@ -404,7 +439,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     }
     if (a.kind === 'withdrawn') {
       if (!rec.spentEpochs.includes(e)) rec.spentEpochs.push(e);      // (slot,N) spent for the epoch: no retry
-      rec.pendingDeposit = false;
       dropRow(rec, row);
       await deps.secrets.releaseRow(row.rowId);
       await commit(rec);
@@ -412,15 +446,17 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     }
     if (a.kind === 'refused') {
       // a refused body (incl. the verifier's own 'timeout') means nothing was stored: drop + release.
+      // L12b: a refusal the server will always repeat is recorded for THIS epoch — no retry here,
+      // owed again at the next. Transient refusals record nothing: derived-owed retries them.
       dropRow(rec, row);
       await deps.secrets.releaseRow(row.rowId);
-      rec.pendingDeposit = !(NO_RETRY.has(a.reason) || a.reason.startsWith('point:'));
+      if ((NO_RETRY.has(a.reason) || a.reason.startsWith('point:')) && !(rec.refusedEpochs ??= []).includes(e))
+        rec.refusedEpochs.push(e);
       await commit(rec);
       return a;
     }
     // UNKNOWN (busy / unreadable / HTTP timeout / 429 / 503): the deposit may have landed —
     // keep the row 'unknown' and its seed; the retry re-deposits the SAME K.
-    rec.pendingDeposit = true;
     if (latchedNow) queueWithdraw(rec, row.rowId, 0);                 // Remove mid-flight: withdraw queued (L2c)
     await commit(rec);
     return a;
@@ -459,9 +495,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         dirty = true;
       }
     }
-    const cutoff = String(cur - 2);
-    const spent = rec.spentEpochs.filter((e) => e >= cutoff);
+    const cutoff = cur - 2;                                              // G10: numeric compare, never string
+    const spent = rec.spentEpochs.filter((e) => Number(e) >= cutoff);
+    const refused = (rec.refusedEpochs ?? []).filter((e) => Number(e) >= cutoff);
     if (spent.length !== rec.spentEpochs.length) { rec.spentEpochs = spent; dirty = true; }
+    if (refused.length !== (rec.refusedEpochs ?? []).length) { rec.refusedEpochs = refused; dirty = true; }
     return dirty;
   }
 
@@ -474,14 +512,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     rec.pendingWithdraws = rec.pendingWithdraws.filter((x) => x.rowId !== rowId);
     (rec.deletedWithdraws ??= []).push(rowId);
   };
-  /** v3 A2: a 'removed' latch clears the match clock wherever it is observed — local Remove
-   * (removeAtTap) or a remote un-trust note seen on a read. Delete on sight. */
-  const clearClockIfRemoved = async (pairId: string, rec?: PairRecord) => {
-    if (!(await removed(pairId))) return;
-    const r = rec ?? await deps.store.get(pairId);
-    if (r?.firstMatchEpoch !== undefined) { delete r.firstMatchEpoch; await deps.store.put(r); }
-  };
-
   return {
     /** v2 s1: the first deposit happens AT THE TAP. Clears the LOCAL latch only (L5); a remote latch still blocks. */
     async trustAtTap(pairId) {
@@ -493,16 +523,25 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       if ((await deps.latch.kindOf(pairId)) === 'removed') await deps.latch.clearLatched(pairId, 'local');
       if (await removed(pairId)) return { kind: 'latched' };            // a 'removed' latch stands ('frozen' does not block)
       const rec = await getRec(pairId);
-      let saw: Answer | 'skipped' | 'unsent' | 'latched' = 'skipped';
+      let saw: Answer | DepositOutcome = 'covered';
       for (const epoch of depositableEpochs(now())) {
         const a = await depositEpoch(rec, epoch);
         if (epoch === BigInt(epochAt(now()))) saw = a;
       }
-      await commit(rec);
+      try {
+        await commit(rec);
+      } catch (err) {
+        if (typeof saw === 'string') return { kind: 'busy' };           // no wire answer yet — the send never left
+        throw err;                                                    // the wire answered — fail loudly
+      }
       // v3 honesty: 'deposited' only when the wire answered accepted/already — never for unsent work.
-      if (saw === 'skipped') return { kind: 'deposited' };              // a standing row already covers the epoch
+      if (saw === 'covered') return { kind: 'deposited' };              // a standing/matched row already covers the epoch
+      if (saw === 'covered-unreachable' || saw === 'already-fresh') return { kind: 'unreachable' };  // G9/L10b
+      if (saw === 'spent-epoch') return { kind: 'spent' };              // G5: a spent epoch is never 'deposited'
+      if (saw === 'refused-epoch') return { kind: 'failed' };           // a final refusal stands for this epoch
       if (saw === 'unsent') return { kind: 'unsent' };                  // proof threw / no secrets — nothing sent
-      if (saw === 'latched') return { kind: 'latched' };                // Remove mid-proof — nothing sent, withdraw queued
+      if (saw === 'unsaved') return { kind: 'busy' };                   // G11: the write-ahead save lost CAS — 0 requests
+      if (saw === 'latched') return { kind: 'latched' };                // Remove mid-proof — nothing sent
       if (saw.kind === 'accepted' || saw.kind === 'already') return { kind: 'deposited' };
       if (saw.kind === 'withdrawn') return { kind: 'spent' };
       if (saw.kind === 'busy') return { kind: 'busy' };
@@ -515,7 +554,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       lastCall.set(pairId, ++callSeq);                                  // synchronous, before the first await
       await deps.latch.setLatched(pairId, 'local');                     // L1: first and durably, before any network
       const rec = await getRec(pairId);
-      delete rec.firstMatchEpoch;                                       // v3 A2: 'removed' clears matchSince — a re-Trust restarts the clock
+      rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock — a re-Trust restarts it
       const live = visibleEpochs(now());
       for (const row of rec.rows) {
         // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
@@ -531,8 +570,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     async matchState(pairId) {
       if (!(await deps.confirmed.isConfirmed(pairId))) return 'none';
       const kind = await deps.latch.kindOf(pairId);
-      if (kind === 'removed') { await clearClockIfRemoved(pairId); return 'none'; }
-      if (kind !== null) return 'none';
+      if (kind !== null) return 'none';                                 // reads never write (G7); the clock tombstone is durable from Remove
       const rec = await deps.store.get(pairId);
       if (!rec) return 'none';
       const live = visibleEpochs(now());
@@ -544,9 +582,9 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
      * does not hide it. Local read only (no wire request). */
     async matchSince(pairId) {
       if (!(await deps.confirmed.isConfirmed(pairId))) return null;
-      if ((await deps.latch.kindOf(pairId)) === 'removed') { await clearClockIfRemoved(pairId); return null; }
+      if ((await deps.latch.kindOf(pairId)) === 'removed') return null; // reads never write (G7)
       const e = (await deps.store.get(pairId))?.firstMatchEpoch;
-      return e === undefined ? null : Number(e);
+      return e == null ? null : Number(e);                              // null is the G2 tombstone — same as never-set
     },
 
     /** the scheduled action (v1 s3.4 + v2 L3): owed deposits, then poll, then the withdraw queue. */
@@ -554,13 +592,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       if (!(await deps.confirmed.isConfirmed(pairId))) return;
       if (await removed(pairId)) return;                                // 'removed' skips; 'frozen' renews on schedule
       const rec = await getRec(pairId);
-      if (rec.pendingDeposit) {
-        for (const epoch of depositableEpochs(now())) {
-          if (!rec.pendingDeposit) break;
-          await depositEpoch(rec, epoch);
-        }
+      // L12: owed is derived — try EVERY depositable epoch; depositEpoch itself skips spent,
+      // refused-for-epoch and covered epochs. No flag gates renewal; a matched pair renews too.
+      for (const epoch of depositableEpochs(now())) {
+        await depositEpoch(rec, epoch);
       }
-      if (await closeEpochs(rec) || rec.pendingDeposit) await commit(rec);
+      if (await closeEpochs(rec)) await commit(rec);
       await this.pollNow(pairId);
       await this.drainPendingWithdraws();
     },
@@ -601,6 +638,9 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       const cur = epochAt(now());
       for (const rec of await deps.store.pairs()) {
         let dirty = false;
+        // G2/G7: a 'removed' latch observed on a WRITE path tombstones the match clock —
+        // covers latches set outside removeAtTap (remote un-trust notes). Reads never do it.
+        if ((await removed(rec.pairId)) && rec.firstMatchEpoch != null) { rec.firstMatchEpoch = null; dirty = true; }
         for (const w of [...rec.pendingWithdraws]) {
           dirty = true;
           const row = rec.rows.find((r) => r.rowId === w.rowId);

@@ -55,6 +55,12 @@ const memStore = (): BeaconStorePort & { data: Map<string, PairRecord> } => {
     data,
     get: async (p) => (data.has(p) ? JSON.parse(JSON.stringify(data.get(p))) : undefined),
     put: async (r) => void data.set(r.pairId, JSON.parse(JSON.stringify(r))),
+    cas: async (p, expectedVersion, next) => {
+      const cur = data.get(p);
+      if ((cur?.version ?? 0) !== expectedVersion) return false;
+      data.set(p, JSON.parse(JSON.stringify(next)));
+      return true;
+    },
     pairs: async () => [...data.values()].map((r) => JSON.parse(JSON.stringify(r))),
   };
 };
@@ -191,7 +197,7 @@ test('deposit withdrawn -> the (slot,N) is spent for the epoch: renew never re-d
   assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
 });
 
-test('deposit refused full -> intent kept (pendingDeposit), a standing row keeps polling', async () => {
+test('deposit refused full -> transient: derived-owed retries it at renew, a standing row keeps polling', async () => {
   const { client, f, store } = harness();
   f.queue.push(ok('accepted'));                                       // the pair-1 row stands
   await client.trustAtTap('pair-1');
@@ -199,7 +205,11 @@ test('deposit refused full -> intent kept (pendingDeposit), a standing row keeps
   f2.queue.push(refused('full'));
   const r = await c2.trustAtTap('pair-2');
   assert.equal(r.kind, 'pending');
-  assert.equal((await s2.get('pair-2'))!.pendingDeposit, true);
+  assert.deepEqual((await s2.get('pair-2'))!.refusedEpochs, []);      // transient: no final refusal recorded
+  f2.calls.length = 0;
+  f2.queue.push(ok('accepted'));
+  await c2.renew('pair-2');                                           // L12: derived-owed retries WITHOUT any flag
+  assert.equal(f2.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
   // the standing row of pair-1 is still polled despite full being seen elsewhere
   f.calls.length = 0;
   f.queue.push(nonceOk(NONCE_A), ok('none'));
@@ -216,8 +226,12 @@ for (const reason of ['rate', 'epoch', 'internal', 'timeout']) {
     const r = await client.trustAtTap('pair-1');
     assert.equal(r.kind, 'pending');
     const rec = await store.get('pair-1');
-    assert.equal(rec!.pendingDeposit, true);
+    assert.deepEqual(rec!.refusedEpochs, []);                          // transient refusals record nothing
     assert.equal(rec!.rows.length, 0);
+    f.calls.length = 0;
+    f.queue.push(ok('accepted'));
+    await client.renew('pair-1');                                      // derived-owed retries it (L12)
+    assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
   });
 }
 
@@ -288,7 +302,7 @@ for (const code of [429, 503]) {
     f.queue.push({ status: code, body: 'slow down' });
     const r = await client.trustAtTap('pair-1');
     assert.equal(r.kind, 'busy');
-    assert.equal((await store.get('pair-1'))!.pendingDeposit, true);
+    assert.equal((await store.get('pair-1'))!.rows[0].state, 'unknown');  // the write-ahead row IS the retry marker
   });
 }
 
@@ -460,7 +474,7 @@ test('a latched pair: no deposit, no poll, in the current epoch, in the cur+1 wi
     const latch = memLatch();
     latch.remote.set('pair-1', 'removed');                            // remote latch: my tap cannot clear it (L5)
     const { client, f, store } = harness({ latch, now: () => at });
-    await store.put({ pairId: 'pair-1', observedMatch: false, spentEpochs: [], pendingDeposit: true,
+    await store.put({ pairId: 'pair-1', observedMatch: false, spentEpochs: [], refusedEpochs: [],
       rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '111', N: '222', state: 'standing' }], pendingWithdraws: [] });
     await client.trustAtTap('pair-1');
     await client.renew('pair-1');
@@ -489,7 +503,8 @@ test("matchSince (v3 A2): epoch INDEX or null; 'removed' latch CLEARS the clock,
   await client.pollNow('pair-1');
   assert.equal(await client.matchSince('pair-1'), EPOCH);              // number, not string
   await latch.setLatched('pair-1', 'remote');                          // a remote un-trust
-  assert.equal(await client.matchSince('pair-1'), null);               // hidden AND cleared
+  assert.equal(await client.matchSince('pair-1'), null);               // hidden (reads never write, G7)
+  await client.drainPendingWithdraws();                                // the scheduled WRITE path tombstones it (G2)
   await latch.clearLatched('pair-1', 'remote');
   assert.equal(await client.matchSince('pair-1'), null);               // does NOT come back — re-Trust restarts the clock
 });
@@ -581,7 +596,7 @@ test('a pending withdraw whose epoch has closed is dropped, seed released', asyn
 test('after a seed-only restore (unconfirmed): ZERO requests for the pair', async () => {
   const confirmed: PairConfirmedPort = { isConfirmed: async () => false };
   const { client, f, store } = harness({ confirmed });
-  await store.put({ pairId: 'pair-1', observedMatch: true, spentEpochs: [], pendingDeposit: true,
+  await store.put({ pairId: 'pair-1', observedMatch: true, spentEpochs: [], refusedEpochs: [],
     rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '111', N: '222', state: 'standing' }], pendingWithdraws: [] });
   await client.trustAtTap('pair-1');
   await client.renew('pair-1');
@@ -693,8 +708,9 @@ test('D12 matchSince: set on first MATCH, unchanged by freeze/unfreeze, cleared 
   assert.equal(await client.matchSince('pair-1'), EPOCH);              // unfreeze is not a re-forge
   latch.local.set('pair-1', 'removed');
   assert.equal(await client.matchSince('pair-1'), null);               // removed hides
+  await client.drainPendingWithdraws();                                // write path observes the latch -> tombstone (G2/G7)
   latch.local.delete('pair-1');
-  assert.equal(await client.matchSince('pair-1'), null);               // and it deleted the stored clock
+  assert.equal(await client.matchSince('pair-1'), null);               // and the clock stays cleared
 });
 
 test('D13 lost deposit answer -> renew re-deposits the SAME pinned K; a later match IS observed', async () => {
@@ -775,7 +791,7 @@ test('D17 a closed-epoch row is released and deleted at renew; observedMatch sur
   f.setFallback(ok('none'));
   await client.renew('pair-1');
   const rec2 = (await store.get('pair-1'))!;
-  assert.equal(rec2.rows.length, 0);                                   // released + deleted (L11)
+  assert.ok(!rec2.rows.some((r) => r.rowId === rec.rows[0].rowId));    // old row released + deleted (L11)
   assert.ok(secrets.released.includes(rec.rows[0].rowId));
   assert.equal(rec2.observedMatch, true);                              // lifetime fact survives
 });
@@ -842,10 +858,10 @@ test('D22 the row is in the store BEFORE the deposit fetch leaves; a never-answe
   const mf = makeFetch();
   let sawRowBeforeFetch = false;
   const slowStore = memStore();
-  const origPut = slowStore.put;
-  slowStore.put = async (r: PairRecord) => {
+  const origCas = slowStore.cas;
+  slowStore.cas = async (p: string, v: number, r: PairRecord) => {
     if (mf.calls.length === 0 && r.rows.some((x) => x.state === 'unknown')) sawRowBeforeFetch = true;
-    return origPut(r);
+    return origCas(p, v, r);
   };
   mf.queue.push({ status: 200, body: '{"status":"accepted"}', delayMs: 10_000 });  // never answers in time
   const { client, secrets } = harness({ store: slowStore, fetch: mf.fetch as any, requestTimeoutMs: 20 });
@@ -886,7 +902,8 @@ test('D24 a server that sends headers and stalls: the call ends at the timeout a
 test("D25 'already' to a fresh K -> 'unreachable': never polled, never withdrawn; L11 retires it", async () => {
   const { client, f, store } = harness();
   f.queue.push(ok('already'));
-  await client.trustAtTap('pair-1');
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'unreachable');                                 // G9: 'already' on a FRESH mint is NOT 'deposited'
   const rec = (await store.get('pair-1'))!;
   assert.equal(rec.rows[0].state, 'unreachable');
   f.calls.length = 0;
@@ -942,4 +959,144 @@ test('D10-ish: only the module-level match view exists — no exported function 
   const m = await import('./beacon-client.js').catch(() => import('./beacon-client')) as any;
   const exports = Object.keys(m);
   assert.ok(!exports.some((e) => /raw|answer|pollRow|withdrawRow|post$/i.test(e)), exports.join(','));
+});
+
+// ---------- Review 3 (G1-G11): derived-owed renewal, tombstone clock, CAS-only commit ----------
+
+test('T-A renewal is owed by STATE: no flag — E+1 deposits once, a second renew deposits 0 times', async () => {
+  let t = MID;
+  const { client, f, prover } = harness({ now: () => t });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // 1 proof + 1 deposit in E
+  t = MID + EPOCH_SECONDS * 1000;                                      // same offset in E+1
+  f.calls.length = 0; prover.proveCalls.length = 0;
+  f.queue.push(ok('accepted'));
+  await client.renew('pair-1');                                        // record read EXACTLY as saved
+  assert.equal(prover.proveCalls.length, 1);                           // one new proof, for E+1
+  assert.equal(prover.proveCalls[0].epoch, BigInt(EPOCH + 1));
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
+  f.calls.length = 0; prover.proveCalls.length = 0;
+  await client.renew('pair-1');                                        // E+1 covered -> owed satisfied
+  assert.equal(prover.proveCalls.length, 0);
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
+});
+
+test('T-B a frozen pair renews on schedule (same fetch shape as unlatched); removed renews nothing', async () => {
+  const latchF = memLatch();
+  latchF.remote.set('pair-1', 'frozen');
+  const { client: cf, f: ff } = harness({ latch: latchF });
+  ff.queue.push(ok('accepted'));
+  await cf.trustAtTap('pair-1');
+  ff.calls.length = 0;
+  ff.queue.push(nonceOk(NONCE_A), ok('none'));
+  await cf.renew('pair-1');                                            // frozen: polls on schedule
+  const frozenCount = ff.calls.length;
+  assert.ok(frozenCount >= 2);                                         // nonce + poll for the standing row
+
+  const latchU = memLatch();
+  const { client: cu, f: fu } = harness({ latch: latchU });
+  fu.queue.push(ok('accepted'));
+  await cu.trustAtTap('pair-1');
+  fu.calls.length = 0;
+  fu.queue.push(nonceOk(NONCE_A), ok('none'));
+  await cu.renew('pair-1');                                            // unlatched baseline
+  assert.equal(fu.calls.length, frozenCount);                          // identical shape
+
+  const latchR = memLatch();
+  latchR.remote.set('pair-1', 'removed');
+  const { client: cr, f: fr } = harness({ latch: latchR });
+  await cr.renew('pair-1');
+  assert.equal(fr.calls.length, 0);                                    // removed: 0 requests
+});
+
+test("T-C an 'unreachable' row covers its epoch: a second tap mints 0 new proofs (G8/L8c)", async () => {
+  const { client, f, prover } = harness();
+  f.queue.push(ok('already'));                                         // fresh mint -> unreachable
+  await client.trustAtTap('pair-1');
+  prover.proveCalls.length = 0; f.calls.length = 0;
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'unreachable');                                 // covered only by unreachable
+  assert.equal(prover.proveCalls.length, 0);                           // no re-mint
+  assert.equal(f.calls.length, 0);
+});
+
+test("T-D a 'proof' refusal is recorded per-epoch: 0 requests next renew in E, a deposit at E+1", async () => {
+  let t = MID;
+  const { client, f, prover } = harness({ now: () => t });
+  f.queue.push(refused('proof'));
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'failed');
+  f.calls.length = 0;
+  await client.renew('pair-1');                                        // refusedEpochs[E] stands
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
+  assert.equal(prover.proveCalls.length, 1);
+  t = MID + EPOCH_SECONDS * 1000;
+  f.queue.push(ok('accepted'));
+  await client.renew('pair-1');                                        // owed again next epoch
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
+});
+
+test('T-E an epoch in spentEpochs is never re-deposited: 0 requests', async () => {
+  const { client, f, prover } = harness();
+  f.queue.push(ok('withdrawn'));
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'spent');
+  f.calls.length = 0; prover.proveCalls.length = 0;
+  await client.renew('pair-1');
+  assert.equal(prover.proveCalls.length, 0);
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
+});
+
+test('G2 tombstone: Remove then Trust with NO read between — the stale clock does not return', async () => {
+  const { client, f, store } = harness();
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.queue.push(nonceOk(NONCE_A), ok('match'));
+  await client.pollNow('pair-1');                                      // firstMatchEpoch = E
+  assert.equal((await store.get('pair-1'))!.firstMatchEpoch, String(EPOCH));
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  await client.removeAtTap('pair-1');                                  // tombstone written — NO matchSince read
+  assert.equal((await store.get('pair-1'))!.firstMatchEpoch, null);
+  const r = await client.trustAtTap('pair-1');                         // epoch spent -> no deposit
+  assert.equal(r.kind, 'spent');
+  assert.equal(await client.matchSince('pair-1'), null);               // mutant "no clear" leaves E here -> red
+});
+
+test('G5 a same-epoch Trust after Remove returns spent with 0 requests', async () => {
+  const { client, f } = harness();
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  await client.removeAtTap('pair-1');
+  f.calls.length = 0;
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'spent');
+  assert.equal(f.calls.length, 0);                                     // 0 requests
+});
+
+test('G11 a store whose cas always loses: trustAtTap is busy, the deposit never leaves', async () => {
+  const mf = makeFetch();
+  const store = memStore();
+  store.cas = async () => false;                                       // every compare-and-swap loses
+  const { client } = harness({ store, fetch: mf.fetch as any });
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'busy');                                        // unsaved -> busy, NOT a thrown crash
+  assert.equal(mf.calls.length, 0);                                    // 0 requests: nothing was sent
+  assert.equal((await store.get('pair-1'))?.rows.length ?? 0, 0);      // mutant plain-put fallback -> this goes red
+});
+
+test("G6 Remove mid-proof on a FRESH mint: row dropped, seed released, NO withdraw queued", async () => {
+  const latch = memLatch();
+  const prover = makeProver({
+    buildDeposit: (keys: any) => {
+      latch.local.set('pair-1', 'removed');                            // Remove lands WHILE the proof runs
+      return Promise.resolve({ body: 'DEPOSIT-BODY-1', signals: { e: keys.epoch, H_e: BigInt(1), N: BigInt(2), K: BigInt(3) } });
+    },
+  });
+  const { client, secrets, store } = harness({ latch, prover });
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'latched');
+  const rec = await store.get('pair-1');
+  assert.equal(rec?.pendingWithdraws.length ?? 0, 0);                  // no withdraw queued for a never-sent mint
+  assert.equal(secrets.released.length, 1);                            // the fresh seed is released
 });
