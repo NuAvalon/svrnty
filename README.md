@@ -89,7 +89,7 @@ A trust layer has to have honest answers for the bad days — a lost device, a c
 
 **If a contact turns hostile (live).** You can break trust and block, right on your device, effective going forward. A block is local: they leave your Galaxy and offers from them stay quiet on this device, and the relay isn't told. Stopping your contact updates from going to a blocked person is built and rolling out. (The quieter protection — stopping a blocked person from reaching you even through the people you both know — is built and unit-verified but not yet wired live, as the trust model notes.)
 
-**If a key is compromised (coming).** Rotating a compromised key or seed is built and cryptographically signed in the protocol, but its in-app send isn't wired yet — so today you can't complete a rotation end-to-end. We say so plainly, because a rotation you believe worked but didn't is worse than knowing it isn't ready.
+**If a key is compromised (coming).** Rotating a compromised key is built and signed in the protocol, but its in-app send isn't wired yet, so today you can't complete one. Rotating a compromised seed is designed but not built. We say so plainly, because a rotation you believe worked but didn't is worse than knowing it isn't ready.
 
 We don't print protections we haven't wired.
 
