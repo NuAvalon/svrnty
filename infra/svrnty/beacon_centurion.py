@@ -11,8 +11,14 @@ another nullifier: the deposit that completes a bond gets ACCEPTED like any othe
 match: released_at = formed_at). A third distinct N at a matched slot can't come from a valid proof by either pair member, so it
 is answered ACCEPTED, stores nothing in the beacon tables, and writes a security-alarm row with the raw body as evidence (no
 client path reads that table; it is not counted against any cap).
-No deletion anywhere. Caps count OPEN epochs only (cur, plus cur-1 / cur+1 inside the grace window), so closed epochs can't block
-new deposits; disk growth is the remaining bound (health check).
+Caps count OPEN epochs only (cur, plus cur-1 / cur+1 inside the grace window), so closed epochs can't block new deposits.
+
+RETENTION. The match table is a record of who bonded with whom, so a closed epoch's rows are deleted once they can never be used again:
+one hour past the end of its last open window. After that the verifier refuses a deposit for it and no client polls it. Only per-epoch
+counts are kept (beacon_epoch_totals). OFF unless BEACON_RETENTION_INTERVAL_S is set: the code default deletes nothing, and until it is
+set disk growth is the bound (health check). Every connection zeroes what it frees, so deleted slots and nullifiers don't linger in free
+pages, and each purge truncates the WAL and reports whether that worked. This does nothing for backups or filesystem copies already taken.
+A security alarm row keeps its slot, nullifier and proof: it is never purged, and removing one is a manual decision.
 """
 from __future__ import annotations
 
@@ -21,6 +27,7 @@ import hmac
 import ipaddress
 import json
 import os
+import random
 import re
 import secrets
 import shutil
@@ -33,6 +40,9 @@ from contextlib import closing
 from pathlib import Path
 
 FLAG_ENV = "BEACON_CENTURION"
+RETENTION_ENV = "BEACON_RETENTION_INTERVAL_S"
+RETENTION_MIN_INTERVAL_S = 60
+RETENTION_MARGIN_S = 3600        # past an epoch's last open window: clock skew, plus a deposit that was verifying as the window closed
 EPOCH_SECONDS = 604800          # copy of beacon-wire.mjs's (the one definition); pinned equal by a test
 GRACE_SECONDS = 600
 EPOCH_CAP_MAX, EPOCH_CAP_MIN = 1_000_000, 10_000
@@ -67,6 +77,8 @@ CREATE TABLE IF NOT EXISTS beacon_matches (
     released_at TEXT, polled_n1 INTEGER NOT NULL DEFAULT 0, polled_n2 INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS beacon_security_alarms (
     at TEXT NOT NULL, epoch INTEGER, slot TEXT, n TEXT, raw TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS beacon_epoch_totals (
+    epoch INTEGER PRIMARY KEY, deposits INTEGER NOT NULL, matches INTEGER NOT NULL, withdrawn INTEGER NOT NULL);
 """
 
 
@@ -99,6 +111,36 @@ def open_epochs(now: float) -> list[int]:
     if now > start + EPOCH_SECONDS - GRACE_SECONDS:
         out.append(cur + 1)
     return out
+
+
+def retention_cutoff(now: float) -> int:
+    """Rows with an epoch below this are past every open window by at least the margin."""
+    return min(open_epochs(now - RETENTION_MARGIN_S))
+
+
+def parse_retention_interval(raw: str | None) -> tuple[int, str | None]:
+    """(seconds, refusal). Unset, empty or "0" = off. Anything but whole seconds at or above the floor is OFF too, with a refusal to print:
+    this path deletes data, so a typo must never switch it on."""
+    if raw is None or raw == "" or raw == "0":
+        return 0, None
+    if not _POSITIVE.fullmatch(raw):
+        return 0, "not-a-number"
+    if int(raw) < RETENTION_MIN_INTERVAL_S or len(raw) > 9:
+        return 0, "out-of-range"
+    return int(raw), None
+
+
+def retention_loop(centurion, interval_s: int, *, sleep=time.sleep, jitter=random.uniform) -> None:
+    """Runs on its own daemon thread, started by the routes only when the toggle is set. Prints counts only, nothing about a row."""
+    sleep(jitter(0, min(600, interval_s)))
+    while True:
+        try:
+            out = centurion.purge_closed()
+            print(f"[beacon] retention: deleted {out['deposits_deleted']} deposits, {out['matches_deleted']} matches, "
+                  f"scrubbed={out['scrubbed']}", flush=True)
+        except Exception:
+            print("[beacon] retention: purge failed", flush=True)
+        sleep(interval_s)
 
 
 def parse_verifier_output(code: int, out: bytes) -> dict:
@@ -194,6 +236,8 @@ class Centurion:
         # before anything is spawned (per-IP limits alone allow an unbounded number across many IPs).
         self._inflight = threading.BoundedSemaphore(max_inflight or os.cpu_count() or 2)
         self._lock = threading.Lock()
+        self.retention_interval = 0                   # set by the routes when the toggle is on; shown on the health view
+        self._retention = {"last_purge_at": None, "deposits_deleted": 0, "matches_deleted": 0, "scrubbed": None}
         with closing(self._db()) as db:
             db.executescript(SCHEMA)
             # The rows are the truth, so the counter is rebuilt from them at every start. That also covers a database older than it.
@@ -206,6 +250,7 @@ class Centurion:
         db = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
+        db.execute("PRAGMA secure_delete=ON")         # every connection: a page split or an update frees bytes too, not only a purge
         return db
 
     @staticmethod
@@ -432,6 +477,63 @@ class Centurion:
     def withdraw(self, raw: bytes, ip: str) -> bytes:
         """Same auth as poll. Lone deposit -> marked withdrawn (kept, can no longer match) -> WITHDRAWN; matched -> inert, MATCH."""
         return self._authenticated_call("withdraw", raw, ip)
+
+    # ---- retention: only ever called by retention_loop, which starts only if the toggle is set ----
+    def purge_closed(self) -> dict:
+        """Delete rows of epochs past the retention cutoff, keeping per-epoch counts, then truncate the WAL. Security alarms are never
+        touched. Counts only in the result. A failure in the delete removes nothing, is reported as not scrubbed and raises. If only the
+        truncate fails, the rows are gone, so the real counts are reported, with scrubbed False."""
+        now = self.clock()
+        try:
+            deposits, matches = self._delete_closed(retention_cutoff(now))
+        except BaseException:
+            self._retention["scrubbed"] = False
+            raise
+        try:
+            scrubbed = self._scrub()
+        except Exception:
+            scrubbed = False
+        self._retention.update(last_purge_at=_now_iso(now), deposits_deleted=deposits, matches_deleted=matches, scrubbed=scrubbed)
+        return dict(self._retention)
+
+    def _delete_closed(self, cutoff: int) -> tuple[int, int]:
+        db = self._db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            dep = {r[0]: (r[1], r[2]) for r in db.execute(
+                "SELECT epoch, count(*), count(withdrawn_at) FROM beacon_deposits WHERE epoch < ? GROUP BY epoch", (cutoff,))}
+            mat = dict(db.execute("SELECT epoch, count(*) FROM beacon_matches WHERE epoch < ? GROUP BY epoch", (cutoff,)).fetchall())
+            for epoch in sorted(set(dep) | set(mat)):
+                n, withdrawn = dep.get(epoch, (0, 0))
+                db.execute("INSERT INTO beacon_epoch_totals (epoch, deposits, matches, withdrawn) VALUES (?, ?, ?, ?) "
+                           "ON CONFLICT(epoch) DO UPDATE SET deposits = deposits + excluded.deposits, "
+                           "matches = matches + excluded.matches, withdrawn = withdrawn + excluded.withdrawn",
+                           (epoch, n, mat.get(epoch, 0), withdrawn))
+            deposits = db.execute("DELETE FROM beacon_deposits WHERE epoch < ?", (cutoff,)).rowcount
+            matches = db.execute("DELETE FROM beacon_matches WHERE epoch < ?", (cutoff,)).rowcount
+            db.execute("DELETE FROM beacon_epoch_counts WHERE epoch < ?", (cutoff,))
+            db.execute("COMMIT")
+            return deposits, matches
+        except BaseException:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
+
+    def _scrub(self) -> bool:
+        """True only if the WAL was really truncated. A checkpoint blocked by a reader doesn't raise, so its result has to be read."""
+        with closing(self._db()) as db:
+            db.execute("PRAGMA busy_timeout=0")
+            busy, log, _ = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            return busy == 0 and log == 0
+
+    def retention_status(self) -> dict:
+        """For the admin health view: counts and times only."""
+        with closing(self._db()) as db:
+            d, m, w = db.execute("SELECT COALESCE(SUM(deposits), 0), COALESCE(SUM(matches), 0), COALESCE(SUM(withdrawn), 0) "
+                                 "FROM beacon_epoch_totals").fetchone()
+        return {"interval_s": self.retention_interval, **self._retention, "totals": {"deposits": d, "matches": m, "withdrawn": w}}
 
     # ---- for the route and the health check ----
     def alarm_count(self) -> int:
