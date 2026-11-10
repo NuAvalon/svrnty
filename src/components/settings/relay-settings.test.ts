@@ -5,14 +5,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RELAY_COPY } from './relay-copy';
 
-describe('Relay settings glass — Flint copy + fail-closed switch', () => {
+describe('Relay settings: the copy, and no way to switch until it is wired', () => {
   const dir = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(join(dir, 'RelaySettings.tsx'), 'utf8');
 
-  it('keeps the helper and never auto-switches', () => {
+  it('keeps the helper and says moving is not available yet', () => {
     assert.match(src, /RELAY_COPY\.currentPrefix/);
-    assert.match(src, /RELAY_COPY\.placeholder/);
+    assert.match(src, /RELAY_COPY\.helper/);
+    assert.match(src, /RELAY_COPY\.unavailable/);
     assert.equal(RELAY_COPY.currentPrefix, "You're on:");
+    assert.equal(RELAY_COPY.unavailable, "Moving to another relay isn't available in the app yet.");
     assert.equal(RELAY_COPY.placeholder, 'https://your-relay.example:8100');
     // NV-7: a relay is content-blind, NOT metadata-blind. The helper names what it does see so it can't read as a
     // complete "only when you connect" list: IP (rate limits), your identity key (every poll/ack sends the owner-auth
@@ -37,13 +39,18 @@ describe('Relay settings glass — Flint copy + fail-closed switch', () => {
       RELAY_COPY.helper.includes('Switching relays moves your dead-drop, not your identity.'),
       true,
     );
-    assert.match(src, /disabled=\{!switchEnabled\}/);
-    assert.match(src, /setPhase\('confirm'\)/);
-    assert.match(src, /switchToRelay/);
+  });
+
+  it('has no field, no check of another host, and no Switch', () => {
+    // connect-src 'self' refuses the check, so every URL would read "can't reach", and a typed URL also sends the
+    // person's IP to that host.
+    for (const gone of [/<input/, /<button/, /validateRelayHealth/, /switchToRelay/, /relay-health/, /relay-migrate-seam/, /createPortal/, /\bfetch\(/]) {
+      assert.doesNotMatch(src, gone);
+    }
     assert.doesNotMatch(src, /auto-switch|autoswitch/i);
   });
 
-  it('never calls the result "done" and reads complete / failedFps / overlapUntil', () => {
+  it('keeps the unmounted Switch seam and its honest copy, for when it is wired', () => {
     assert.equal(RELAY_COPY.nowOn('https://b.example').includes('done'), false);
     assert.equal(RELAY_COPY.incomplete(3).includes('done'), false);
     assert.match(RELAY_COPY.incomplete(3), /3 friends not yet notified/);
@@ -52,10 +59,5 @@ describe('Relay settings glass — Flint copy + fail-closed switch', () => {
     assert.match(seam, /complete/);
     assert.match(seam, /failedFps/);
     assert.match(seam, /overlapUntil/);
-    assert.match(src, /out\.complete/);
-    assert.match(src, /out\.failedFps\.length/);
-    assert.match(src, /writeChosenRelayUrl/);
-    assert.match(src, /RelayMigrateUnwiredError/);
-    assert.doesNotMatch(src, /You're now on \$\{health\.url\}/);
   });
 });

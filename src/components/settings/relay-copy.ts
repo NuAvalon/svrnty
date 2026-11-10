@@ -17,6 +17,7 @@ export const RELAY_COPY = {
   nowOn: (url: string) => `You're now on ${url}.`,
   incomplete: (n: number) =>
     `Migration incomplete — ${n} friend${n === 1 ? '' : 's'} not yet notified. Your old relay keeps receiving for ~7 days.`,
+  unavailable: "Moving to another relay isn't available in the app yet.",
   unwired:
     'This relay is a full svrnty satellite. Switching is built, not yet wired — migrateRelay plus the config override still need the fleet.',
   valid: 'valid',

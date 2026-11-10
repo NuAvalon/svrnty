@@ -16,32 +16,13 @@ async function genesis(page: Page) {
 
 test.use({ serviceWorkers: 'block' });
 
-test('Settings → Relay validates and never auto-switches', async ({ page }) => {
+test('Settings → Relay says where you are and what a relay sees, and offers no way to switch', async ({ page, baseURL }) => {
   test.setTimeout(90_000);
-  await page.route('**/*', async (route) => {
-    const url = route.request().url();
-    const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
-    if (route.request().method() === 'OPTIONS' && url.includes('/health')) {
-      await route.fulfill({ status: 204, headers: cors });
-      return;
-    }
-    if (url.startsWith('https://reg.example:8101/health')) {
-      await route.fulfill({
-        status: 200,
-        headers: { ...cors, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'online', service: 'registration' }),
-      });
-      return;
-    }
-    if (url.startsWith('https://your-relay.example:8100/health')) {
-      await route.fulfill({
-        status: 200,
-        headers: { ...cors, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'online', service: 'satellite', mode: 'full' }),
-      });
-      return;
-    }
-    await route.continue();
+  const foreign: string[] = [];
+  const home = new URL(baseURL!).origin;
+  page.on('request', (r) => {
+    const u = new URL(r.url());
+    if ((u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== home) foreign.push(r.url());
   });
 
   await genesis(page);
@@ -52,25 +33,11 @@ test('Settings → Relay validates and never auto-switches', async ({ page }) =>
   await expect(panel.getByTestId('relay-current')).toContainText("You're on:");
   await expect(panel.getByTestId('relay-helper')).toContainText('never what your messages say');
   await expect(panel.getByTestId('relay-helper')).toContainText('your identity key');
-  await expect(panel.getByTestId('relay-switch')).toBeDisabled();
+  await expect(panel.getByTestId('relay-unavailable')).toHaveText("Moving to another relay isn't available in the app yet.");
 
-  await panel.getByTestId('relay-url-input').fill('https://reg.example:8101');
-  await expect(panel.getByTestId('relay-health')).toContainText('registration-only — need a full relay');
-  await expect(panel.getByTestId('relay-switch')).toBeDisabled();
-
-  await panel.getByTestId('relay-url-input').fill('https://your-relay.example:8100');
-  await expect(panel.getByTestId('relay-health')).toContainText('valid');
-  await expect(panel.getByTestId('relay-switch')).toBeEnabled();
-
-  await panel.getByTestId('relay-switch').click();
-  await expect(page.getByTestId('relay-confirm')).toBeVisible();
-  await page.getByTestId('relay-confirm-go').click();
-  await expect(page.getByTestId('relay-result')).toBeVisible();
-  await expect(page.getByTestId('relay-result')).not.toContainText(/You're now on/i);
-  await expect(page.getByTestId('relay-result')).not.toContainText(/^done$/i);
-  await expect(page.getByTestId('relay-current')).not.toContainText('your-relay.example');
-  await page.screenshot({
-    path: '/opt/cursor/artifacts/screenshots/relay-settings-valid.png',
-    fullPage: true,
-  });
+  await expect(panel.getByRole('textbox')).toHaveCount(0);
+  await expect(panel.getByRole('button')).toHaveCount(0);
+  await expect(page.getByTestId('relay-url-input')).toHaveCount(0);
+  await expect(page.getByTestId('relay-switch')).toHaveCount(0);
+  expect(foreign).toEqual([]);
 });

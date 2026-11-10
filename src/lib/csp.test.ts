@@ -18,7 +18,9 @@ function nonceOf(csp: string): string {
   return m![1];
 }
 const P = (n: string) =>
-  `script-src 'self' 'nonce-${n}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
+  `default-src 'self'; script-src 'self' 'nonce-${n}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
+const directives = (csp: string) =>
+  new Map(csp.split(';').map((d) => d.trim().split(/\s+/)).map(([name, ...values]) => [name, values] as const));
 
 test('the nonce is 128 bits of canonical base64', () => {
   const n = makeScriptNonce();
@@ -45,10 +47,30 @@ test('the production policy is exactly this', () => {
   assert.equal(buildCsp('abc', { dev: false }), P('abc'));
 });
 
-test('the production policy holds none of the tokens the ruling forbids and leaves connect-src alone', () => {
-  const p = buildCsp('abc', { dev: false });
-  for (const bad of ["'unsafe-inline'", "'unsafe-eval'", "'strict-dynamic'", "'wasm-unsafe-eval'", 'connect-src', 'default-src', 'https:', '*']) {
-    assert.ok(!p.includes(bad), `found ${bad}`);
+test('script-src never holds a token that lets injected script run', () => {
+  const script = directives(buildCsp('abc', { dev: false })).get('script-src')!;
+  assert.deepEqual(script, ["'self'", "'nonce-abc'"]);
+  for (const bad of ["'unsafe-inline'", "'unsafe-eval'", "'strict-dynamic'", "'wasm-unsafe-eval'"]) {
+    assert.ok(!script.includes(bad), `found ${bad}`);
+  }
+});
+
+test("'unsafe-inline' appears on style-src and nowhere else", () => {
+  for (const [name, values] of directives(buildCsp('abc', { dev: false }))) {
+    assert.equal(values.includes("'unsafe-inline'"), name === 'style-src', name);
+  }
+});
+
+test("connect-src is exactly 'self', and default-src backs up every other kind of load", () => {
+  const d = directives(buildCsp('abc', { dev: false }));
+  assert.deepEqual(d.get('connect-src'), ["'self'"]);
+  assert.deepEqual(d.get('default-src'), ["'self'"]);
+});
+
+test('no directive allows a whole scheme or any host', () => {
+  for (const [name, values] of directives(buildCsp('abc', { dev: false }))) {
+    for (const bad of ['*', 'https:', 'http:', 'ws:', 'wss:']) assert.ok(!values.includes(bad), `${name} has ${bad}`);
+    for (const v of values) assert.ok(!/\/\//.test(v), `${name} names a host: ${v}`);
   }
 });
 
