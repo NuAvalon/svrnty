@@ -43,9 +43,13 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 // ---- ports (piece A owns no storage and sees no secrets) ----
 
-/** The durable "this pair is removed" record, owned by the vault side. local = my Remove/Block; remote = an un-trust note. */
+/** The durable "this pair is removed" record, owned by the vault side. local = my Remove/Block; remote = an un-trust note.
+ * kindOf carries the latch KIND: 'removed' behaves as L3/L5 describe (every scheduled action skips the pair); 'frozen'
+ * keeps renewal deposits and polls on schedule and hides the match from local consumers only. 'removed' dominates:
+ * if either source is 'removed', the pair is 'removed'. isLatched(p) === (kindOf(p) !== null). */
 export interface LatchPort {
   isLatched(pairId: string): Promise<boolean>;
+  kindOf(pairId: string): Promise<'removed' | 'frozen' | null>;
   setLatched(pairId: string, source: 'local' | 'remote'): Promise<void>;
   clearLatched(pairId: string, source: 'local' | 'remote'): Promise<void>;
 }
@@ -66,6 +70,8 @@ export interface PairRecord {
   pairId: string;
   /** lifetime fact for the note layer: a poll ever answered match OR a withdraw answered match (v2 s3). */
   observedMatch: boolean;
+  /** the epoch of the row whose match answer was FIRST observed; set once, never re-written. matchSince() serves it. */
+  firstMatchEpoch?: string;
   /** epochs whose (slot,N) is spent — a 'withdrawn' deposit answer; never re-deposited (v1 s2). */
   spentEpochs: string[];
   /** a deposit is owed: the tap wanted one and a transient answer kept it out (retried at renewal). */
@@ -125,6 +131,8 @@ export interface BeaconClient {
   trustAtTap(pairId: string): Promise<TrustResult>;
   removeAtTap(pairId: string): Promise<{ observedMatch: boolean }>;
   matchState(pairId: string): Promise<'match' | 'none'>;
+  /** read-only: the epoch the match was first observed, hidden while any latch is set. No request on the wire. */
+  matchSince(pairId: string): Promise<string | undefined>;
   renew(pairId: string): Promise<void>;
   pollNow(pairId: string): Promise<void>;
   nextRenewalAt(pairId: string): Promise<number | undefined>;
@@ -158,6 +166,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   };
 
   const getRec = async (pairId: string) => (await deps.store.get(pairId)) ?? fresh(pairId);
+
+  /** Latch gates: 'removed' stops every wire action for the pair (L3); 'frozen' only masks the local match view —
+   * deposits, polls and honest row bookkeeping keep running on schedule. */
+  const removed = (pairId: string) => deps.latch.kindOf(pairId).then((k) => k === 'removed');
 
   /** Call order per pair: the LAST tap issued owns the pair's fate. A trust tap clears its local latch only while it
    * is still the latest call — otherwise a Remove issued a tick later would have its latch write silently undone. */
@@ -261,7 +273,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       await deps.secrets.releaseRow(row.rowId);
       return { kind: 'refused', reason: 'wire' };                     // locally indistinguishable: never send it
     }
-    if (await deps.latch.isLatched(rec.pairId)) {                     // v2 L2a: a tap mid-proof ends with nothing sent
+    if (await removed(rec.pairId)) {                                  // v2 L2a: a tap mid-proof ends with nothing sent ('frozen' still sends)
       await deps.secrets.releaseRow(row.rowId);
       return 'skipped';
     }
@@ -285,7 +297,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
 
   async function withdrawRow(rec: PairRecord, row: RowRecord): Promise<'done' | 'queued'> {
     const a = await authed('withdraw', row);
-    await deps.latch.isLatched(rec.pairId);                           // L2b: the latch is re-read before the answer is applied
+    await deps.latch.kindOf(rec.pairId);                              // L2b: the latch is re-read before the answer is applied
     if (a.kind === 'withdrawn') {
       row.state = 'withdrawn';
       await deps.secrets.releaseRow(row.rowId);                       // confirmed: the seed may go
@@ -294,6 +306,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     if (a.kind === 'match') {
       row.state = 'matched';                                          // inert, NOT an error; the match counts (v2 s3)
       rec.observedMatch = true;
+      if (!rec.firstMatchEpoch) rec.firstMatchEpoch = row.epoch;
       await deps.secrets.releaseRow(row.rowId);                       // confirmed: the seed may go
       return 'done';
     }
@@ -314,7 +327,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       if (!(await deps.confirmed.isConfirmed(pairId))) return { kind: 'unconfirmed' };   // L7: fail closed
       if (lastCall.get(pairId) !== mine) return { kind: 'latched' };    // a newer tap owns this pair now — step aside
       await deps.latch.clearLatched(pairId, 'local');
-      if (await deps.latch.isLatched(pairId)) return { kind: 'latched' };                 // remote latch stands
+      if (await removed(pairId)) return { kind: 'latched' };            // a 'removed' latch stands ('frozen' does not block)
       const rec = await getRec(pairId);
       let saw: Answer | 'skipped' = 'skipped';
       for (const epoch of depositableEpochs(now())) {
@@ -344,20 +357,28 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       return { observedMatch: rec.observedMatch };
     },
 
-    /** v2 L4: the ONE consumer-facing match view — latch applied, closed epochs faded. */
+    /** v2 L4: the ONE consumer-facing match view — latch applied (either kind), closed epochs faded. Consumers: the
+     * UI label, the send gate, receipts, the re-deposit scheduler, the circle-set builder, the tag-block builder. */
     async matchState(pairId) {
       if (!(await deps.confirmed.isConfirmed(pairId))) return 'none';
-      if (await deps.latch.isLatched(pairId)) return 'none';
+      if ((await deps.latch.kindOf(pairId)) !== null) return 'none';
       const rec = await deps.store.get(pairId);
       if (!rec) return 'none';
       const live = visibleEpochs(now());
       return rec.rows.some((r) => r.state === 'matched' && live.has(r.epoch)) ? 'match' : 'none';
     },
 
+    /** the epoch the match was first observed — same latch rule as matchState, local read only (no wire request). */
+    async matchSince(pairId) {
+      if (!(await deps.confirmed.isConfirmed(pairId))) return undefined;
+      if ((await deps.latch.kindOf(pairId)) !== null) return undefined;
+      return (await deps.store.get(pairId))?.firstMatchEpoch;
+    },
+
     /** the scheduled action (v1 s3.4 + v2 L3): owed deposits, then poll, then the withdraw queue. */
     async renew(pairId) {
       if (!(await deps.confirmed.isConfirmed(pairId))) return;
-      if (await deps.latch.isLatched(pairId)) return;
+      if (await removed(pairId)) return;                                // 'removed' skips; 'frozen' renews on schedule
       const rec = await getRec(pairId);
       if (rec.pendingDeposit) {
         for (const epoch of depositableEpochs(now())) {
@@ -379,10 +400,14 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       let dirty = false;
       for (const row of rec.rows) {
         if ((row.state !== 'standing' && row.state !== 'matched') || !live.has(row.epoch)) continue;
-        if (await deps.latch.isLatched(pairId)) continue;               // L3: latched pairs are skipped
+        if (await removed(pairId)) continue;                            // L3: 'removed' pairs are skipped ('frozen' still polls)
         const a = await authed('poll', row);
-        if (await deps.latch.isLatched(pairId)) continue;               // L2b: a tap mid-flight must not flip it back
-        if (a.kind === 'match') { row.state = 'matched'; rec.observedMatch = true; dirty = true; }
+        if (await removed(pairId)) continue;                            // L2b: a tap mid-flight must not flip it back
+        if (a.kind === 'match') {
+          row.state = 'matched'; rec.observedMatch = true;
+          if (!rec.firstMatchEpoch) rec.firstMatchEpoch = row.epoch;    // first observation only — the match's epoch
+          dirty = true;
+        }
       }
       if (dirty) await deps.store.put(rec);
     },

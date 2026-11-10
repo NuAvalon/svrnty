@@ -59,12 +59,15 @@ const memStore = (): BeaconStorePort & { data: Map<string, PairRecord> } => {
   };
 };
 
-const memLatch = (): LatchPort & { local: Set<string>; remote: Set<string> } => {
-  const local = new Set<string>(), remote = new Set<string>();
+const memLatch = (): LatchPort & { local: Map<string, 'removed' | 'frozen'>; remote: Map<string, 'removed' | 'frozen'> } => {
+  const local = new Map<string, 'removed' | 'frozen'>(), remote = new Map<string, 'removed' | 'frozen'>();
   return {
     local, remote,
     isLatched: async (p) => local.has(p) || remote.has(p),
-    setLatched: async (p, s) => void (s === 'local' ? local : remote).add(p),
+    kindOf: async (p) =>
+      local.get(p) === 'removed' || remote.get(p) === 'removed' ? 'removed'
+        : local.get(p) === 'frozen' || remote.get(p) === 'frozen' ? 'frozen' : null,
+    setLatched: async (p, s) => void (s === 'local' ? local : remote).set(p, 'removed'),
     clearLatched: async (p, s) => void (s === 'local' ? local : remote).delete(p),
   };
 };
@@ -391,7 +394,7 @@ test('no export besides matchState can yield a match: the module surface is pinn
   });
   assert.deepEqual(
     Object.keys(client).sort(),
-    ['drainPendingWithdraws', 'matchState', 'nextRenewalAt', 'pollNow', 'removeAtTap', 'renew', 'trustAtTap'].sort(),
+    ['drainPendingWithdraws', 'matchSince', 'matchState', 'nextRenewalAt', 'pollNow', 'removeAtTap', 'renew', 'trustAtTap'].sort(),
   );
 });
 
@@ -442,7 +445,7 @@ test('remove while the proof is running -> NOTHING is sent (0 fetches)', async (
 test('a latched pair: no deposit, no poll, in the current epoch, in the cur+1 window, or at renewal', async () => {
   for (const at of [MID, LATE]) {
     const latch = memLatch();
-    latch.remote.add('pair-1');                                        // remote latch: my tap cannot clear it (L5)
+    latch.remote.set('pair-1', 'removed');                            // remote latch: my tap cannot clear it (L5)
     const { client, f, store } = harness({ latch, now: () => at });
     await store.put({ pairId: 'pair-1', observedMatch: false, spentEpochs: [], pendingDeposit: true,
       rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '111', N: '222', state: 'standing' }], pendingWithdraws: [] });
@@ -464,16 +467,61 @@ test('matchState hides MATCH behind a latch', async () => {
   assert.equal(await client.matchState('pair-1'), 'none');
 });
 
+test('matchSince: the epoch a match was first observed, hidden behind any latch', async () => {
+  const { client, f, latch } = harness();
+  assert.equal(await client.matchSince('pair-1'), undefined);          // no match yet
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.queue.push(nonceOk(NONCE_A), ok('match'));
+  await client.pollNow('pair-1');
+  assert.equal(await client.matchSince('pair-1'), String(EPOCH));
+  await latch.setLatched('pair-1', 'remote');
+  assert.equal(await client.matchSince('pair-1'), undefined);          // cleared while latched
+  await latch.clearLatched('pair-1', 'remote');
+  assert.equal(await client.matchSince('pair-1'), String(EPOCH));      // and back when it clears
+});
+
+test("kindOf 'frozen': deposits and polls keep running on schedule; only local consumers are blind", async () => {
+  const latch = memLatch();
+  latch.remote.set('pair-1', 'frozen');
+  const { client, f, store } = harness({ latch });
+  f.queue.push(ok('accepted'));
+  const r = await client.trustAtTap('pair-1');                         // frozen keeps deposits going
+  assert.equal(r.kind, 'deposited');
+  assert.equal(f.calls.length, 1);
+  f.calls.length = 0;
+  f.queue.push(nonceOk(NONCE_A), ok('match'));
+  await client.pollNow('pair-1');                                      // frozen keeps polls going
+  assert.equal(f.calls.length, 2);
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.rows[0].state, 'matched');                          // the wire truth is kept
+  assert.equal(rec.observedMatch, true);
+  assert.equal(await client.matchState('pair-1'), 'none');             // but local consumers are blind
+  assert.equal(await client.matchSince('pair-1'), undefined);
+});
+
+test('kindOf removed dominates frozen on either source', async () => {
+  const latch = memLatch();
+  latch.local.set('pair-1', 'frozen');
+  latch.remote.set('pair-1', 'removed');
+  assert.equal(await latch.kindOf('pair-1'), 'removed');
+  latch.remote.clear;
+  const { client, f } = harness({ latch });
+  f.setFallback(ok('accepted'));
+  await client.renew('pair-1');                                        // 'removed' skips every scheduled action
+  assert.equal(f.calls.length, 0);
+});
+
 test('a remote re-trust does NOT clear a local latch (and vice versa)', async () => {
   const latch = memLatch();
-  latch.local.add('pair-1');
-  latch.remote.add('pair-1');
+  latch.local.set('pair-1', 'removed');
+  latch.remote.set('pair-1', 'removed');
   await latch.clearLatched('pair-1', 'remote');                        // a remote re-trust arrived
   assert.equal(await latch.isLatched('pair-1'), true);                 // local stands
   const { client, f } = harness({ latch });
   await client.trustAtTap('pair-1');                                   // my tap clears ONLY local
   assert.equal(await latch.isLatched('pair-1'), false);
-  latch.local.add('pair-2'); latch.remote.add('pair-2');
+  latch.local.set('pair-2', 'removed'); latch.remote.set('pair-2', 'removed');
   await latch.clearLatched('pair-2', 'local');
   assert.equal(await latch.isLatched('pair-2'), true);
 });
