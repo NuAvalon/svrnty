@@ -51,7 +51,7 @@ import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
 import { CONTACT_HANDLE_KEYS } from '@/lib/trust/contact-update';
 import { lensDisplayRows } from '@/lib/lenses/lens-display';
-import { lensChangedLine, lensChangedWasLine, lensGivenLine } from '@/lib/lenses/lens-copy';
+import { lensChangedLine, lensChangedWasLine, lensGivenLine, lensStoppedLine } from '@/lib/lenses/lens-copy';
 import { methodKindLabel } from '@/components/identity/owner-card';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
@@ -188,6 +188,13 @@ export function ContactDetailDialog({
   const urls = (contact?.contact_info?.urls || []).filter(Boolean);
   const handles = contact?.contact_info?.handles || {};
   const lensRows = contact ? lensDisplayRows(contact) : [];
+  // R8a: the visible state set when a payload from this contact was refused for the method cap —
+  // a silent stop would read like a Freeze or a Remove nobody made.
+  const lensStopped = !!(
+    contact?.contact_info &&
+    typeof contact.contact_info === 'object' &&
+    (contact.contact_info as Record<string, unknown>).lens_stopped === true
+  );
   const classicalExtras = contact ? readClassicalExtras(contact) : null;
   const share = contact ? readShareSettings(contact) : defaultShareSettings();
   // piece-1 H2 (honest-UX): disable the open_visibility toggle on a NOT-trusted edge — the label already
@@ -579,12 +586,22 @@ export function ContactDetailDialog({
                     </div>
                   ) : null}
 
+                  {lensStopped ? (
+                    <span data-testid="lens-stopped" style={{ fontSize: 11, color: E.accent, lineHeight: 1.4 }}>
+                      {lensStoppedLine(contact?.name || 'this contact')}
+                    </span>
+                  ) : null}
+
                   {lensRows.length > 0 ? (
                     <div data-testid="lens-methods">
                       <SectionLabel>Shared with you</SectionLabel>
                       <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 }}>
                         {lensRows.map((row) => {
-                          const label = row.method.label?.trim() || methodKindLabel(row.method.kind as Parameters<typeof methodKindLabel>[0]);
+                          // R6b: a relabel-swap names the KIND (the label changed); a same-slot
+                          // change names the method's own label.
+                          const label = row.kindChanged
+                            ? methodKindLabel(row.method.kind as Parameters<typeof methodKindLabel>[0])
+                            : row.method.label?.trim() || methodKindLabel(row.method.kind as Parameters<typeof methodKindLabel>[0]);
                           return (
                             <div key={row.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <MethodRow icon={<AtSign className="h-3.5 w-3.5" />}>
@@ -594,7 +611,7 @@ export function ContactDetailDialog({
                               {row.heldValue !== null ? (
                                 <>
                                   <span style={{ fontSize: 11, color: E.accent, lineHeight: 1.4 }}>
-                                    {lensChangedLine(contact?.name || 'They', label)}
+                                    {lensChangedLine(contact?.name || '', label)}
                                   </span>
                                   <span style={{ fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
                                     {lensChangedWasLine(row.heldValue)}

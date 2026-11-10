@@ -2,10 +2,12 @@
 // receive-side apply (R4 MAC on the way in, R6 keep-what-you-have), review-1 items 4/5/7.
 // Run: npx tsx --test src/lib/lenses/lens-consume.test.ts
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { randomBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
 import { applyLensMethods, makeLensSeam, type LensSeamDeps } from './lens-consume';
-import { LENS_KIND_HELLO, LENS_KIND_METHODS, LENS_HELLO_BODY, LENS_MAX_METHODS, buildLensCell, encodeLensMethodsBody, lensMethodKey, openLensPayload, unframeLensCell } from './lens-wire';
+import { LENS_KIND_HELLO, LENS_KIND_METHODS, LENS_HELLO_BODY, LENS_MAX_METHODS, buildLensCell, deriveLensMacKey, encodeLensMethodsBody, lensMethodKey, openLensPayload, unframeLensCell } from './lens-wire';
 import type { LensGrantBook } from './lens-grants';
 import { sealLivingBookHybrid } from '../crypto/living-book-sleeve';
 import { mintHybridRecipient } from '../sync/hybrid-test-fixture';
@@ -14,6 +16,7 @@ import type { StoredContact } from '../contacts/apply-contact-update';
 
 const SENDER = 'a'.repeat(64);
 const sPair = randomBytes(32);
+const MAC_KAT = 'ca236474439d205717c154f5c7af52610093cc95ac95a96c9ff68f839029ca2c'; // fixed sPair=0x07*32, sender='a'*64, receiver='b'*64
 const NOW = 1_800_000_000;
 
 const contact = (over: Partial<StoredContact> = {}): StoredContact => ({
@@ -214,8 +217,9 @@ test('item 7: a payload that would grow lens_methods past the cap is refused WHO
     sPair,
   });
   const res = await seam.accept((await seam.verify(await sealCell(over, r)))!);
-  assert.deepEqual(res, { refused: 'method-cap' });
-  assert.equal(persisted.length, 0, 'record unchanged: nothing was applied');
+  assert.deepEqual(res, { refused: 'method-cap', fingerprint: SENDER });
+  assert.equal(persisted.length, 1, 'the R8a stopped state is written — the refusal is VISIBLE, never silent');
+  assert.equal((persisted[0].contact_info as Record<string, unknown>).lens_stopped, true);
   assert.equal(savedBooks.at(-1)!.inSeq![SENDER], NOW, 'the seq was still floored — the refusal is terminal, not retried');
 });
 
@@ -243,4 +247,96 @@ test('round-trip: the payload a sender built opens on the receiver side (directi
   assert.ok(parsed);
   const opened = openLensPayload(cell.slice(6, 6 + new DataView(cell.buffer).getUint32(2, false)), { sPair, fpSender: parsed!.fpSender, fpReceiver: receiver });
   assert.equal(opened.ok, true);
+});
+
+test('R8a: a payload with two values in ONE slot is refused whole — own reason, floor advances', async () => {
+  const r = await mintHybridRecipient();
+  const { seam, persisted, savedBooks } = seamFor(r, {});
+  const dup = buildLensCell({
+    kind: LENS_KIND_METHODS, fpSender: SENDER, fpReceiver: r.fingerprint, seq: NOW,
+    body: encodeLensMethodsBody([
+      { kind: 'phone', value: '+111' },
+      { kind: 'phone', value: '+222' }, // same kind AND slot — the codec bounds pass, the slot rule refuses
+    ]),
+    sPair,
+  });
+  const res = await seam.accept((await seam.verify(await sealCell(dup, r)))!);
+  assert.deepEqual(res, { refused: 'shared-slot', fingerprint: SENDER });
+  assert.equal(persisted.length, 0, 'nothing applied — the whole payload is refused');
+  assert.equal(savedBooks.at(-1)!.inSeq![SENDER], NOW, 'terminal refusal: the seq floor still advances');
+});
+
+test('R6a: lens value A then B for one custom key shows CHANGED with "Was: A" (no signed home)', () => {
+  const c = contact({ contact_info: {} });
+  const first = applyLensMethods(c, [{ kind: 'custom', value: 'A', label: 'pgp' }], '2026-11-10T00:00:00Z')!;
+  const second = applyLensMethods(first, [{ kind: 'custom', value: 'B', label: 'pgp' }], '2026-11-10T01:00:00Z')!;
+  const lm = (second.contact_info as Record<string, unknown>).lens_methods as Record<string, { value: string; was?: string }>;
+  const key = lensMethodKey({ kind: 'custom', label: 'pgp' });
+  assert.equal(lm[key].value, 'B');
+  assert.equal(lm[key].was, 'A', 'the previous LENS value is kept for "Was:" — not just the signed value');
+});
+
+test('R6b relabel-swap: held Home dropped + Mobile added ⇒ kind-named changed, Was = dropped value', () => {
+  const c = contact({ contact_info: {} });
+  const first = applyLensMethods(c, [{ kind: 'phone', value: 'A', label: 'Home' }], '2026-11-10T00:00:00Z')!;
+  const second = applyLensMethods(first, [{ kind: 'phone', value: 'B', label: 'Mobile' }], '2026-11-10T01:00:00Z')!;
+  const lm = (second.contact_info as Record<string, unknown>).lens_methods as Record<string, { value: string; was?: string; wasKind?: boolean }>;
+  const mobile = lm[lensMethodKey({ kind: 'phone', label: 'Mobile' })];
+  assert.equal(mobile.was, 'A', '"Was:" shows the DROPPED held value');
+  assert.equal(mobile.wasKind, true, 'the line names the KIND — the label changed');
+  // Home itself stays held (never dropped) — the change mark lives on the added value.
+  assert.equal(lm[lensMethodKey({ kind: 'phone', label: 'Home' })].value, 'A');
+  // And a payload that KEEPS every held value of the kind marks nothing changed.
+  const third = applyLensMethods(first, [
+    { kind: 'phone', value: 'A', label: 'Home' },
+    { kind: 'phone', value: 'B', label: 'Mobile' },
+  ], '2026-11-10T02:00:00Z')!;
+  const lm3 = (third.contact_info as Record<string, unknown>).lens_methods as Record<string, { was?: string }>;
+  assert.equal(lm3[lensMethodKey({ kind: 'phone', label: 'Mobile' })].was, undefined, 'every held value still held ⇒ new slot shows as given');
+});
+
+test('F1: a KNOWN but BLOCKED sender is dropped — accept returns null and nothing is written', async () => {
+  const r = await mintHybridRecipient();
+  const blocked = contact({ blocked: true } as Partial<StoredContact>);
+  const persisted: StoredContact[] = [];
+  const savedBooks: LensGrantBook[] = [];
+  const store: LensSeamDeps['store'] = {
+    lookup: async (fp) => (fp === SENDER ? { known: {} as never, current: blocked } : null),
+    persist: async (_id, changes) => { persisted.push(changes as StoredContact); },
+  };
+  const seam = makeLensSeam({
+    store, hybridSecrets: r.hybrid, ownerFingerprint: r.fingerprint, sPairFor: () => sPair,
+    loadGrants: () => ({ v: 1 as const, grants: {} }),
+    saveGrants: (b) => { savedBooks.push(b); },
+    now: () => '2026-11-10T00:00:00Z', nowSeconds: () => NOW,
+  });
+  const cell = buildLensCell({ kind: LENS_KIND_METHODS, fpSender: SENDER, fpReceiver: r.fingerprint, seq: NOW, body: encodeLensMethodsBody([{ kind: 'signal', value: '@x' }]), sPair });
+  assert.equal(await seam.accept((await seam.verify(await sealCell(cell, r)))!), null, 'blocked ⇒ silent drop before the MAC is even checked');
+  assert.equal(persisted.length, 0);
+  assert.equal(savedBooks.length, 0, 'no grant row written for a blocked sender');
+  // Mutant-guard: the admitContact check is the only thing between a blocked sender and a write.
+  const dir = fileURLToPath(new URL('.', import.meta.url));
+  const src = readFileSync(`${dir}/lens-consume.ts`, 'utf8');
+  assert.match(src, /admitContact\(contact\.current\)/, 'removing the admit check must go red');
+});
+
+test('F2: the pair-MAC key is a fixed-point (known-answer) — another salt does not pass', () => {
+  const fixedSPair = new Uint8Array(32).fill(7);
+  const key = deriveLensMacKey({ sPair: fixedSPair, fpSender: SENDER, fpReceiver: 'b'.repeat(64) });
+  assert.equal(bytesToHex(key), MAC_KAT, 'fixed pair secret + fingerprints must give the fixed key');
+});
+
+test('F3: self-send at open — a payload whose sender IS the receiver refuses "self"', () => {
+  const fp = 'c'.repeat(64);
+  // Hand-build a payload the BUILDER would refuse (sender == receiver): header || kind || fp ||
+  // seq || bodyLen || body || tag. The 'self' check precedes the MAC compare, so a zero tag is fine.
+  const body = encodeLensMethodsBody([{ kind: 'signal', value: '@x' }]);
+  const raw = new Uint8Array(2 + 1 + 32 + 8 + 4 + body.length + 32);
+  raw.set([0x4c, 0x01, LENS_KIND_METHODS], 0);
+  raw.set(hexToBytes(fp), 3);
+  new DataView(raw.buffer).setBigUint64(35, 1n, false);
+  new DataView(raw.buffer).setUint32(43, body.length, false);
+  raw.set(body, 47);
+  const opened = openLensPayload(raw, { sPair, fpSender: fp, fpReceiver: fp });
+  assert.deepEqual(opened, { ok: false, reason: 'self' });
 });

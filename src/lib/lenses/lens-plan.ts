@@ -7,26 +7,29 @@
  * recipient structure — there is no batch-confirm shape in this module by construction.
  *
  * WIDENING = the proposed lens exposes a method the recipient has never been sent NOR confirmed to
- * receive (keyed kind+label — the SENT-SET baseline, not the current face: a method added to the
- * lens but not yet confirmed has never reached them, so moving lenses does not launder it into
- * "already theirs"). A method whose VALUE changes inside a kept key is an update, not a widening —
- * the recipient was already given that slot (R6: they keep what they have; updates flow). For a
- * recipient with NO record the sent set is empty, so every method a plan would send is a widening.
+ * receive — keyed by the owner's METHOD ID, never the wire slot (R3a): two lenses each holding an
+ * unlabelled phone with different values are different METHODS, so moving a recipient between
+ * them is a widening and asks first. The SENT-SET baseline, not the current face: a method added
+ * to the lens but not yet confirmed has never reached them, so moving lenses does not launder it
+ * into "already theirs". A method whose VALUE changes inside a kept id is an update, not a
+ * widening — the recipient was already given that method (R6: they keep what they have; updates
+ * flow). For a recipient with NO record the sent set is empty, so every method a plan would send
+ * is a widening.
  */
 
 import type { OwnerCardBag, OwnerLens } from '../../components/identity/owner-card';
-import { lensForSend, methodsForSend } from './lens-send';
-import { lensMethodKey, type LensMethodWire } from './lens-wire';
+import { lensForSend, methodsForSend, type LensSendMethod } from './lens-send';
 import { lensSentKeys, recordLensKeys, setRecipientLens, type LensGrantBook } from './lens-grants';
 
 export interface LensReassignPlan {
   fingerprint: string;
   /** The lens id the recipient would move to. */
   toLensId: string | null;
-  /** Methods the new face would expose that they were never sent or confirmed — the widening set (R3). */
-  added: LensMethodWire[];
+  /** Methods the new face would expose that they were never sent or confirmed — the widening set
+   *  (R3/R3a: keyed by owner method id, so a slot-colliding move still asks). */
+  added: LensSendMethod[];
   /** Methods they currently receive that the new face would not carry — the narrowing set (R6 copy). */
-  removed: LensMethodWire[];
+  removed: LensSendMethod[];
   /** True when added.length > 0 — this change MUST be confirmed per recipient before send. */
   widening: boolean;
 }
@@ -43,12 +46,12 @@ export function planLensReassign(
     toLensId === null ? null : bag.lenses.find((l) => l.id === toLensId) ?? null;
   const sent = lensSentKeys(book, recipientFingerprint);
   // The flowing set: what the granted lens carries AND they were actually sent. A lens method never
-  // sent (pending confirm) is not "theirs", and a sent key dropped from the lens already stopped.
-  const flowing = methodsForSend(bag, grantedLens).filter((m) => sent.has(lensMethodKey(m)));
+  // sent (pending confirm) is not "theirs", and a sent method dropped from the lens already stopped.
+  const flowing = methodsForSend(bag, grantedLens).filter((m) => sent.has(m.id));
   const to = methodsForSend(bag, toLens);
-  const toKeys = new Set(to.map(lensMethodKey));
-  const added = to.filter((m) => !sent.has(lensMethodKey(m)));
-  const removed = flowing.filter((m) => !toKeys.has(lensMethodKey(m)));
+  const toIds = new Set(to.map((m) => m.id));
+  const added = to.filter((m) => !sent.has(m.id));
+  const removed = flowing.filter((m) => !toIds.has(m.id));
   return {
     fingerprint: recipientFingerprint,
     toLensId,
@@ -74,7 +77,7 @@ export function plansNeedingConfirm(plans: LensReassignPlan[]): LensReassignPlan
  */
 export function commitReassignPlan(book: LensGrantBook, plan: LensReassignPlan): LensGrantBook {
   let next = setRecipientLens(book, plan.fingerprint, plan.toLensId);
-  if (plan.added.length) next = recordLensKeys(next, plan.fingerprint, plan.added.map(lensMethodKey));
+  if (plan.added.length) next = recordLensKeys(next, plan.fingerprint, plan.added.map((m) => m.id));
   return next;
 }
 

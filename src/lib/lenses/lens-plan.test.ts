@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 import type { OwnerCardBag } from '../../components/identity/owner-card';
 import { commitReassignPlan, planLensReassign, plansNeedingConfirm } from './lens-plan';
 import { lensSentKeys, recordLensKeys, setRecipientLens, type LensGrantBook } from './lens-grants';
-import { lensMethodKey } from './lens-wire';
 import { lensWideningWarning, lensNarrowingNote, LENS_EXPLAINER } from './lens-copy';
 
 const FP = 'b'.repeat(64);
@@ -28,8 +27,8 @@ const bag: OwnerCardBag = {
 };
 
 const bookWith = (grants: LensGrantBook['grants']): LensGrantBook => ({ v: 1, grants });
-const emailKey = lensMethodKey({ kind: 'email' });
-const signalKey = lensMethodKey({ kind: 'signal' });
+const emailKey = 'm-email';
+const signalKey = 'm-signal';
 
 test('item 1: a Revise plan from NO RECORD treats every method it would send as a widening', () => {
   const book = bookWith({}); // no record at all — zero methods are theirs
@@ -85,5 +84,24 @@ test('item 9: lens-plan.ts holds NO NUL byte — git must diff it as text (revie
   const raw = readFileSync(`${dir}/lens-plan.ts`);
   assert.equal(raw.includes(0), false, 'a literal NUL makes git treat the file as binary');
   const src = raw.toString('utf8');
-  assert.match(src, /lensMethodKey/, 'the method key comes from the codec — one definition, escaped in source');
+  assert.equal(/lensMethodKey\s*\(/.test(src.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')), false,
+    'R3a: the plan keys on the owner method id — a wire-slot key must never come back');
+});
+
+test('R3a: moving between two lenses whose methods share a SLOT is a widening (method-id keying)', () => {
+  const two: OwnerCardBag = {
+    methods: [
+      { id: 'm-phone-work', kind: 'phone', value: '+15550001' },
+      { id: 'm-phone-personal', kind: 'phone', value: '+19990002' },
+    ],
+    lenses: [
+      { id: 'lens-work', name: 'Work', methodIds: ['m-phone-work'] },
+      { id: 'lens-personal', name: 'Personal', methodIds: ['m-phone-personal'] },
+    ],
+  };
+  const book = recordLensKeys(setRecipientLens(bookWith({}), FP, 'lens-work'), FP, ['m-phone-work']);
+  const plan = planLensReassign(two, book, FP, 'lens-personal');
+  assert.equal(plan.widening, true, 'same slot (unlabelled phone), different method — the confirm is required');
+  assert.deepEqual(plan.added.map((m) => m.id), ['m-phone-personal']);
+  assert.equal(plansNeedingConfirm([plan]).length, 1);
 });

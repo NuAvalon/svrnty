@@ -72,7 +72,11 @@ export type LensAcceptResult =
   | { applied: true; id: string; fingerprint: string; ignited: boolean }
   | { hello: true }
   | { stale: true }
-  | { refused: 'method-cap' } // terminal: the payload would grow lens_methods past the cap — record unchanged
+  /** R8a: terminal refusals on a MAC-VERIFIED payload, each with its own dead-letter reason —
+   *  'method-cap' (lens_methods would grow past the cap; the contact gets the visible stopped
+   *  state) and 'shared-slot' (two values in one kind+label slot). The fingerprint rides — the
+   *  sender was authenticated by the MAC (F3 clean). */
+  | { refused: 'method-cap' | 'shared-slot'; fingerprint: string }
   | null; // dropped: unverified (bad MAC / malformed), or a stranger/blocked sender — silent
 
 export interface LensSeamDeps {
@@ -126,12 +130,34 @@ export function applyLensMethods(current: StoredContact, methods: LensMethodWire
     typeof current.contact_info === 'object' && current.contact_info !== null
       ? { ...(current.contact_info as Record<string, unknown>) }
       : {};
+  delete ci.lens_stopped; // a payload that LANDS clears the R8a stopped state — updates resume
+  const payloadKeys = new Set(methods.map(lensMethodKey));
   for (const m of methods) {
-    prev[lensMethodKey(m)] = {
+    const key = lensMethodKey(m);
+    const prior = prev[key] as (LensMethodWire & { was?: string; wasKind?: boolean }) | undefined;
+    const entry: LensMethodWire & { was?: string; wasKind?: boolean } = {
       kind: m.kind,
       value: m.value,
       ...(m.label !== undefined ? { label: m.label } : {}),
     };
+    if (prior && prior.value !== m.value) {
+      entry.was = prior.value; // R6a: same slot held a different value before — keep it for "Was:"
+    } else if (!prior) {
+      // R6b relabel-swap: a NEW slot whose kind drops a held value this payload does not carry —
+      // the added value marks changed with the DROPPED value as "Was:", and the line names the
+      // KIND (the label changed), not the new label.
+      const dropped = Object.entries(prev).find(
+        ([k, e]) => e && typeof e === 'object' && (e as LensMethodWire).kind === m.kind && !payloadKeys.has(k),
+      );
+      if (dropped) {
+        const dv = (dropped[1] as LensMethodWire).value;
+        if (typeof dv === 'string') { entry.was = dv; entry.wasKind = true; }
+      }
+    } else if (prior.was !== undefined) {
+      entry.was = prior.was; // same value re-sent — the earlier change mark stands
+      if (prior.wasKind === true) entry.wasKind = true;
+    }
+    prev[key] = entry;
   }
   ci.lens_methods = prev;
 
@@ -200,13 +226,26 @@ export function makeLensSeam(deps: LensSeamDeps): LensSeam {
       } catch {
         return null; // a MAC-valid but undecodable body is dropped (the codec bounds already ran)
       }
+      // R8a: one slot, one value — a payload carrying two values in one kind+label slot is refused
+      // WHOLE under its own dead-letter reason (never silently keeping the last). Terminal: the
+      // floor advances like every refusal, so it is not retried forever.
+      if (new Set(methods.map(lensMethodKey)).size !== methods.length) {
+        await deps.saveGrants(floored);
+        return { refused: 'shared-slot', fingerprint: claimed.fpSender };
+      }
       const before = contact.current;
       const next = applyLensMethods(before, methods, now());
       if (next === null) {
-        // The payload would grow lens_methods past the cap — refused WHOLE: record unchanged, but
-        // the floor still advances (this seq is SEEN; refusing it forever changes nothing).
+        // The payload would grow lens_methods past the cap — refused WHOLE under its own reason
+        // (R8a), the floor still advances (this seq is SEEN; refusing it forever changes nothing),
+        // AND the contact gets the visible stopped state — a silent stop reads like a Freeze or a
+        // Remove nobody made, and a real change would never be seen to arrive.
+        const ci = typeof before.contact_info === 'object' && before.contact_info !== null
+          ? { ...(before.contact_info as Record<string, unknown>), lens_stopped: true }
+          : { lens_stopped: true };
+        await deps.store.persist(before.id, changedKeys(before, { ...before, contact_info: ci }));
         await deps.saveGrants(floored);
-        return { refused: 'method-cap' };
+        return { refused: 'method-cap', fingerprint: claimed.fpSender };
       }
       const ignited = stateOf(before) === 'dim' && stateOf(next) === 'living';
       await deps.store.persist(before.id, changedKeys(before, next));

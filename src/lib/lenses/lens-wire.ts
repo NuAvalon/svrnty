@@ -58,6 +58,10 @@ export const LENS_KIND_HELLO = 0x01;
 export const LENS_KIND_METHODS = 0x02;
 export type LensKind = typeof LENS_KIND_HELLO | typeof LENS_KIND_METHODS;
 
+/** The lens-capability version R7a scopes the hello rate to: the wire version byte itself. A new
+ *  capability generation increments both — the per-contact hello budget resets with it. */
+export const LENS_CAPABILITY_VERSION = LENS_HEADER[1];
+
 const MAC_SALT = 'svrnty-lens-auth-v1';
 const MAC_INFO = 'lens-mac';
 const CANONICAL_FP = /^[0-9a-f]{64}$/;

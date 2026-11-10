@@ -44,7 +44,8 @@ import {
   lensMethodKey,
   type LensMethodWire,
 } from './lens-wire';
-import { lensForRecipient, lensSentKeys, nextLensSeq, peerIsCapable, recordLensKeys, type LensGrantBook } from './lens-grants';
+import { helloDue, lensForRecipient, lensSentKeys, markHelloSent, nextLensSeq, peerIsCapable, recordLensKeys, type LensGrantBook } from './lens-grants';
+import { LENS_CAPABILITY_VERSION } from './lens-wire';
 
 export interface LensRecipient {
   fingerprint: string;
@@ -66,7 +67,8 @@ export type LensSkipReason =
   | 'no-pair-secret'
   | 'too-large'
   | 'encode-failed'
-  | 'encrypt-failed';
+  | 'encrypt-failed'
+  | 'hello-throttled';
 
 export type LensHoldReason =
   /** No grant record, an unreadable one, or a grant naming a deleted lens (R2): ZERO methods go —
@@ -78,14 +80,17 @@ export type LensHoldReason =
   | 'unconfirmed'
   /** The granted lens resolves but exposes no methods at all — a zero-method payload would only
    *  leak that an update happened, so nothing is built (same "not an empty list sent" rule). */
-  | 'empty-lens';
+  | 'empty-lens'
+  /** R8a composer hold: the lens carries two methods in ONE slot (same kind AND label). The owner
+   *  must label them first — never send a payload that silently keeps only the last. */
+  | 'shared-slot';
 
 export interface LensSendPlan {
   deposits: LensDeposit[];
   skipped: Array<{ fingerprint: string; reason: LensSkipReason }>;
   /** Recipients whose payload was NOT sent: no record (R2) or no verified capability (R7). The
    *  sender's UI shows this as "hasn't gone" — the payload is held, never sent, and NO seq bumps. */
-  held: Array<{ fingerprint: string; reason: LensHoldReason }>;
+  held: Array<{ fingerprint: string; reason: LensHoldReason; methods?: LensMethodWire[] }>;
   /** Methods a recipient's current lens would expose that are NOT yet sent-or-confirmed — widenings
    *  awaiting the per-recipient confirm (the R3 gap). They were excluded from this send; the view
    *  prompts the confirm, which lands the keys in `sent` for the next one. */
@@ -107,15 +112,24 @@ export function lensForSend(bag: OwnerCardBag, book: LensGrantBook, recipientFin
   return bag.lenses.find((l) => l.id === granted) ?? null;
 }
 
-/** The wire method list for one lens: resolved, value-bearing, bounded at encode time. */
-export function methodsForSend(bag: OwnerCardBag, lens: OwnerLens | null): LensMethodWire[] {
+/** A send-side method: the wire fields PLUS the owner's method id — the id is the identity the
+ *  sent set and the widening check key on (R3a); it never leaves the device (the wire carries
+ *  kind+value+label only). */
+export interface LensSendMethod extends LensMethodWire { id: string }
+
+/** The method list for one lens: resolved, value-bearing, bounded at encode time. Each entry
+ *  carries the owner's method id — R3a keys "sent" and "widening" on it, never on the wire slot. */
+export function methodsForSend(bag: OwnerCardBag, lens: OwnerLens | null): LensSendMethod[] {
   if (!lens) return [];
   const byId = new Map(bag.methods.map((m: OwnerMethod) => [m.id, m]));
-  const out: LensMethodWire[] = [];
+  const out: LensSendMethod[] = [];
   for (const id of lens.methodIds) {
     const m = byId.get(id);
     if (!m || !m.value.trim()) continue;
-    out.push(m.label?.trim() ? { kind: m.kind, value: m.value, label: m.label.trim() } : { kind: m.kind, value: m.value });
+    const w: LensSendMethod = m.label?.trim()
+      ? { id: m.id, kind: m.kind, value: m.value, label: m.label.trim() }
+      : { id: m.id, kind: m.kind, value: m.value };
+    out.push(w);
   }
   return out;
 }
@@ -180,12 +194,26 @@ export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<Le
       skipped.push({ fingerprint: fp, reason: 'no-pair-secret' });
       continue;
     }
-    // The R3-gap filter: only keys already sent or confirmed flow; the rest are widenings awaiting
-    // the per-recipient confirm — reported, never sent (a lens edit cannot widen anyone silently).
-    const sent = lensSentKeys(book, fp);
     const lensMethods = methodsForSend(args.bag, lens);
-    const allowed = lensMethods.filter((m) => sent.has(lensMethodKey(m)));
-    const pending = lensMethods.filter((m) => !sent.has(lensMethodKey(m)));
+    // R8a composer hold: one slot, one value. Two methods sharing a kind AND label in this lens
+    // hold the send — the owner labels them first; a payload can never silently keep only the last.
+    const seen = new Set<string>();
+    const shared = lensMethods.filter((m) => {
+      const k = lensMethodKey(m);
+      if (seen.has(k)) return true;
+      seen.add(k);
+      return false;
+    });
+    if (shared.length) {
+      held.push({ fingerprint: fp, reason: 'shared-slot', methods: shared });
+      continue;
+    }
+    // The R3-gap filter (R3a: keyed by the owner's METHOD id, never the wire slot): only methods
+    // already sent or confirmed flow; the rest are widenings awaiting the per-recipient confirm —
+    // reported, never sent (a lens edit cannot widen anyone silently).
+    const sent = lensSentKeys(book, fp);
+    const allowed = lensMethods.filter((m) => sent.has(m.id));
+    const pending = lensMethods.filter((m) => !sent.has(m.id));
     if (pending.length) wideningPending.push({ fingerprint: fp, methods: pending });
     if (allowed.length === 0) {
       held.push({ fingerprint: fp, reason: pending.length ? 'unconfirmed' : 'empty-lens' });
@@ -196,13 +224,13 @@ export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<Le
     try {
       const body = encodeLensMethodsBody(allowed);
       if (body.length > LENS_MAX_BODY) {
-        skipped.push({ fingerprint: fp, reason: 'too-large' }); // sender copy: LENS_TOO_LARGE_LINE
+        skipped.push({ fingerprint: fp, reason: 'too-large' }); // sender copy: lensTooLargeLine
         continue;
       }
       const next = nextLensSeq(book, fp, nowSeconds());
       cell = buildLensCell({ kind: LENS_KIND_METHODS, fpSender: args.ownerFingerprint, fpReceiver: fp, seq: next.seq, body, sPair });
       book = next.book;
-      sentKeys = allowed.map(lensMethodKey);
+      sentKeys = allowed.map((m) => m.id);
     } catch {
       skipped.push({ fingerprint: fp, reason: 'encode-failed' });
       continue;
@@ -230,14 +258,21 @@ export async function buildLensHelloDeposits(args: {
   recipients: LensRecipient[];
   admit: RecipientGate;
   sPairFor: BuildLensDepositsArgs['sPairFor'];
-}): Promise<{ deposits: LensDeposit[]; skipped: LensSendPlan['skipped'] }> {
+  /** R7a: the sealed grant book — carries the per-contact "hello sent" marker (budget: one hello
+   *  per capability version + one retry after the envelope life). The caller persists the book. */
+  book: LensGrantBook;
+  nowSeconds?: () => number;
+}): Promise<{ deposits: LensDeposit[]; skipped: LensSendPlan['skipped']; book: LensGrantBook }> {
   if (typeof args.admit !== 'function') throw new Error('refusing to send a lens hello without a recipient check');
+  const nowSeconds = args.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const deposits: LensDeposit[] = [];
   const skipped: LensSendPlan['skipped'] = [];
+  let book = args.book;
   for (const r of args.recipients) {
     const fp = String(r?.fingerprint ?? '').toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(fp)) { skipped.push({ fingerprint: String(r?.fingerprint), reason: 'bad-fingerprint' }); continue; }
     if (!args.admit(fp)) { skipped.push({ fingerprint: fp, reason: 'blocked' }); continue; }
+    if (!helloDue(book, fp, LENS_CAPABILITY_VERSION, nowSeconds())) { skipped.push({ fingerprint: fp, reason: 'hello-throttled' }); continue; }
     if (typeof r.publicKeyArmored !== 'string' || !r.publicKeyArmored) { skipped.push({ fingerprint: fp, reason: 'no-public-key' }); continue; }
     if (typeof r.pqKemPublicKey !== 'string' || !r.pqKemPublicKey) { skipped.push({ fingerprint: fp, reason: 'no-pq-kem' }); continue; }
     const sPair = await args.sPairFor(fp);
@@ -246,11 +281,12 @@ export async function buildLensHelloDeposits(args: {
       const cell = buildLensCell({ kind: LENS_KIND_HELLO, fpSender: args.ownerFingerprint, fpReceiver: fp, seq: 0, body: LENS_HELLO_BODY, sPair });
       const blob = await sealLivingBookHybrid(cell, r.publicKeyArmored, r.pqKemPublicKey);
       deposits.push({ mailbox_id: deriveMailboxId(fp), blob });
+      book = markHelloSent(book, fp, LENS_CAPABILITY_VERSION, nowSeconds()); // R7a: the marker is what rations the next call
     } catch {
       skipped.push({ fingerprint: fp, reason: 'encrypt-failed' });
     }
   }
-  return { deposits, skipped };
+  return { deposits, skipped, book };
 }
 
 /** POST each deposit to the relay — the drop-in mirroring sendContactUpdate's POST loop. */

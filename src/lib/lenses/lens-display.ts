@@ -1,13 +1,20 @@
 // src/lib/lenses/lens-display.ts
 /**
- * Lenses v1.3 — RECEIVE-side display projection for `contact_info.lens_methods` (review-1 item 5).
+ * Lenses v1.7 — RECEIVE-side display projection for `contact_info.lens_methods`.
  *
  * A lens value is authenticated by a classical pair-MAC only, so it NEVER lands in a primary field
  * and is never shown as simply the contact's own. This projection hands the view, per stored lens
- * method, the row it renders: the given value plus, when the signed path already holds a DIFFERENT
- * value for that slot, the held value — so the view shows the contract's changed-copy ("{name}'s
- * {method} changed… check some other way, not through the new one" + "Was: {old}") instead of
- * trusting the new one. Pure; the component renders what it gets.
+ * method, the row it renders.
+ *
+ * R6a: a changed value shows as CHANGED for every method, including kinds with no signed home —
+ *   the apply path keeps the previous lens value on the entry (`was`) so "Was:" can name it.
+ * R6b: "changed" is shown only when the SAME slot (kind+label) held a different value before —
+ *   a value under a NEW slot shows as GIVEN beside what is held and never marks an existing value
+ *   as replaced. Signed-path values sit in unlabelled slots, so only an UNLABELLED lens value can
+ *   ever compare against them. The relabel-swap (a new slot whose kind dropped a held value this
+ *   payload did not carry) is marked at apply time with `wasKind` — the changed line then names
+ *   the KIND, not the new label.
+ * Pure; the component renders what it gets.
  */
 
 import { CONTACT_HANDLE_KEYS } from '../trust/contact-update';
@@ -26,9 +33,11 @@ export interface LensDisplayRow {
   /** The lens_methods map key (kind + separator + label). */
   key: string;
   method: LensMethodWire;
-  /** The signed-path value held for this slot when it DIFFERS from the lens value; null when the
-   *  slot holds nothing or already holds this exact value (then the row is just "gave you this"). */
+  /** The value the "Was:" line names when this row is CHANGED; null when the row shows as GIVEN. */
   heldValue: string | null;
+  /** R6b: true when the change is a relabel-swap — the changed line names the KIND (the label
+   *  changed), not this method's own label. */
+  kindChanged: boolean;
 }
 
 function strList(v: unknown): string[] {
@@ -36,8 +45,9 @@ function strList(v: unknown): string[] {
 }
 
 /**
- * The values the SIGNED path delivered for a method's slot — the "one you hold" the changed-copy
- * compares against. Slot mapping:
+ * The values the SIGNED path delivered for a method's kind — the "one you hold" the changed-copy
+ * compares against. Signed values carry no labels: they occupy the kind's UNLABELLED slot, so this
+ * list is consulted only for unlabelled lens methods (R6b's same-slot rule). Slot mapping:
  *   email            → contact.email + contact.emails + contact_info.emails
  *   phone            → contact.phone + contact.phones + contact_info.phones
  *   site/url/website → contact_info.urls
@@ -71,13 +81,21 @@ export function lensDisplayRows(contact: LensContactLike): LensDisplayRow[] {
     ? (contact.contact_info as Record<string, unknown>)
     : {};
   const map = typeof ci.lens_methods === 'object' && ci.lens_methods !== null
-    ? (ci.lens_methods as Record<string, LensMethodWire>)
+    ? (ci.lens_methods as Record<string, LensMethodWire & { was?: string; wasKind?: boolean }>)
     : {};
   const rows: LensDisplayRow[] = [];
   for (const [key, m] of Object.entries(map)) {
     if (!m || typeof m.kind !== 'string' || typeof m.value !== 'string') continue;
-    const held = heldValuesForKind(contact, m.kind);
-    rows.push({ key, method: m, heldValue: held.length > 0 && !held.includes(m.value) ? held[0] : null });
+    if (typeof m.was === 'string') {
+      // R6a/R6b: a change the apply path already witnessed — "Was:" names the previous lens value
+      // (same slot) or the dropped held value (relabel-swap, kind-named).
+      rows.push({ key, method: m, heldValue: m.was, kindChanged: m.wasKind === true });
+      continue;
+    }
+    // R6b same-slot rule: the signed home is an UNLABELLED slot — only an unlabelled lens value
+    // may compare against it; a labelled one is a new slot and shows as given.
+    const held = m.label === undefined || m.label === '' ? heldValuesForKind(contact, m.kind) : [];
+    rows.push({ key, method: m, heldValue: held.length > 0 && !held.includes(m.value) ? held[0] : null, kindChanged: false });
   }
   return rows;
 }

@@ -39,10 +39,15 @@ export interface LensGrant {
   seq?: number;
   /** true once a MAC-verified HELLO from this peer was seen (R7 — the "can take it" signal). */
   capable?: boolean;
-  /** Method keys (see lensMethodKey, lens-wire.ts) this recipient was last sent or was confirmed
-   *  to receive — ids, NEVER values. Union-only: a method once given stays disclosed (they keep
-   *  what they already have), so re-exposing it later needs no new confirm. */
+  /** Method ids (R3a — the owner's METHOD id, never the wire slot of kind+label) this recipient
+   *  was last sent or was confirmed to receive. Union-only: a method once given stays disclosed
+   *  (they keep what they already have), so re-exposing it later needs no new confirm. */
   sent?: string[];
+  /** R7a hello budget: {v: lens-capability version sent for, at: wall-clock seconds of the last
+   *  send, n: sends this version}. One hello per contact per capability version; at most ONE
+   *  retry after the envelope life. The marker lives only in this sealed book (exportAll never
+   *  reads it), so a restore allows one more hello per contact — stated cost. */
+  hello?: { v: number; at: number; n: number };
 }
 
 export interface LensGrantBook {
@@ -117,6 +122,10 @@ export async function loadLensGrants(ownerFingerprint: string, storage?: LensGra
       if (typeof g.lens === 'string' && g.lens.length > 0 && g.lens.length <= 128) row.lens = g.lens;
       if (Number.isSafeInteger(g.seq) && (g.seq as number) >= 0) row.seq = g.seq;
       if (g.capable === true) row.capable = true;
+      const h = g.hello as { v?: unknown; at?: unknown; n?: unknown } | undefined;
+      if (h && typeof h === 'object' && Number.isSafeInteger(h.v) && Number.isSafeInteger(h.at) && (h.at as number) >= 0 && Number.isSafeInteger(h.n) && (h.n as number) >= 1 && (h.n as number) <= 2) {
+        row.hello = { v: h.v as number, at: h.at as number, n: h.n as number };
+      }
       if (Array.isArray(g.sent)) {
         const keys = g.sent.filter((k): k is string => typeof k === 'string' && k.length > 0 && k.length <= SENT_KEY_MAX_LEN);
         if (keys.length) row.sent = [...new Set(keys)].slice(0, SENT_MAX_KEYS);
@@ -184,7 +193,33 @@ export function peerIsCapable(book: LensGrantBook, peerFingerprint: string): boo
   return !!fp && book.grants[fp]?.capable === true;
 }
 
-/** The method keys a recipient was last sent or was confirmed to receive (empty on no record). */
+/** R7a: the hello retry window — one retry at most, after the envelope life (7 days). */
+export const LENS_HELLO_RETRY_S = 7 * 86400;
+
+/**
+ * R7a: may a hello go to this contact now? True when no marker exists for this capability
+ * version, or exactly one retry is due (marker sent ≥ LENS_HELLO_RETRY_S ago, never retried).
+ * A marker with n ≥ 2 for this version means the budget is spent — send nothing until the
+ * capability version changes.
+ */
+export function helloDue(book: LensGrantBook, recipientFingerprint: string, capVersion: number, nowSeconds: number = Math.floor(Date.now() / 1000)): boolean {
+  const fp = normalize(recipientFingerprint);
+  const h = fp ? book.grants[fp]?.hello : undefined;
+  if (!h || h.v !== capVersion) return true;
+  if (h.n >= 2) return false;
+  return nowSeconds - h.at >= LENS_HELLO_RETRY_S;
+}
+
+/** R7a: record that a hello went out for this capability version (send count n, stamped at). */
+export function markHelloSent(book: LensGrantBook, recipientFingerprint: string, capVersion: number, nowSeconds: number = Math.floor(Date.now() / 1000)): LensGrantBook {
+  const fp = normalize(recipientFingerprint);
+  if (!fp) return book;
+  const prev = book.grants[fp] ?? {};
+  const n = prev.hello && prev.hello.v === capVersion ? prev.hello.n + 1 : 1;
+  return { ...book, grants: { ...book.grants, [fp]: { ...prev, hello: { v: capVersion, at: Math.floor(nowSeconds), n } } } };
+}
+
+/** The method ids a recipient was last sent or was confirmed to receive (empty on no record). */
 export function lensSentKeys(book: LensGrantBook, recipientFingerprint: string): Set<string> {
   const fp = normalize(recipientFingerprint);
   return new Set(fp ? book.grants[fp]?.sent ?? [] : []);

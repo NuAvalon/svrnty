@@ -14,7 +14,7 @@ import { FRAME_BYTES, unframeUniform } from '../crypto/uniform-frame';
 import { openMailboxEnvelope } from '../crypto/mailbox-envelope';
 import { mintHybridRecipient } from '../sync/hybrid-test-fixture';
 import { LENS_KIND_METHODS, LENS_MAX_BODY, decodeLensMethodsBody, lensMethodKey, openLensPayload, parseLensPayload, unframeLensCell } from './lens-wire';
-import { LENS_TOO_LARGE_LINE } from './lens-copy';
+import { lensTooLargeLine } from './lens-copy';
 
 const OWNER = 'a'.repeat(64);
 const sPair = randomBytes(32);
@@ -80,7 +80,7 @@ test('R2 ruling: an UNREADABLE record holds identically (empty book ⇒ disclose
 
 test('R2 ruling: a grant naming a DELETED lens sends zero and holds — never a fallback face', async () => {
   const r = await hybridOf();
-  const book = markPeerCapable(bookWith({ [r.fingerprint]: { lens: 'lens-gone', sent: [lensMethodKey({ kind: 'email' })] } }), r.fingerprint);
+  const book = markPeerCapable(bookWith({ [r.fingerprint]: { lens: 'lens-gone', sent: ['m-email'] } }), r.fingerprint);
   const plan = await buildLensDeposits({
     ownerFingerprint: OWNER, bag, book,
     recipients: [recip(r)],
@@ -93,7 +93,7 @@ test('R2 ruling: a grant naming a DELETED lens sends zero and holds — never a 
 
 test('R2: methodsForSend carries only the lens methods (value-bearing, resolved)', () => {
   const everyone = bag.lenses[0];
-  assert.deepEqual(methodsForSend(bag, everyone), [{ kind: 'email', value: 'me@work.example' }]);
+  assert.deepEqual(methodsForSend(bag, everyone), [{ id: 'm-email', kind: 'email', value: 'me@work.example' }]);
   const min = bag.lenses.find((l) => l.id === 'lens-min')!;
   assert.deepEqual(methodsForSend(bag, min), []);
 });
@@ -101,7 +101,7 @@ test('R2: methodsForSend carries only the lens methods (value-bearing, resolved)
 test('item 3: a lens edit widens nobody — the new method does not flow until EACH holder confirms', async () => {
   const r1 = await hybridOf();
   const r2 = await hybridOf();
-  const emailKey = lensMethodKey({ kind: 'email' });
+  const emailKey = 'm-email';
   // Both hold lens-everyone and were already sent its email.
   let book = bookWith({
     [r1.fingerprint]: { lens: 'lens-everyone', capable: true, sent: [emailKey] },
@@ -125,13 +125,13 @@ test('item 3: a lens edit widens nobody — the new method does not flow until E
   const m2 = await depositedMethods(plan.deposits[1].blob, r2);
   assert.deepEqual(m2.methods, [{ kind: 'email', value: 'me@work.example' }]);
   // And the pending widening is reported per recipient so the view can ask.
-  const signalPending = { kind: 'signal', value: '@me' };
+  const signalPending = { id: 'm-signal', kind: 'signal', value: '@me' };
   assert.deepEqual(plan.wideningPending, [
     { fingerprint: r1.fingerprint, methods: [signalPending] },
     { fingerprint: r2.fingerprint, methods: [signalPending] },
   ]);
   // r1 confirms (the key lands in their sent set); r2 does not.
-  const signalKey = lensMethodKey({ kind: 'signal' });
+  const signalKey = 'm-signal';
   book = recordLensKeys(plan.book, r1.fingerprint, [signalKey]);
   const plan2 = await buildLensDeposits({
     ownerFingerprint: OWNER, bag: edited, book,
@@ -158,7 +158,7 @@ test('item 3 mutant-guard: the composer must NEVER send the unfiltered current l
 
 test('item 1: a held update bumps NO seq — the next send still starts where the last real one ended', async () => {
   const r = await hybridOf();
-  const emailKey = lensMethodKey({ kind: 'email' });
+  const emailKey = 'm-email';
   let book = markPeerCapable(setRecipientLens(bookWith({}), r.fingerprint, 'lens-everyone'), r.fingerprint);
   // No sent keys yet ⇒ every lens method is an unconfirmed widening ⇒ held, not a zero-method payload.
   const plan = await buildLensDeposits({
@@ -184,7 +184,7 @@ test('item 1: a held update bumps NO seq — the next send still starts where th
 
 test('item 4: sender book emptied after N sends ⇒ the next payload is still accepted (wall-clock seq)', async () => {
   const r = await hybridOf();
-  const emailKey = lensMethodKey({ kind: 'email' });
+  const emailKey = 'm-email';
   const granted = markPeerCapable(
     recordLensKeys(setRecipientLens(bookWith({}), r.fingerprint, 'lens-everyone'), r.fingerprint, [emailKey]),
     r.fingerprint,
@@ -217,7 +217,7 @@ test('item 8: a lens that cannot fit one cell is skipped too-large — nothing g
     methods: ids.map((id, i) => ({ id, kind: 'custom' as const, value: `v-${i}-` + 'x'.repeat(60), label: `lbl-${i}-` + 'y'.repeat(40) })),
     lenses: [{ id: 'lens-big', name: 'Big', methodIds: ids }],
   };
-  const hugeKey = ids.map((id, i) => lensMethodKey({ kind: 'custom', label: `lbl-${i}-` + 'y'.repeat(40) }));
+  const hugeKey = ids;
   const book = markPeerCapable(
     recordLensKeys(setRecipientLens(bookWith({}), r.fingerprint, 'lens-big'), r.fingerprint, hugeKey),
     r.fingerprint,
@@ -230,7 +230,7 @@ test('item 8: a lens that cannot fit one cell is skipped too-large — nothing g
   assert.equal(plan.deposits.length, 0);
   assert.deepEqual(plan.skipped, [{ fingerprint: r.fingerprint, reason: 'too-large' }]);
   // The sender-facing string exists and is the contract's exact wording — never "encode-failed".
-  assert.equal(LENS_TOO_LARGE_LINE, 'This lens has too much in it to send. Nothing went out. Take something off it and try again.');
+  assert.equal(lensTooLargeLine('Ana'), 'This lens has too much in it to send to Ana. Nothing went to them.');
 });
 
 test('R5: the existing RecipientGate is required and honored — a blocked recipient gets nothing', async () => {
@@ -252,7 +252,7 @@ test('R5: the existing RecipientGate is required and honored — a blocked recip
 
 test('R7: a granted recipient with no capability ⇒ HELD (reported), never sent', async () => {
   const r = await hybridOf();
-  const emailKey = lensMethodKey({ kind: 'email' });
+  const emailKey = 'm-email';
   const book = recordLensKeys(setRecipientLens(bookWith({}), r.fingerprint, 'lens-everyone'), r.fingerprint, [emailKey]);
   const plan = await buildLensDeposits({
     ownerFingerprint: OWNER, bag, book,
@@ -266,8 +266,8 @@ test('R7: a granted recipient with no capability ⇒ HELD (reported), never sent
 
 test('end-to-end shape: capable+admitted+confirmed recipient gets exactly one 2048B sealed cell with only their sent methods', async () => {
   const r = await hybridOf();
-  const emailKey = lensMethodKey({ kind: 'email' });
-  const signalKey = lensMethodKey({ kind: 'signal' });
+  const emailKey = 'm-email';
+  const signalKey = 'm-signal';
   let book = markPeerCapable(
     setRecipientLens(bookWith({ [r.fingerprint]: { seq: 4 } }), r.fingerprint, 'lens-close'),
     r.fingerprint,
@@ -300,6 +300,7 @@ test('R7 hello: the capability signal rides the same sealed 2048B shape, seq 0, 
     recipients: [recip(r)],
     admit: admitAll,
     sPairFor: () => sPair,
+    book: { v: 1, grants: {} },
   });
   assert.equal(skipped.length, 0);
   const pkg = JSON.parse(deposits[0].blob);
@@ -312,6 +313,7 @@ test('R7 hello: the capability signal rides the same sealed 2048B shape, seq 0, 
     recipients: [recip(r)],
     admit: () => false,
     sPairFor: () => sPair,
+    book: { v: 1, grants: {} },
   });
   assert.equal(refused.deposits.length, 0);
   assert.deepEqual(refused.skipped, [{ fingerprint: r.fingerprint, reason: 'blocked' }]);
@@ -325,4 +327,79 @@ test('R9: lens methods never enter the signed-update path (source guard)', () =>
     assert.equal(/buildAndSignContactUpdate\s*\(/.test(src), false, `${f}: must not call the signed-update builder`);
     assert.equal(/CONTACT_UPDATE_ALLOWED_FIELDS/.test(src.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')), false, `${f}: must not touch the update allowlist`);
   }
+});
+
+test('R3a: the sent set keys the owner METHOD id — a slot-colliding lens move asks (widening)', async () => {
+  // Two lenses each holding ONE unlabelled phone with different VALUES: same wire slot
+  // (kind+label), different owner methods. A mutant keyed on the slot would report no widening.
+  const r = await hybridOf();
+  const two: OwnerCardBag = {
+    methods: [
+      { id: 'm-phone-work', kind: 'phone', value: '+15550001' },
+      { id: 'm-phone-personal', kind: 'phone', value: '+19990002' },
+    ],
+    lenses: [
+      { id: 'lens-work', name: 'Work', methodIds: ['m-phone-work'] },
+      { id: 'lens-personal', name: 'Personal', methodIds: ['m-phone-personal'] },
+    ],
+  };
+  // Sent the work phone already (by method id), then reassigned to lens-personal without confirm:
+  // the personal number is a WIDENING even though it shares the work number's slot.
+  const book = markPeerCapable(
+    recordLensKeys(setRecipientLens(bookWith({}), r.fingerprint, 'lens-personal'), r.fingerprint, ['m-phone-work']),
+    r.fingerprint,
+  );
+  const plan = await buildLensDeposits({
+    ownerFingerprint: OWNER, bag: two, book,
+    recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, nowSeconds: () => NOW,
+  });
+  assert.equal(plan.deposits.length, 0, 'nothing flows until the per-recipient confirm');
+  assert.equal(plan.held[0].reason, 'unconfirmed');
+  assert.deepEqual(plan.wideningPending, [{ fingerprint: r.fingerprint, methods: [{ id: 'm-phone-personal', kind: 'phone', value: '+19990002' }] }],
+    'the same-slot different-method reports as a widening — keyed by method id, never by wire slot');
+});
+
+test('R8a composer hold: a lens carrying two methods in one slot is HELD — owner labels first', async () => {
+  const r = await hybridOf();
+  const dup: OwnerCardBag = {
+    methods: [
+      { id: 'm-p1', kind: 'phone', value: '+111' },
+      { id: 'm-p2', kind: 'phone', value: '+222' }, // same kind, no label — same slot as m-p1
+      { id: 'm-mail', kind: 'email', value: 'a@x' },
+    ],
+    lenses: [{ id: 'lens-dup', name: 'Dup', methodIds: ['m-p1', 'm-p2', 'm-mail'] }],
+  };
+  const book = markPeerCapable(
+    recordLensKeys(setRecipientLens(bookWith({}), r.fingerprint, 'lens-dup'), r.fingerprint, ['m-p1', 'm-p2', 'm-mail']),
+    r.fingerprint,
+  );
+  const plan = await buildLensDeposits({
+    ownerFingerprint: OWNER, bag: dup, book,
+    recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, nowSeconds: () => NOW,
+  });
+  assert.equal(plan.deposits.length, 0);
+  assert.equal(plan.held[0].reason, 'shared-slot');
+  assert.equal(plan.book, book, 'a held composer bumps no seq and touches no row');
+});
+
+test('R7a hello rate: two calls send ONE hello; one retry after the envelope life; then nothing', async () => {
+  const r = await hybridOf();
+  const call = (book: LensGrantBook, at: number) =>
+    buildLensHelloDeposits({
+      ownerFingerprint: OWNER, recipients: [recip(r)], admit: admitAll, sPairFor: () => sPair,
+      book, nowSeconds: () => at,
+    });
+  const first = await call({ v: 1, grants: {} }, NOW);
+  assert.equal(first.deposits.length, 1);
+  assert.deepEqual(first.book.grants[r.fingerprint]!.hello, { v: 1, at: NOW, n: 1 }, 'the sealed marker is what rations the next call');
+  const second = await call(first.book, NOW + 60);
+  assert.equal(second.deposits.length, 0, 'a second call inside the window sends nothing');
+  assert.deepEqual(second.skipped, [{ fingerprint: r.fingerprint, reason: 'hello-throttled' }]);
+  const retry = await call(second.book, NOW + 7 * 86400 + 1);
+  assert.equal(retry.deposits.length, 1, 'one retry after the envelope life');
+  assert.equal(retry.book.grants[r.fingerprint]!.hello!.n, 2);
+  const third = await call(retry.book, NOW + 30 * 86400);
+  assert.equal(third.deposits.length, 0, 'budget spent — nothing until the capability version changes');
 });

@@ -33,6 +33,8 @@ const GROUP: Record<DeadLetterReason, CantOpenGroup | null> = {
   'ratchet-desync': 'R',
   'session-reset': 'R',
   expired: 'X',
+  'lens-method-cap': null, // a lens refusal — not a message (NON_MESSAGE_REASONS), never counts
+  'lens-shared-slot': null, // same class
 };
 
 export function groupFor(reason: DeadLetterReason): CantOpenGroup | null {

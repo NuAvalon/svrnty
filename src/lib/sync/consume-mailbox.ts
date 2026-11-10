@@ -225,6 +225,7 @@ export interface LensResponseSeam {
     | { applied: true; id: string; fingerprint: string; ignited: boolean }
     | { hello: true }
     | { stale: true }
+    | { refused: 'method-cap' | 'shared-slot'; fingerprint: string } // R8a: MAC-verified refusals, own reasons
     | null
   >;
 }
@@ -1083,6 +1084,11 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         }
         if (res && 'hello' in res) return { kind: 'terminal', cls: { benign: 'lens-hello' } };
         if (res && 'stale' in res) return { kind: 'terminal', cls: { benign: 'lens-stale' } };
+        // R8a: a MAC-VERIFIED refusal is never 'unverified-frame' — each refusal carries its own
+        // reason (and the fp: the pair-MAC already authenticated the sender).
+        if (res && 'refused' in res) {
+          return { kind: 'terminal', cls: { reason: res.refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot', fp: res.fingerprint } };
+        }
         return { kind: 'terminal', cls: { reason: 'unverified-frame' } };
       } catch (err) {
         // A store I/O failure while persisting a VERIFIED lens payload → leave for retry (at-least-once).
