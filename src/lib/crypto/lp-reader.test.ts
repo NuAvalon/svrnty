@@ -67,3 +67,17 @@ test('R8 a maximum that is not a safe non-negative integer is refused, never ski
   const bytes = new Uint8Array([0, 0, 0, 1, 7]);
   for (const bad of [NaN, undefined as unknown as number, -1, 1.5, Infinity]) assert.equal(reason(() => new LpReader(bytes).readLp(bad)), 'bad-field');
 });
+
+test('R9 consumed() and snapshot() are copies of the reader\'s own copy, never of the caller\'s buffer', () => {
+  const buf = Buffer.from([1, 2, 3, 4, 5]);
+  const r = new LpReader(buf);
+  r.readFixed(2);
+  buf.fill(0);
+  assert.deepEqual([...r.consumed()], [1, 2], 'only what was read, from the private copy');
+  assert.deepEqual([...r.snapshot()], [1, 2, 3, 4, 5]);
+  const c = r.consumed(); c[0] = 99;
+  assert.deepEqual([...r.consumed()], [1, 2], 'changing the returned copy changes nothing');
+  const snap = r.snapshot(); snap[4] = 77;
+  assert.deepEqual([...r.snapshot()], [1, 2, 3, 4, 5], 'changing the snapshot changes nothing');
+  assert.equal(r.readFixed(3)[2], 5, 'and the reader itself is unaffected');
+});

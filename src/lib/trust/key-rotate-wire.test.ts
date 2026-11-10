@@ -254,7 +254,7 @@ test('K10 dark: nothing outside tests imports the codec modules', () => {
       if (statSync(p).isDirectory()) { if (n !== 'node_modules') walk(p); continue; }
       if (!/\.(ts|tsx)$/.test(n) || /\.test\.(ts|tsx)$/.test(n)) continue;
       const s = readFileSync(p, 'utf8');
-      if (/from ['"][^'"]*(key-rotate-wire|lp-reader)['"]/.test(s) && !/key-rotate-wire\.ts$|lp-reader\.ts$/.test(p)) hits.push(p);
+      if (/from ['"][^'"]*(key-rotate-wire|lp-reader)['"]/.test(s) && !/(key-rotate-wire|pointer-v2-wire|lp-reader)\.ts$/.test(p)) hits.push(p); // the sibling codecs may import the shared reader; nothing else may import either
     }
   };
   walk(root);

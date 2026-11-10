@@ -48,6 +48,16 @@ export class LpReader {
     return this.bytes.length - this.off;
   }
 
+  /** A copy of the bytes consumed so far, taken from the reader's OWN copy (never from the caller's buffer). */
+  consumed(): Uint8Array {
+    return this.bytes.slice(0, this.off);
+  }
+
+  /** A copy of the whole input as the reader holds it. */
+  snapshot(): Uint8Array {
+    return this.bytes.slice();
+  }
+
   /** Exactly n bytes (a copy of the reader's own private copy, so no caller ever holds a view of any other memory). */
   readFixed(n: number): Uint8Array {
     if (!Number.isSafeInteger(n) || n < 0) throw new LpParseError('bad-field');
