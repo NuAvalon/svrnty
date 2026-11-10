@@ -27,6 +27,9 @@ import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { VivreCaution } from '@/components/VivreBurn';
 import { contactHasDistress } from '@/lib/trust/distress';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
+import { ContactDeliveryDialog } from '@/components/settings/ContactDeliveryDialog';
+import { contactDeliveryPatch, type ContactDeliveryChoice } from '@/components/settings/delivery-actions';
+import { DELIVERY_COPY } from '@/components/settings/delivery-copy';
 import { CardMenuItem } from '@/components/ui/CardActionMenu';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -97,6 +100,8 @@ interface Contact {
   verified_at?: string;
   /** Owner-local mute (CUR-5) — never publish. */
   blocked?: boolean;
+  /** Per-contact Delivery choice; absent = follow the global setting (delivery-receipt-setting.ts). */
+  delivery_receipts?: 'on' | 'off';
   metadata?: {
     notes?: string;
     tags?: string[];
@@ -170,6 +175,7 @@ function recordToContact(r: ContactRecord): Contact {
     added_at: r.added_at || new Date().toISOString(),
     verified_at: r.verified_at,
     blocked,
+    delivery_receipts: r.delivery_receipts,
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls
     connection_status: (r as any).connection_status,
@@ -246,6 +252,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     handlesText: '',
   });
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [linkFingerprint, setLinkFingerprint] = useState('');
   const [linkPublicKey, setLinkPublicKey] = useState('');
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -589,6 +598,22 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setError(describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock') ?? (err instanceof Error ? err.message : 'Failed to update block'));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const deliveryContact = selectedContact ? (contacts.find((c) => c.id === selectedContact.id) ?? selectedContact) : null;
+  const handleSetDelivery = async (choice: ContactDeliveryChoice) => {
+    if (!deliveryContact) return;
+    try {
+      setDeliveryBusy(true);
+      setDeliveryError(null);
+      await updateContact(deliveryContact.id, (fresh) => contactDeliveryPatch(fresh, choice));
+      await loadContacts();
+      onContactsChange?.();
+    } catch {
+      setDeliveryError(DELIVERY_COPY.writeFailed);
+    } finally {
+      setDeliveryBusy(false);
     }
   };
 
@@ -1779,6 +1804,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                     />
                   ) : null}
                   <CardMenuItem
+                    testId="contact-delivery-open"
+                    label={DELIVERY_COPY.title}
+                    onClick={() => { setDeliveryError(null); setDeliveryOpen(true); closeMenu(); }}
+                  />
+                  <CardMenuItem
                     label={isContactBlocked(focused) ? 'Unblock' : 'Block'}
                     danger={!isContactBlocked(focused)}
                     onClick={() => {
@@ -2059,6 +2089,16 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <ContactDeliveryDialog
+          open={deliveryOpen && !!deliveryContact}
+          contactName={deliveryContact?.name || 'contact'}
+          stored={deliveryContact?.delivery_receipts}
+          busy={deliveryBusy}
+          error={deliveryError}
+          onClose={() => setDeliveryOpen(false)}
+          onChoose={(choice) => { void handleSetDelivery(choice); }}
+        />
 
         <InviteToSvrntyDialog
           open={inviteOpen}

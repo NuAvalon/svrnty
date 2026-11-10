@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
@@ -104,6 +105,17 @@ def _refuse(code: str) -> None:
     print(f"[beacon] NOT mounted: {code}", flush=True)
 
 
+def _start_retention(centurion) -> None:
+    """Deletes closed epochs, only if BEACON_RETENTION_INTERVAL_S is set. Unset means off: nothing starts and nothing is deleted."""
+    interval, refusal = bc.parse_retention_interval(os.environ.get(bc.RETENTION_ENV))
+    centurion.retention_interval = interval
+    if interval == 0:
+        print(f"[beacon] retention OFF{f': {refusal}' if refusal else ''}", flush=True)
+        return
+    threading.Thread(target=bc.retention_loop, args=(centurion, interval), name="beacon-retention", daemon=True).start()
+    print(f"[beacon] retention: ON every {interval}s", flush=True)
+
+
 def mount(app, data_dir, mode: str, client_ip: Callable[[Request], str], *, make_centurion=None) -> Optional[Mounted]:
     """Register the routes if and only if everything holds. Never raises."""
     if not bc.enabled():
@@ -141,6 +153,7 @@ def mount(app, data_dir, mode: str, client_ip: Callable[[Request], str], *, make
         app.add_api_route(f"{ROUTE_PREFIX}/{op}", _endpoint(centurion, op, client_ip), methods=["POST"], include_in_schema=False)
     app.add_api_route(HEALTH_PATH, _health(centurion, kind, db_path), methods=["GET"], include_in_schema=False)
     print(f"[beacon] mounted: vkey={kind}", flush=True)
+    _start_retention(centurion)                         # last: only a beacon that fully mounted may ever delete anything
     return Mounted(centurion, kind)
 
 
@@ -159,8 +172,9 @@ def _health(centurion, kind: str, db_path: str):
         alarms = centurion.alarm_count()
         free = shutil.disk_usage(Path(db_path).parent).free
         size = sum(os.path.getsize(p) for p in (db_path, db_path + "-wal") if os.path.exists(p))
-        status = "ALARM" if alarms > 0 else ("WARN" if free < LOW_DISK_BYTES else "ok")
-        return {"status": status, "vkey": kind, "alarms": alarms, "db_bytes": size, "disk_free_bytes": free}
+        retention = centurion.retention_status()
+        status = "ALARM" if alarms > 0 else ("WARN" if free < LOW_DISK_BYTES or retention["scrubbed"] is False else "ok")
+        return {"status": status, "vkey": kind, "alarms": alarms, "db_bytes": size, "disk_free_bytes": free, "retention": retention}
 
     async def health(request: Request) -> JSONResponse:
         expected = os.environ.get("SATELLITE_ADMIN_KEY", "").encode()

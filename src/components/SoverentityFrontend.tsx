@@ -40,6 +40,7 @@ import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettings
 import { MailNotificationsSettingsPanel } from '@/components/notes/MailNotificationsSettingsPanel';
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import { RelaySettings } from '@/components/settings/RelaySettings';
+import { DeliverySettings } from '@/components/settings/DeliverySettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 import { contactUpdateSendMessage } from '@/components/contact-update-send-copy';
 
@@ -2073,6 +2074,7 @@ export function SoverentityFrontend({
           <MailNotificationsSettingsPanel />
         </CardMorePanel>
 
+        {identity?.identity?.fingerprint ? <DeliverySettings ownerFingerprint={identity.identity.fingerprint} /> : null}
         {identity ? <RelaySettings /> : null}
 
         {/* Passphrase Dialog */}
