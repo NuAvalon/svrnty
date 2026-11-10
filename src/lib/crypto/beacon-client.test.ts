@@ -297,11 +297,11 @@ test('a refusal with an unknown reason -> unreadable', async () => {
 });
 
 for (const code of [429, 503]) {
-  test(`${code} -> busy, retryable, no state change`, async () => {
+  test(`${code} -> pending, retryable, no state change`, async () => {
     const { client, f, store } = harness();
     f.queue.push({ status: code, body: 'slow down' });
     const r = await client.trustAtTap('pair-1');
-    assert.equal(r.kind, 'busy');
+    assert.equal(r.kind, 'pending');                                     // L13e-2: the fetch LEFT — pending, never busy
     assert.equal((await store.get('pair-1'))!.rows[0].state, 'unknown');  // the write-ahead row IS the retry marker
   });
 }
@@ -314,18 +314,18 @@ test('other non-200 (500) -> unreadable = UNKNOWN: the write-ahead row stays (L1
   assert.equal(r.kind, 'pending');
 });
 
-test('a thrown fetch (network failure) -> busy', async () => {
+test('a thrown fetch (network failure) -> pending', async () => {
   const { client, f } = harness();
   f.queue.push({ throw: true });
   const r = await client.trustAtTap('pair-1');
-  assert.equal(r.kind, 'busy');
+  assert.equal(r.kind, 'pending');                                       // L13e-2: the fetch LEFT — pending, never busy
 });
 
-test('a timed-out request -> busy', async () => {
+test('a timed-out request -> pending', async () => {
   const { client, f } = harness({ requestTimeoutMs: 20 });
   f.queue.push({ status: 200, body: ok('accepted').body, delayMs: 5000 });
   const r = await client.trustAtTap('pair-1');
-  assert.equal(r.kind, 'busy');
+  assert.equal(r.kind, 'pending');                                       // L13e-2: the fetch LEFT — pending, never busy
 });
 
 // ---------- v1 client rules ----------
@@ -1020,20 +1020,21 @@ test("T-C an 'unreachable' row covers its epoch: a second tap mints 0 new proofs
   assert.equal(f.calls.length, 0);
 });
 
-test("T-D a 'proof' refusal is recorded per-epoch: 0 requests next renew in E, a deposit at E+1", async () => {
+test("T-D a 'proof' refusal is recorded per-epoch AND kills the intent: next-epoch renew sends 0 (L13e)", async () => {
   let t = MID;
-  const { client, f, prover } = harness({ now: () => t });
+  const { client, f, prover, store } = harness({ now: () => t });
   f.queue.push(refused('proof'));
   const r = await client.trustAtTap('pair-1');
   assert.equal(r.kind, 'failed');
+  // L13e: a first tap told 'failed' with nothing possibly on the server restores intent to false.
+  assert.equal((await store.get('pair-1'))!.tap?.trust, false);
   f.calls.length = 0;
-  await client.renew('pair-1');                                        // refusedEpochs[E] stands
+  await client.renew('pair-1');                                        // intent false: nothing runs
   assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
   assert.equal(prover.proveCalls.length, 1);
   t = MID + EPOCH_SECONDS * 1000;
-  f.queue.push(ok('accepted'));
-  await client.renew('pair-1');                                        // owed again next epoch
-  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
+  await client.renew('pair-1');                                        // still false: next epoch sends 0 too
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
 });
 
 test('T-E an epoch in spentEpochs is never re-deposited: 0 requests', async () => {
@@ -1052,8 +1053,8 @@ test('G2 tombstone: Remove then Trust with NO read between — the stale clock d
   f.queue.push(ok('accepted'));
   await client.trustAtTap('pair-1');
   f.queue.push(nonceOk(NONCE_A), ok('match'));
-  await client.pollNow('pair-1');                                      // firstMatchEpoch = E
-  assert.equal((await store.get('pair-1'))!.firstMatchEpoch, String(EPOCH));
+  await client.pollNow('pair-1');                                      // firstMatchEpoch = {E, gen}
+  assert.deepEqual((await store.get('pair-1'))!.firstMatchEpoch, { epoch: String(EPOCH), gen: 1 });
   f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
   await client.removeAtTap('pair-1');                                  // tombstone written — NO matchSince read
   assert.equal((await store.get('pair-1'))!.firstMatchEpoch, null);
@@ -1099,4 +1100,408 @@ test("G6 Remove mid-proof on a FRESH mint: row dropped, seed released, NO withdr
   const rec = await store.get('pair-1');
   assert.equal(rec?.pendingWithdraws.length ?? 0, 0);                  // no withdraw queued for a never-sent mint
   assert.equal(secrets.released.length, 1);                            // the fresh seed is released
+});
+
+// ---------- Review 4 contract (sha ae3f237f): L13 tap intent, L14 gen merge, L10c, L8d, L6b, restores ----------
+// Fixture rule (L13): a hand-written record must carry `tap` — intent-bearing fixtures come from trustAtTap.
+
+const acceptedOk = { status: 200, body: '{"status":"accepted"}' };
+const manualGate = () => { let r!: () => void; const p = new Promise<void>((res) => (r = res)); return { p, release: r }; };
+
+test('T-R1a confirmed pair, no record: renew sends 0 requests and builds 0 proofs', async () => {
+  const { client, f, prover } = harness();
+  await client.renew('pair-1');
+  assert.equal(f.calls.length, 0);
+  assert.equal(prover.proveCalls.length, 0);
+});
+
+test('T-R1b after trustAtTap it deposits; after removeAtTap it does not', async () => {
+  let t = MID;
+  const { client, f, prover } = harness({ now: () => t });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // intent {1,true} lands
+  t = MID + EPOCH_SECONDS * 1000;
+  f.calls.length = 0; prover.proveCalls.length = 0;
+  f.queue.push(ok('accepted'));
+  await client.renew('pair-1');                                        // trust:true -> renew deposits
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  await client.removeAtTap('pair-1');                                  // intent {n+1,false}
+  f.calls.length = 0; prover.proveCalls.length = 0;
+  await client.renew('pair-1');                                        // trust:false -> nothing
+  assert.equal(f.calls.length, 0);
+  assert.equal(prover.proveCalls.length, 0);
+});
+
+test('T-R1c a frozen pair renews on schedule with the same fetch count as unlatched', async () => {
+  const latchF = memLatch(); latchF.remote.set('pair-1', 'frozen');
+  const { client: cf, f: ff } = harness({ latch: latchF });
+  ff.queue.push(ok('accepted')); await cf.trustAtTap('pair-1');
+  ff.calls.length = 0; ff.queue.push(nonceOk(NONCE_A), ok('none'));
+  await cf.renew('pair-1');
+  const n = ff.calls.length; assert.ok(n >= 2);
+  const { client: cu, f: fu } = harness();
+  fu.queue.push(ok('accepted')); await cu.trustAtTap('pair-1');
+  fu.calls.length = 0; fu.queue.push(nonceOk(NONCE_A), ok('none'));
+  await cu.renew('pair-1');
+  assert.equal(fu.calls.length, n);
+});
+
+test('P1 a repeat Trust on a trusted pair bumps no generation and keeps the clock', async () => {
+  const { client, f, store } = harness();
+  f.queue.push(ok('accepted')); await client.trustAtTap('pair-1');     // gen 1
+  f.queue.push(nonceOk(NONCE_A), ok('match'));
+  await client.pollNow('pair-1');                                      // clock {E,1}
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // repeat: L13b writes nothing
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.tap!.gen, 1);                                       // mutant "always bump" -> red
+  assert.deepEqual(rec.firstMatchEpoch, { epoch: String(EPOCH), gen: 1 });
+  assert.equal(await client.matchSince('pair-1'), EPOCH);
+});
+
+test('T-R4a a pinned retry refused rate: row stays unknown, seed held, next retry uses the same K', async () => {
+  const p = makeProver();
+  const { client, f, store, secrets } = harness({ prover: p });
+  f.queue.push({ throw: true });                                       // answer lost -> 'unknown', pinned K
+  await client.trustAtTap('pair-1');
+  const rowId = (await store.get('pair-1'))!.rows[0].rowId;
+  f.setFallback(refused('rate'));
+  await client.renew('pair-1');                                        // RETRY refused: transient
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.rows[0].state, 'unknown');                          // NOT dropped — an earlier send may have landed
+  assert.ok(!secrets.released.includes(rowId));                        // seed kept
+  assert.equal(p.proveCalls.length, 2);                                // retried with the SAME pinned K
+  assert.deepEqual([...p.proveCalls[1].oneTimePk], [...p.proveCalls[0].oneTimePk]);
+});
+
+test('T-R4b a pinned retry refused proof: refusedEpochs records, no more requests that epoch, row+seed kept to close', async () => {
+  const { client, f, store, secrets } = harness();
+  f.queue.push({ throw: true });
+  await client.trustAtTap('pair-1');
+  const rowId = (await store.get('pair-1'))!.rows[0].rowId;
+  f.setFallback(refused('proof'));
+  await client.renew('pair-1');
+  const rec = (await store.get('pair-1'))!;
+  assert.ok(rec.refusedEpochs.includes(String(EPOCH)));
+  assert.equal(rec.rows[0].state, 'unknown');                          // kept to epoch close, seed held
+  assert.ok(!secrets.released.includes(rowId));
+  f.calls.length = 0;
+  await client.renew('pair-1');                                        // refusedEpochs[E] blocks the retry
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
+});
+
+test('T-R4c control: a FRESH mint refused is dropped and released', async () => {
+  const { client, f, store, secrets } = harness();
+  f.queue.push(refused('rate'));
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'pending');                                     // transient refusal, fresh mint dropped
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.rows.length, 0);
+  assert.equal(secrets.released.length, 1);
+});
+
+test('T-R5 Remove with withdraw queued (network down), then Trust: spent, 0 requests, intent recorded; next epoch renews', async () => {
+  let t = MID;
+  const { client, f, store, prover } = harness({ now: () => t });
+  f.queue.push(ok('accepted')); await client.trustAtTap('pair-1');     // row standing
+  f.setFallback({ throw: true });                                      // network down: the withdraw queues
+  await client.removeAtTap('pair-1');                                  // durable queue before fetch (L6b)
+  assert.equal((await store.get('pair-1'))!.pendingWithdraws.length, 1);
+  f.calls.length = 0;
+  const r = await client.trustAtTap('pair-1');                         // L8d: queued-withdraw epoch -> spent
+  assert.equal(r.kind, 'spent');
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 0);
+  assert.equal((await store.get('pair-1'))!.tap!.trust, true);         // intent still recorded
+  f.setFallback(ok('withdrawn')); await client.drainPendingWithdraws();// queue fires: epoch lands in spentEpochs
+  const r2 = await client.trustAtTap('pair-1');                        // still spent — the epoch cannot re-mint
+  assert.equal(r2.kind, 'spent');
+  t = MID + EPOCH_SECONDS * 1000;
+  f.calls.length = 0; f.queue.push(ok('accepted'));
+  await client.renew('pair-1');                                        // owed again at the NEXT epoch
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/deposit')).length, 1);
+});
+
+test('T-1 first tap, deposit fetch throws: row unknown, intent true, pending; renew retries SAME K', async () => {
+  const p = makeProver();
+  const { client, f, store } = harness({ prover: p });
+  f.queue.push({ throw: true });
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'pending');                                     // the fetch LEFT — pending (L13e-2)
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.rows[0].state, 'unknown');
+  assert.equal(rec.tap!.trust, true);                                  // intent STANDS — something may be on the server
+  f.setFallback(ok('accepted'));
+  await client.renew('pair-1');
+  assert.deepEqual([...p.proveCalls[1].oneTimePk], [...p.proveCalls[0].oneTimePk]);
+});
+
+test('T-2 last 600s: current epoch refused final, next epoch accepted: intent stands, result pending', async () => {
+  const { client, f, store } = harness({ now: () => LATE });
+  f.queue.push(refused('proof'), ok('accepted'));                      // E refused, E+1 deposited
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'pending');                                     // mutant "decide from current epoch" -> red
+  assert.equal((await store.get('pair-1'))!.tap!.trust, true);
+});
+
+test('T-3 first tap whose write-ahead save loses CAS 8x: busy, 0 requests, intent false, renew 0', async () => {
+  const store = memStore();
+  let n = 0;
+  const wrapped: BeaconStorePort = {
+    ...store,
+    cas: async (p, v, next) => (++n > 8 ? store.cas(p, v, next) : false),   // first 8 CAS lose, then win
+  };
+  const { client, f, prover } = harness({ store: wrapped });
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'busy');                                        // nothing left the device
+  assert.equal(f.calls.length, 0);
+  const rec = await store.get('pair-1');
+  assert.equal(rec?.tap?.trust ?? false, false);                       // intent false (or absent)
+  f.calls.length = 0;
+  await client.renew('pair-1');                                        // no intent -> 0 requests, 0 proofs
+  assert.equal(f.calls.length, 0);
+  assert.equal(prover.proveCalls.length, 0);
+});
+
+test('T-5 a pair with no intent but a leftover unknown row: pollNow sends 0, matchState none', async () => {
+  const { client, f, store } = harness();
+  await store.put({                                                    // restored-false pair, leftover row
+    pairId: 'pair-1', observedMatch: false, spentEpochs: [], refusedEpochs: [],
+    tap: { gen: 2, trust: false },
+    rows: [{ rowId: 'rX', epoch: String(EPOCH), H_e: '1', N: '2', state: 'unknown', oneTimePk: 'aa' }],
+    pendingWithdraws: [],
+  });
+  await client.pollNow('pair-1');
+  assert.equal(f.calls.length, 0);                                     // mutant "no intent check in pollNow" -> red
+  assert.equal(await client.matchState('pair-1'), 'none');
+});
+
+test('P3 unconfirmed tap writes nothing; confirm, then renew: 0 requests, 0 proofs', async () => {
+  let okNow = false;
+  const confirmed: PairConfirmedPort = { isConfirmed: async () => okNow };
+  const { client, f, prover } = harness({ confirmed });
+  await client.trustAtTap('pair-1');                                   // unconfirmed -> writes nothing
+  okNow = true;
+  await client.renew('pair-1');                                        // no intent -> nothing
+  assert.equal(f.calls.length, 0);
+  assert.equal(prover.proveCalls.length, 0);
+});
+
+test('P3b a repeat tap answered busy on a trusted pair keeps intent true; renew continues', async () => {
+  const store = memStore();
+  let n = 0;
+  const wrapped: BeaconStorePort = { ...store, cas: async (p, v, next) => (++n === 1 ? false : store.cas(p, v, next)) };
+  const { client, f } = harness({ store: wrapped });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // intent {1,true} lands
+  f.queue.push({ throw: true });
+  await client.trustAtTap('pair-1');                                   // repeat tap: NO intent write (L13b) —
+  assert.equal((await store.get('pair-1'))!.tap!.trust, true);         // a busy repeat leaves trust true
+});
+
+test('P4 Remove commits before the network: snapshot at first withdraw holds intent false, clock null, queue per row', async () => {
+  const { client, f, store, secrets } = harness();
+  f.queue.push(ok('accepted')); await client.trustAtTap('pair-1');     // row-1 standing
+  const seen: PairRecord[] = [];
+  const spyFetch = async (url: string, init: any) => {
+    seen.push(JSON.parse(JSON.stringify((await store.get('pair-1'))!)));
+    return f.fetch(url, init);
+  };
+  const c2 = harness({ store, secrets, fetch: spyFetch });
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  await c2.client.removeAtTap('pair-1');
+  assert.ok(seen.length >= 1);                                         // at least one withdraw fetch left
+  const atFirstFetch = seen[0];
+  assert.equal(atFirstFetch.tap!.trust, false);                        // intent false committed BEFORE the fetch
+  assert.equal(atFirstFetch.firstMatchEpoch, null);                    // clock cleared in the same commit
+  assert.ok(atFirstFetch.pendingWithdraws.length >= 1);                // a queue entry per covered row
+});
+
+test('P4b app closed after the latch but before any fetch: reopen + drain withdraws every row', async () => {
+  const { client, f, store, secrets } = harness();
+  f.queue.push(ok('accepted')); await client.trustAtTap('pair-1');
+  await client.removeAtTap('pair-1');                                  // remove fully processed (queue drained)
+  secrets.rows.set('rQ', { epoch: EPOCH, pk: new Uint8Array(32).fill(4), seed: new Uint8Array(32).fill(7) });
+  // simulate the crash-window: a pair whose remove committed queue entries but never fetched
+  await store.put({
+    pairId: 'pair-2', observedMatch: false, spentEpochs: [], refusedEpochs: [],
+    tap: { gen: 2, trust: false }, firstMatchEpoch: null,
+    rows: [{ rowId: 'rQ', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing', oneTimePk: 'aa' }],
+    pendingWithdraws: [{ rowId: 'rQ', attempts: 0, nextAt: 0 }],
+  });
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  await client.drainPendingWithdraws();                                // the durable queue retires the row
+  const rec = (await store.get('pair-2'))!;
+  assert.equal(rec.rows[0].state, 'withdrawn');
+  assert.equal(rec.pendingWithdraws.length, 0);
+});
+
+test('P5 a clock cleared by a remote un-trust cannot be written back by a stale save (gen bump)', async () => {
+  const { client, f, store, latch } = harness();
+  f.queue.push(ok('accepted')); await client.trustAtTap('pair-1');     // gen1
+  f.queue.push(nonceOk(NONCE_A), ok('match'));
+  await client.pollNow('pair-1');                                      // clock {E,1}
+  latch.remote.set('pair-1', 'removed');                               // remote un-trust (write path sees it)
+  await client.drainPendingWithdraws();                                // clears clock AND bumps gen (L14b)
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.firstMatchEpoch, null);
+  assert.ok(rec.tap!.gen > 1);                                         // mutant "clear without bump" -> stale wins -> red
+  latch.remote.delete('pair-1');
+  assert.equal(await client.matchSince('pair-1'), null);
+});
+
+test('R8/prune: tombstones, spentEpochs and refusedEpochs prune by NUMBER (999 < 1000 boundary)', async () => {
+  let t = MID;
+  const { client, store } = harness({ now: () => t });
+  await store.put({
+    pairId: 'pair-1', observedMatch: false, refusedEpochs: ['999', '1000'], spentEpochs: ['999', '1000'],
+    tap: { gen: 1, trust: true },
+    rows: [], pendingWithdraws: [],
+    deletedRows: [{ id: 'a', epoch: '999' }, { id: 'b', epoch: '1000' }],
+    deletedWithdraws: [{ id: 'a', epoch: '999' }, { id: 'b', epoch: '1000' }],
+  });
+  t = (1002) * EPOCH_SECONDS * 1000 + 3_600_000;                       // now at epoch 1002: 999 is 2+ closed, 1000 is not
+  await client.drainPendingWithdraws();                                // closeEpochs inside prunes
+  const rec = (await store.get('pair-1'))!;
+  assert.deepEqual(rec.spentEpochs.sort(), ['1000']);                  // '999' < cutoff(1000): pruned by NUMBER
+  assert.deepEqual(rec.refusedEpochs.sort(), ['1000']);                // string-compare mutants -> red ('1000'<'999')
+  assert.deepEqual((rec.deletedRows ?? []).map((x) => x.id), ['b']);
+  assert.deepEqual((rec.deletedWithdraws ?? []).map((x) => x.id), ['b']);
+});
+
+test('mutant-cover: unsaved maps to busy, never deposited (store loses write-ahead CAS 8x then wins)', async () => {
+  const store = memStore();
+  let n = 0;
+  // intent write succeeds (attempts 1-8 reserved for it to pass via merge),
+  // the deposit write-ahead then loses exactly 8 — reaches the 'unsaved' line.
+  const wrapped: BeaconStorePort = {
+    ...store,
+    cas: async (p, v, next) => { n++; return n <= 1 ? store.cas(p, v, next) : false; },
+  };
+  const { client, f } = harness({ store: wrapped });
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'busy');                                        // mutant "unsaved -> deposited" -> red
+  assert.equal(f.calls.length, 0);
+});
+
+// gated-call orchestration: hold one deposit fetch while other writes land, simulating a second tab.
+const gatedClient = (store: ReturnType<typeof memStore>, gate: { p: Promise<void> }, extra: Partial<BeaconClientDeps> = {}) => {
+  const ff = makeFetch();
+  let armed = false, parked = false;
+  const fetch = async (url: string, init: any) => {
+    if (armed && !parked && url.endsWith('/deposit')) { parked = true; await gate.p; }
+    return ff.fetch(url, init);
+  };
+  const client = createBeaconClient({
+    fetch: fetch as any, baseUrl: '/api/trust', latch: memLatch(),
+    confirmed: { isConfirmed: async () => true },
+    store, secrets: memSecrets(), prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 1000, ...extra,
+  });
+  return { client, ff, arm: () => { armed = true; } };
+};
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+test("T-R2b a stale copy's lower-gen clock cannot come back (a Remove clears it, a newer tap owns the pair)", async () => {
+  let t = MID;
+  const store = memStore();
+  const g = manualGate();
+  const c = gatedClient(store, g, { now: () => t }); const client = c.client; const ff = c.ff;
+  ff.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // gen1, row-1 standing
+  ff.queue.push(nonceOk(NONCE_A), ok('match'));
+  await client.pollNow('pair-1');                                      // clock {E,1}
+  t = MID + EPOCH_SECONDS * 1000;                                      // E+1
+  c.arm(); const pending = client.renew('pair-1');                          // loads stale copy (clock {E,1}), write-aheads row-2@E+1, parks on its deposit fetch
+  await tick();
+  ff.queue.push(nonceOk(NONCE_A), ok('withdrawn'), nonceOk(NONCE_A), ok('withdrawn'));
+  await client.removeAtTap('pair-1');                                  // gen2 false, clock null, rows withdrawn
+  ff.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // gen3 true (re-trust restarts intent)
+  ff.queue.push(ok('accepted'));
+  g.release();
+  await pending;                                                       // the stale copy commits LAST
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.tap!.gen, 3);
+  assert.equal(await client.matchSince('pair-1'), null);               // mutant "clock from ours/lower gen" -> red
+});
+
+test('P2 two copies from one base: a Remove is not lost to a Trust at the same generation (tie -> false)', async () => {
+  const store = memStore();
+  const g = manualGate();
+  const secrets = memSecrets();
+  const { client, ff } = gatedClient(store, g, { secrets });
+  ff.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // gen1 true, row standing
+  const gate2 = manualGate();
+  let parkedW = false;
+  const wFetch = async (url: string, init: any) => {
+    if (!parkedW && url.endsWith('/withdraw')) { parkedW = true; await gate2.p; }
+    return ff.fetch(url, init);
+  };
+  const c2 = createBeaconClient({
+    fetch: wFetch as any, baseUrl: '/api/trust', latch: memLatch(),
+    confirmed: { isConfirmed: async () => true },
+    store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 1000,
+  });
+  ff.queue.push(nonceOk(NONCE_A));                                     // the withdraw's nonce passes
+  const rem = c2.removeAtTap('pair-1');                                // commitIntent lands gen2 false, parks on the withdraw fetch
+  await tick();
+  // a racing re-trust lands {gen2,true} — the same generation, differing trust
+  const cur = (await store.get('pair-1'))!;
+  await store.put({ ...cur, tap: { gen: cur.tap!.gen, trust: true } });
+  ff.queue.push(ok('withdrawn'));
+  gate2.release();
+  await rem;                                                           // remove's final commit merges ours{g,false} vs cur{g,true}
+  assert.equal((await store.get('pair-1'))!.tap!.trust, false);        // tie -> false wins; mutant "ours" -> red
+});
+
+test('T-R3 a stale tab save cannot resurrect a dropped row or its withdraw entry (both-sides tombstone filter)', async () => {
+  let t = MID;
+  const store = memStore();
+  const g = manualGate();
+  const c = gatedClient(store, g, { now: () => t }); const client = c.client; const ff = c.ff;
+  ff.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // row-1 standing E
+  let r0 = (await store.get('pair-1'))!;
+  const rowId = r0.rows[0].rowId;
+  r0.pendingWithdraws = [{ rowId, attempts: 0, nextAt: Number.MAX_SAFE_INTEGER }];  // stale tab holds a queue entry for it
+  await store.put(r0);
+  t = MID + EPOCH_SECONDS * 1000;                                      // E+1: renew has work to do
+  c.arm(); const pending = client.renew('pair-1');                          // rec_A carries row-1 + the queue entry; parks on the deposit fetch
+  await tick();
+  // tab B commits the drop: row-1 tombstoned in BOTH lists, rows and queue empty
+  const b = (await store.get('pair-1'))!;
+  b.rows = b.rows.filter((x) => x.rowId !== rowId);
+  b.pendingWithdraws = [];
+  b.deletedRows = [{ id: rowId, epoch: String(EPOCH + 1) }];
+  b.deletedWithdraws = [{ id: rowId, epoch: String(EPOCH + 1) }];
+  b.version = (b.version ?? 0) + 1;
+  await store.put(b);
+  ff.queue.push(ok('accepted'));
+  g.release();
+  await pending;                                                       // ours(stale: row-1+queue) merges over cur(tombstones)
+  const rec = (await store.get('pair-1'))!;
+  assert.ok(!rec.rows.some((x) => x.rowId === rowId));                 // stays gone — mutant "del from ours only" -> red
+  assert.equal(rec.pendingWithdraws.length, 0);
+});
+
+test("T-4 interleaved taps: the first tap's late failure restores nothing (the restore is a gen CAS)", async () => {
+  const store = memStore();
+  const g = manualGate();
+  const c = gatedClient(store, g, {}); const client = c.client; const ff = c.ff;
+  c.arm();
+  const tap1 = client.trustAtTap('pair-1');                            // gen1 intent lands, deposit fetch parks
+  await tick();
+  ff.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  await client.removeAtTap('pair-1');                                  // gen2 false (withdraws the parked row)
+  ff.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');                                   // gen3 true
+  ff.queue.push(refused('proof'));                                     // tap1's parked fetch: a final refusal, late
+  g.release();
+  await tap1;
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.tap!.gen, 3);                                       // unconditional-restore mutant -> red
+  assert.equal(rec.tap!.trust, true);
 });
