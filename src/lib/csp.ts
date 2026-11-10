@@ -3,11 +3,13 @@
 // process: there is no list of hashes to keep in step with a build.
 //
 // It stops injected script, and keeps a script that does run from loading from or sending to
-// any other origin. What it does not stop:
+// any other origin through fetch, images, fonts, styles, media or frames. What it does not stop:
 // - a compromised server or a malicious build: the header comes from the server too;
 // - data leaving through this origin: 'self' includes our public relay, which takes a deposit
 //   from anyone, so a script written for this app can leave data there for its author;
 // - navigation, WebRTC and DNS prefetch, which no directive here governs;
+// - a same-origin response with no policy (the JSON routes): a script can open one in a new
+//   window and send from there;
 // - anything the edge adds to the page with its nonce, which runs and can report to this origin;
 // - script gadgets in our own trusted code.
 // Never describe this policy as keeping data from leaving.

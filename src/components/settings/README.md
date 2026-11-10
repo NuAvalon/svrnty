@@ -5,7 +5,7 @@ Glass for Flint's relay-field spec. Cursor renders; the fleet owns the locks.
 ## What the tab shows
 - Current relay URL (`You're on: {url}`).
 - What a relay can see.
-- That moving to another relay isn't available in the app yet.
+- That switching isn't available in the app yet.
 
 ## What it doesn't show, until Switch is wired
 The Relay URL field, the `GET {url}/health` check, the Switch button and its confirm dialog are off the tab. The page's `connect-src 'self'` refuses a check of any other origin, so every typed URL would have read "can't reach", and a typed URL also sends the person's IP to that host. `relay-health.ts` and `relay-migrate-seam.ts` stay in the tree, unmounted. Bringing Switch back needs a decision on how a person-chosen origin gets past the policy.

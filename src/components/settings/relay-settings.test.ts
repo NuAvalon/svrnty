@@ -14,7 +14,7 @@ describe('Relay settings: the copy, and no way to switch until it is wired', () 
     assert.match(src, /RELAY_COPY\.helper/);
     assert.match(src, /RELAY_COPY\.unavailable/);
     assert.equal(RELAY_COPY.currentPrefix, "You're on:");
-    assert.equal(RELAY_COPY.unavailable, "Moving to another relay isn't available in the app yet.");
+    assert.equal(RELAY_COPY.unavailable, "Switching isn't available in the app yet.");
     assert.equal(RELAY_COPY.placeholder, 'https://your-relay.example:8100');
     // NV-7: a relay is content-blind, NOT metadata-blind. The helper names what it does see so it can't read as a
     // complete "only when you connect" list: IP (rate limits), your identity key (every poll/ack sends the owner-auth

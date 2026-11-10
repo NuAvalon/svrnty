@@ -33,7 +33,7 @@ test('Settings → Relay says where you are and what a relay sees, and offers no
   await expect(panel.getByTestId('relay-current')).toContainText("You're on:");
   await expect(panel.getByTestId('relay-helper')).toContainText('never what your messages say');
   await expect(panel.getByTestId('relay-helper')).toContainText('your identity key');
-  await expect(panel.getByTestId('relay-unavailable')).toHaveText("Moving to another relay isn't available in the app yet.");
+  await expect(panel.getByTestId('relay-unavailable')).toHaveText("Switching isn't available in the app yet.");
 
   await expect(panel.getByRole('textbox')).toHaveCount(0);
   await expect(panel.getByRole('button')).toHaveCount(0);
