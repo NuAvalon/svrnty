@@ -11,6 +11,7 @@ import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
 import { randomBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { deriveNextAuthorityKeypair, deriveNextAuthorityCommitment } from '../identity/fingerprint';
+import { ownerAuthorityCommitment } from '../crypto/owner-authority-commitment';
 import { sealLivingBookHybrid } from '../crypto/living-book-sleeve';
 import { mintHybridRecipient } from '../sync/hybrid-test-fixture';
 import { LpParseError } from '../crypto/lp-reader';
@@ -43,7 +44,8 @@ function build(opts: { authority?: boolean; relay?: string; identityEpoch?: numb
   const id = identityKeys();
   const master = randomBytes(32);
   const auth = deriveNextAuthorityKeypair(master, 1);
-  const pin = deriveNextAuthorityCommitment(master, 1);
+  const pin = ownerAuthorityCommitment(auth.edPublic, auth.dsaPublic);
+  const rotationPin = deriveNextAuthorityCommitment(master, 1);
   const f: PointerV2Fields = {
     mailboxId: sha256(randomBytes(16)),
     relay: opts.relay ?? 'https://relay.example.org',
@@ -59,7 +61,7 @@ function build(opts: { authority?: boolean; relay?: string; identityEpoch?: numb
     ? { edPublic: auth.edPublic, dsaPublic: auth.dsaPublic, sig: signHybrid(pointerV2SigningInput(prefix, true), auth.edSecret, auth.dsaSecret) }
     : undefined;
   const bytes = encodePointerV2(f, idSig, authority);
-  return { f, bytes, id, pin, deps: { identity: { edPublic: id.edPublic, dsaPublic: id.dsaPublic }, authorityPin: pin }, prefixLen: prefix.length };
+  return { f, bytes, id, auth, pin, rotationPin, deps: { identity: { edPublic: id.edPublic, dsaPublic: id.dsaPublic }, authorityPin: pin }, prefixLen: prefix.length };
 }
 
 const fill = (n: number, v: number) => new Uint8Array(n).fill(v);
@@ -135,6 +137,60 @@ test('P4 relay shape: only a plain lower-case https origin is encodable', () => 
   for (const bad of ['http://relay.example.org', 'https://Relay.example.org', 'https://relay.example.org/', 'https://relay.example.org/path', 'https://user@relay.example.org', 'https://relay example', 'relay.example.org', '', 'https://' + 'a'.repeat(300) + '.org']) {
     assert.equal(ok(bad), false, bad.slice(0, 40));
   }
+});
+
+test('R2 canonical relay origin: one spelling per origin, no IP literal, no localhost, no empty or edge-hyphen label, port 1-65535 never 443 never leading zero', () => {
+  const ok = (relay: string) => { try { build({ relay }); return true; } catch { return false; } };
+  for (const good of ['https://relay.example.org', 'https://relay.example.org:8443', 'https://a.io:1', 'https://a.io:65535', 'https://r-1.example.org', 'https://xn--e1afmkfd.example', 'https://relay.example.org:444', 'https://a1.b2.c3.de', 'https://' + 'a'.repeat(63) + '.org']) {
+    assert.equal(ok(good), true, good);
+  }
+  const bad = [
+    'https://relay.example.org:443', 'https://relay.example.org:0443', 'https://relay.example.org:00443', 'https://relay.example.org:0', 'https://relay.example.org:65536', 'https://relay.example.org:99999', 'https://relay.example.org:123456', 'https://relay.example.org:', 'https://relay.example.org:80a',
+    'https://a..b.org', 'https://.relay.example.org', 'https://relay.example.org.', 'https://-a.example.org', 'https://a-.example.org', 'https://a.-b.example.org', 'https://a.b-.example.org',
+    'https://127.0.0.1', 'https://127.0.0.1:8471', 'https://10.0.0.5', 'https://1.2.3.4.5', 'https://192.168.1.1:8443', 'https://999.999.999.999', 'https://localhost', 'https://localhost:8471', 'https://relay.localhost', 'https://[::1]', 'https://[::1]:8471', 'https://0x7f.1', 'https://2130706433',
+    'https://' + 'a'.repeat(64) + '.org', 'https://' + ('a'.repeat(60) + '.').repeat(5) + 'org', 'https://a', 'https://relay.example.org#x', 'https://relay.example.org?x', 'https://u:p@relay.example.org', 'HTTPS://relay.example.org', 'https://relay.exa_mple.org', 'https://relay.example.org:8443:1',
+  ];
+  for (const b of bad) assert.equal(ok(b), false, b.slice(0, 60));
+  assert.equal(ok('https://relay.example.org:' + '1'.repeat(10)), false);
+});
+
+test('R2 the longest relay that fits is 247 host characters (the whole origin is capped at 255 bytes)', () => {
+  const ok = (relay: string) => { try { build({ relay }); return true; } catch { return false; } };
+  const host = (n: number) => ['a'.repeat(63), 'a'.repeat(63), 'a'.repeat(63), 'a'.repeat(n - 63 * 3 - 3)].join('.');
+  assert.equal(host(247).length, 247);
+  assert.equal(ok('https://' + host(247)), true);
+  assert.equal(ok('https://' + host(248)), false);
+});
+
+test('R2 the parser applies the same rule to bytes it did not encode', () => {
+  const { bytes } = build({ relay: 'https://relay.example.org:65535' });
+  const relayAt = 4 + 32 + 4; // magic/version/flags, mailbox id, relay length prefix
+  const parseReason = (b: Uint8Array) => { try { parsePointerV2(b); return 'parsed'; } catch (e) { return e instanceof LpParseError ? e.reason : 'other'; } };
+  assert.equal(parseReason(bytes), 'parsed');
+  const at = (b: Uint8Array, from: string, to: string) => { const c = b.slice(); const i = Buffer.from(c).indexOf(from, relayAt); assert.ok(i >= relayAt, 'anchor ' + from); assert.equal(from.length, to.length); c.set(Buffer.from(to), i); return c; };
+  assert.equal(parseReason(at(bytes, ':65535', ':65536')), 'bad-field', 'port above 65535');
+  assert.equal(parseReason(at(bytes, ':65535', ':00443')), 'bad-field', 'leading zero');
+  assert.equal(parseReason(at(bytes, 'relay.example', 'rela-.example')), 'bad-field', 'edge hyphen');
+  assert.equal(parseReason(at(bytes, 'relay.example', 'relay..xample')), 'bad-field', 'empty label');
+  assert.equal(parseReason(at(bytes, 'relay.example.org', '127.0.0.1.1.1.1.1')), 'bad-field', 'IP-shaped host');
+  const plain = build({ relay: 'https://relay.example.org' }).bytes;
+  assert.equal(parseReason(at(plain, 'relay.example.org', 'localhost.example')), 'parsed', 'a name that merely starts with localhost is a name');
+  assert.equal(parseReason(at(plain, 'relay.example.org', 'abcdefg.localhost')), 'bad-field', 'the localhost suffix');
+});
+
+test('R1 the authority pin is the LABELLED owner-authority commitment: a reveal whose raw sha256 equals the pin is refused', () => {
+  const { bytes, deps, pin, rotationPin, id, auth } = build({ authority: true });
+  const refusal = (d: PointerV2VerifyDeps) => { try { parsePointerV2(bytes).verify(d); return 'accepted'; } catch (e) { return e instanceof PointerV2Refused ? e.reason : 'other'; } };
+  assert.equal(refusal(deps), 'accepted');
+  // the ROTATION commitment of the very same authority keys is the raw sha256(ed || dsa): a wrong-role pin must not pass
+  const raw = bytesToHex(sha256(Uint8Array.from([...auth.edPublic, ...auth.dsaPublic])));
+  assert.equal(raw, rotationPin, 'the raw hash IS the rotation commitment of these keys');
+  assert.notEqual(raw, pin);
+  assert.equal(refusal({ ...deps, authorityPin: raw }), 'authority-pin-mismatch');
+  assert.equal(refusal({ ...deps, authorityPin: ownerAuthorityCommitment(auth.edPublic, auth.dsaPublic) }), 'accepted');
+  assert.equal(rotationPin.length, 64);
+  assert.equal(refusal({ ...deps, authorityPin: pin.toUpperCase() }), 'no-authority-pin', 'the pin is lower-case hex only');
+  assert.ok(id.edPublic.length === 32);
 });
 
 // ---------- verification is a real gate ----------
@@ -264,7 +320,7 @@ test('P15 domain separation: a signature made for one role does not verify in th
   const prefix = pointerV2Prefix(f);
   const master = randomBytes(32);
   const auth = deriveNextAuthorityKeypair(master, 1);
-  const authPin = deriveNextAuthorityCommitment(master, 1);
+  const authPin = ownerAuthorityCommitment(auth.edPublic, auth.dsaPublic);
   // the authority key signs over the IDENTITY domain input, and the identity key signs over the AUTHORITY domain input
   const crossAuth: AuthorityBlock = { edPublic: auth.edPublic, dsaPublic: auth.dsaPublic, sig: signHybrid(pointerV2SigningInput(prefix, false), auth.edSecret, auth.dsaSecret) };
   const okId = signHybrid(pointerV2SigningInput(prefix, false), id.edSecret, id.dsaSecret);

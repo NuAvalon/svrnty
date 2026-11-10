@@ -28,10 +28,10 @@
  */
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { LpReader, LpParseError } from '../crypto/lp-reader';
 import { lpBin, lpStr, u64be } from '../crypto/lp-tlv';
+import { ownerAuthorityCommitment } from '../crypto/owner-authority-commitment';
 
 export const POINTER_V2_MAGIC = Uint8Array.of(0x4d, 0x50); // 'MP'
 export const POINTER_V2_VERSION = 0x02;
@@ -47,7 +47,34 @@ const ED_PUB = 32;
 const DSA_PUB = 2592;
 const ED_SIG = 64;
 const DSA_SIG = 4627;
-const RELAY_SHAPE = /^https:\/\/[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$/;
+/**
+ * One canonical spelling per origin, so string equality means "the same relay". A plain https origin only: lower-case host of at least two
+ * labels (1-63 characters, letters, digits and inner hyphens, no empty label), whose last label contains a letter (so no IP literal) and
+ * is not 'localhost'; an optional explicit port 1-65535 with no leading zero and never 443 (the default is spelled by leaving it out);
+ * no userinfo, path, query or fragment. Where the name RESOLVES (a private or loopback address) is a connect-time rule, not a byte rule.
+ */
+export function isCanonicalRelayOrigin(s: unknown): s is string {
+  if (typeof s !== 'string' || s.length > POINTER_V2_RELAY_MAX || !s.startsWith('https://')) return false;
+  const rest = s.slice('https://'.length);
+  const m = /^([a-z0-9.-]+)(?::([0-9]+))?$/.exec(rest);
+  if (!m) return false;
+  const host = m[1];
+  if (host.length > 253) return false;
+  const labels = host.split('.');
+  if (labels.length < 2) return false;
+  for (const l of labels) {
+    if (l.length < 1 || l.length > 63) return false;
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(l)) return false;
+  }
+  if (!/[a-z]/.test(labels[labels.length - 1])) return false;
+  if (host === 'localhost' || host.endsWith('.localhost')) return false;
+  if (m[2] !== undefined) {
+    if (!/^[1-9][0-9]{0,4}$/.test(m[2])) return false;
+    const port = Number(m[2]);
+    if (port > 65535 || port === 443) return false;
+  }
+  return true;
+}
 
 export class PointerV2Refused extends Error {
   constructor(public readonly reason: string) {
@@ -87,7 +114,7 @@ const epochOk = (n: unknown): n is number => Number.isSafeInteger(n) && (n as nu
 
 /** The signed prefix. Throws PointerV2Refused on any field of the wrong shape. */
 export function pointerV2Prefix(f: PointerV2Fields): Uint8Array {
-  if (typeof f.relay !== 'string' || !RELAY_SHAPE.test(f.relay) || f.relay.length > POINTER_V2_RELAY_MAX) throw new PointerV2Refused('bad-relay');
+  if (!isCanonicalRelayOrigin(f.relay)) throw new PointerV2Refused('bad-relay');
   if (!epochOk(f.identityEpoch) || !epochOk(f.pointerEpoch)) throw new PointerV2Refused('bad-epoch');
   return concat([
     POINTER_V2_MAGIC,
@@ -136,7 +163,7 @@ const NOBLE: PointerV2Verifiers = {
 export interface PointerV2VerifyDeps {
   /** The publisher's identity public keys, held by the receiver (never read from the pointer). */
   identity: { edPublic: Uint8Array; dsaPublic: Uint8Array };
-  /** The receiver's pinned authority commitment (64 lowercase hex). Required only if the pointer carries an authority block. */
+  /** The receiver's pinned OWNER-authority commitment (ownerAuthorityCommitment: 64 lowercase hex; NOT the rotation commitment). Required only if the pointer carries an authority block. */
   authorityPin?: string;
   /** Test seam: the two verification primitives. */
   verifiers?: PointerV2Verifiers;
@@ -186,7 +213,7 @@ export class UnverifiedPointerV2 {
     if (p.authority) {
       const pin = deps.authorityPin;
       if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/.test(pin)) throw new PointerV2Refused('no-authority-pin');
-      if (bytesToHex(sha256(concat([p.authority.edPublic, p.authority.dsaPublic]))) !== pin) throw new PointerV2Refused('authority-pin-mismatch');
+      if (ownerAuthorityCommitment(p.authority.edPublic, p.authority.dsaPublic) !== pin) throw new PointerV2Refused('authority-pin-mismatch');
       if (!hybridOk(v, p.authority.sig, pointerV2SigningInput(p.prefix, true), p.authority.edPublic, p.authority.dsaPublic)) throw new PointerV2Refused('bad-authority-sig');
       authoritySigned = true;
     }
@@ -213,7 +240,7 @@ export function parsePointerV2(bytes: Uint8Array): UnverifiedPointerV2 {
   if ((flags & ~FLAG_AUTHORITY) !== 0) throw new LpParseError('bad-header');
   const mailboxId = r.readFixed(ID_LEN);
   const relay = r.readLpUtf8(POINTER_V2_RELAY_MAX);
-  if (!RELAY_SHAPE.test(relay)) throw new LpParseError('bad-field');
+  if (!isCanonicalRelayOrigin(relay)) throw new LpParseError('bad-field');
   const identityEpoch = r.readU64();
   const pointerEpoch = r.readU64();
   const x25519Pub = r.readFixed(X25519_LEN);
