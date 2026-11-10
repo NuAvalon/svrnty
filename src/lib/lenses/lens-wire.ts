@@ -1,7 +1,6 @@
 // src/lib/lenses/lens-wire.ts
 /**
- * Lenses v1.3 — the sealed per-recipient LENS PAYLOAD wire codec (contract athena-lenses-v1.3,
- * sha256 b03b9f45b6b66b75cde990a139dd33fc07a0bd665663421a62dbb4b71a15c805, R4/R8).
+ * Lenses v1.3 — the sealed per-recipient LENS PAYLOAD wire codec (the lenses v1.3 contract, R4/R8).
  *
  * WHAT A LENS PAYLOAD IS: a NEW SCHEMA, not a card field and not a contact.update. It carries the
  * methods of ONE lens to ONE recipient — privately, inside the existing hybrid mailbox seal. The
@@ -48,7 +47,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { lpStr, u64be } from '../crypto/lp-tlv';
 import { ctEqual } from '../crypto/ct-equal';
-import { frameUniform, unframeUniform } from '../crypto/uniform-frame';
+import { frameUniform, unframeUniform, FRAME_MAX_PAYLOAD } from '../crypto/uniform-frame';
 import { normalizeFingerprintHex } from '../identity/fingerprint';
 
 /** Wire type 0x4C ('L') and version 1 — carried ONLY inside the device-sealed uniform cell. */
@@ -73,6 +72,19 @@ export const LENS_METHOD_KIND_MAX_LEN = 32;
 export const LENS_METHOD_VALUE_MAX_LEN = 512;
 export const LENS_METHOD_LABEL_MAX_LEN = 64;
 export const LENS_HELLO_BODY = utf8ToBytes('{"v":1}');
+
+/** The most body bytes one payload can carry and still frame into the single 2048B cell:
+ *  FRAME_MAX_PAYLOAD minus the fixed layout (header+kind+fp+seq+bodyLen) and the MAC tag. */
+export const LENS_MAX_BODY = FRAME_MAX_PAYLOAD - FIXED_BYTES - LENS_TAG_LEN;
+
+/**
+ * The SLOT identity of a wire method: kind + a NUL separator + label (empty when absent). NUL can
+ * never appear in a wire kind or label (both are bounded printable fields), so two different
+ * (kind,label) pairs can never collide on one key. Written as a source escape — a literal NUL byte
+ * in the file would make git treat the whole file as binary and invisible to review.
+ */
+export const lensMethodKey = (m: Pick<LensMethodWire, 'kind' | 'label'>): string =>
+  `${m.kind}\x00${m.label ?? ''}`;
 
 export interface LensMethodWire {
   kind: string;

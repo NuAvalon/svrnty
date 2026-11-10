@@ -20,12 +20,22 @@
  *   • accept — whitelist-on-fetch (sender must be a known, unblocked contact) → derive the pair
  *     secret → verify the directional MAC (R4) → apply:
  *       - 'hello'   → record the peer as lens-capable in the device-local grants store (R7's signal).
- *       - 'methods' → replay-floor the seq, then write the methods onto the contact record: the
- *         faithful set lives in `contact_info.lens_methods` (upsert by kind+label — a payload
- *         REPLACES a key it carries and KEEPS a key it does not: "they keep what they already
- *         have", R6) and the displayable subset mirrors into the homes the card view already
- *         renders (handles / urls / emails / phones, derived from that map).
+ *       - 'methods' → replay-floor the seq (strictly-greater AND no more than a day ahead — a wrong
+ *         clock must not poison the floor), then write the methods into the contact record's
+ *         `contact_info.lens_methods` ONLY (upsert by kind+label — a payload REPLACES a key it
+ *         carries and KEEPS a key it does not: "they keep what they already have", R6).
  *     Returns the outcome for the dispatcher; THROWS only on a store I/O failure (retryable).
+ *
+ * PRIMARY FIELDS ARE SIGNED-PATH TERRITORY (review-1 item 5): a lens value is authenticated by a
+ * classical pair-MAC only, so applyLensMethods changes NO primary field — email, phones, urls and
+ * handles all stay exactly as the signed path left them. Lens values live in lens_methods and are
+ * SHOWN as given-by-them; a lens value that differs from the held signed value renders as CHANGED
+ * with the contract copy (lens-display.ts), never silently as the contact's own.
+ *
+ * STORE BOUND (review-1 item 7): lens_methods is hard-capped at LENS_MAX_METHODS keys per contact —
+ * a payload that would push the record past the cap is refused WHOLE (the record is left unchanged;
+ * the seq floor still advances so the refusal is terminal, not retried forever). An admitted
+ * contact on a modified client cannot inflate the record that rides every backup.
  *
  * The grants store here is the RECEIVER's copy of the same device-local namespace — it records only
  * which sender-fps announced capability and the inbound seq floor. No lens names ever arrive
@@ -35,13 +45,14 @@
 import { openLivingBookHybrid, resolveHybrid, type HybridSecretsSource } from '../crypto/living-book-sleeve';
 import { admitContact } from '../trust/admit-contact';
 import { getContactState } from '../trust/contact-state';
-import { CONTACT_HANDLE_KEYS, HANDLE_VALUE_MAX_LEN } from '../trust/contact-update';
 import { changedKeys, type ContactStore } from '../sync/consume-mailbox';
 import type { StoredContact } from '../contacts/apply-contact-update';
 import {
   LENS_KIND_HELLO,
   LENS_KIND_METHODS,
+  LENS_MAX_METHODS,
   decodeLensMethodsBody,
+  lensMethodKey,
   openLensPayload,
   parseLensPayload,
   unframeLensCell,
@@ -61,6 +72,7 @@ export type LensAcceptResult =
   | { applied: true; id: string; fingerprint: string; ignited: boolean }
   | { hello: true }
   | { stale: true }
+  | { refused: 'method-cap' } // terminal: the payload would grow lens_methods past the cap — record unchanged
   | null; // dropped: unverified (bad MAC / malformed), or a stranger/blocked sender — silent
 
 export interface LensSeamDeps {
@@ -78,23 +90,44 @@ export interface LensSeamDeps {
   saveGrants: (book: LensGrantBook) => void | Promise<void>;
   /** ISO timestamp source (injected for determinism). */
   now?: () => string;
+  /** Wall-clock seconds for the seq future-bound (injected for determinism). */
+  nowSeconds?: () => number;
 }
 
-/** Map a received method set onto the contact record. Exported for tests (pure). */
-export function applyLensMethods(current: StoredContact, methods: LensMethodWire[], now: string): StoredContact {
+/** The lens_methods map from a contact record (empty object when absent/malformed). */
+function lensMethodsOf(current: StoredContact): Record<string, LensMethodWire> {
+  const ci = typeof current.contact_info === 'object' && current.contact_info !== null
+    ? (current.contact_info as Record<string, unknown>)
+    : {};
+  return typeof ci.lens_methods === 'object' && ci.lens_methods !== null
+    ? { ...(ci.lens_methods as Record<string, LensMethodWire>) }
+    : {};
+}
+
+/**
+ * Map a received method set onto the contact record. Exported for tests (pure).
+ *
+ * Writes ONLY contact_info.lens_methods — the faithful per-sender map, upserted by method key.
+ * NO primary field (email, phone(s), urls, handles) is touched: those belong to the signed path,
+ * and a lens value is only classical-MAC-authenticated — letting it overwrite the signed phone or
+ * a swapped handle is the exact fraud this product exists against.
+ *
+ * Returns NULL (refuse the payload WHOLE, record unchanged) when the upsert would grow the map past
+ * LENS_MAX_METHODS keys — the store bound keeps an admitted contact on a modified client from
+ * inflating a record that rides every backup.
+ */
+export function applyLensMethods(current: StoredContact, methods: LensMethodWire[], now: string): StoredContact | null {
+  const prev = lensMethodsOf(current);
+  const keys = new Set(Object.keys(prev));
+  for (const m of methods) keys.add(lensMethodKey(m));
+  if (keys.size > LENS_MAX_METHODS) return null; // refused whole — the cap is per-contact total keys
+
   const ci: Record<string, unknown> =
     typeof current.contact_info === 'object' && current.contact_info !== null
       ? { ...(current.contact_info as Record<string, unknown>) }
       : {};
-
-  // The faithful record: keyed `${kind} ${label}` → latest value. Upsert per payload; a key
-  // the payload does not carry persists (R6 — the recipient keeps what they were already given).
-  const prev: Record<string, LensMethodWire> =
-    typeof ci.lens_methods === 'object' && ci.lens_methods !== null
-      ? { ...(ci.lens_methods as Record<string, LensMethodWire>) }
-      : {};
   for (const m of methods) {
-    prev[`${m.kind} ${m.label ?? ''}`] = {
+    prev[lensMethodKey(m)] = {
       kind: m.kind,
       value: m.value,
       ...(m.label !== undefined ? { label: m.label } : {}),
@@ -102,33 +135,8 @@ export function applyLensMethods(current: StoredContact, methods: LensMethodWire
   }
   ci.lens_methods = prev;
 
-  // Mirror the displayable subset into the homes the card view renders — derived FROM the map, so
-  // an update replaces its key and a kept entry stays shown (the receiver-side "keep what you have").
-  const entries = Object.values(prev);
-  const handles: Record<string, string> =
-    typeof ci.handles === 'object' && ci.handles !== null ? { ...(ci.handles as Record<string, string>) } : {};
-  for (const e of entries) {
-    if (CONTACT_HANDLE_KEYS.has(e.kind) && e.value.length <= HANDLE_VALUE_MAX_LEN) handles[e.kind] = e.value;
-  }
-  if (Object.keys(handles).length) ci.handles = handles;
-  const urls = entries.filter((e) => e.kind === 'site' || e.kind === 'url' || e.kind === 'website').map((e) => e.value);
-  if (urls.length) ci.urls = [...new Set(urls)];
-  const emails = entries.filter((e) => e.kind === 'email').map((e) => e.value);
-  const phones = entries.filter((e) => e.kind === 'phone').map((e) => e.value);
-
-  const next: StoredContact = { ...current, contact_info: ci };
-  if (emails.length) {
-    next.emails = [...new Set(emails)];
-    next.email = emails[0];
-  }
-  if (phones.length) {
-    next.phones = [...new Set(phones)];
-    next.phone = phones[0];
-  }
-
   // A verified lens payload is a real interaction — same decay-clock refresh as a signed update.
-  next.last_interaction = now;
-  return next;
+  return { ...current, contact_info: ci, last_interaction: now };
 }
 
 function stateOf(record: StoredContact) {
@@ -147,6 +155,7 @@ function stateOf(record: StoredContact) {
 /** Compose the consume seam. The caller (live-book-poll / headless deps) wires it behind the flag. */
 export function makeLensSeam(deps: LensSeamDeps): LensSeam {
   const now = deps.now ?? (() => new Date().toISOString());
+  const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   return {
     verify: async (blob: string) => {
       const secrets = await resolveHybrid(deps.hybridSecrets);
@@ -180,9 +189,10 @@ export function makeLensSeam(deps: LensSeamDeps): LensSeam {
       }
       if (opened.kind !== LENS_KIND_METHODS) return null;
 
-      // methods: replay floor — strictly greater seq than the last accepted from this sender.
+      // methods: replay floor — strictly greater seq than the last accepted from this sender,
+      // and no more than a day ahead of the local clock (a far-future seq poisons the floor).
       const book = await deps.loadGrants();
-      const floored = acceptInSeq(book, claimed.fpSender, opened.seq);
+      const floored = acceptInSeq(book, claimed.fpSender, opened.seq, nowSeconds());
       if (floored === null) return { stale: true };
       let methods: LensMethodWire[];
       try {
@@ -192,6 +202,12 @@ export function makeLensSeam(deps: LensSeamDeps): LensSeam {
       }
       const before = contact.current;
       const next = applyLensMethods(before, methods, now());
+      if (next === null) {
+        // The payload would grow lens_methods past the cap — refused WHOLE: record unchanged, but
+        // the floor still advances (this seq is SEEN; refusing it forever changes nothing).
+        await deps.saveGrants(floored);
+        return { refused: 'method-cap' };
+      }
       const ignited = stateOf(before) === 'dim' && stateOf(next) === 'living';
       await deps.store.persist(before.id, changedKeys(before, next));
       await deps.saveGrants(floored);

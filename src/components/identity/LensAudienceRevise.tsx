@@ -18,7 +18,7 @@ import type { OwnerCardBag } from './owner-card';
 import { methodKindLabel } from './owner-card';
 import type { LensGrantBook } from '../../lib/lenses/lens-grants';
 import { planLensReassign, plansNeedingConfirm, type LensReassignPlan } from '../../lib/lenses/lens-plan';
-import { lensForSend, methodsForSend } from '../../lib/lenses/lens-send';
+import { lensForSend } from '../../lib/lenses/lens-send';
 import { LENS_EXPLAINER, lensNarrowingNote, lensWideningWarning } from '../../lib/lenses/lens-copy';
 
 export type LensAudienceContact = {
@@ -30,8 +30,9 @@ export type LensAudienceReviseProps = {
   contacts: LensAudienceContact[];
   bag: OwnerCardBag;
   book: LensGrantBook;
-  /** Persist ONE recipient's lens assignment (the caller writes the grants book + sends). */
-  onAssign: (fingerprint: string, lensId: string | null) => void | Promise<void>;
+  /** Persist ONE recipient's confirmed plan — the caller applies `commitReassignPlan(book, plan)`
+   *  (lens assignment + the confirmed widening keys recorded into their sent set), then sends. */
+  onAssign: (plan: LensReassignPlan) => void | Promise<void>;
   /** Recipients whose payload is held (R7): they have not shown they can take lens payloads. */
   heldFingerprints?: string[];
   onClose?: () => void;
@@ -54,7 +55,7 @@ export function LensAudienceRevise({ contacts, bag, book, onAssign, heldFingerpr
   const commit = async (plan: LensReassignPlan) => {
     setBusy(true);
     try {
-      await onAssign(plan.fingerprint, plan.toLensId);
+      await onAssign(plan);
       setDraft((d) => {
         const next = { ...d };
         delete next[plan.fingerprint];
@@ -106,7 +107,10 @@ export function LensAudienceRevise({ contacts, bag, book, onAssign, heldFingerpr
                 <span style={{ fontSize: 13, color: E.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {c.name || 'Unnamed'}
                   {held.has(fp) ? (
-                    <span style={{ marginLeft: 8, fontSize: 10, color: E.dim }} title="This device has not shown it can take lens payloads yet.">
+                    <span
+                      style={{ marginLeft: 8, fontSize: 10, color: E.dim }}
+                      title={`${c.name ? `${c.name}'s app` : 'Their app'} hasn't shown it can receive this yet.`}
+                    >
                       · not sent yet
                     </span>
                   ) : null}
@@ -124,6 +128,9 @@ export function LensAudienceRevise({ contacts, bag, book, onAssign, heldFingerpr
                     padding: '4px 8px',
                   }}
                 >
+                  {/* R2: a recipient with no record shows the explicit no-face option — never a
+                      guessed face; assigning one plans a widening on every method it would send. */}
+                  <option value="">· none given ·</option>
                   {bag.lenses.map((l) => (
                     <option key={l.id} value={l.id}>
                       {l.name}

@@ -5,12 +5,15 @@
  * SHAPE (mirrors send-contact-update.ts, deliberately):
  *   • PURE — returns {mailbox_id, blob} deposit tuples; the caller POSTs each to /api/relay/envelope.
  *   • ONE sealed payload PER RECIPIENT — each carries ONLY the methods of the lens THAT recipient
- *     holds. The lens plays no part in the signed contact.update: lens methods NEVER go through
- *     buildAndSignContactUpdate and NEVER join CONTACT_UPDATE_ALLOWED_FIELDS (R9) — they travel
- *     only in this MAC'd, per-recipient schema.
- *   • THE SEND FILTER FAILS CLOSED (R2) — a recipient with no grant record gets the NARROWEST
- *     face: the lens exposing the fewest methods (the default lens wins ties). A grant naming a
- *     deleted lens, or a corrupt record, resolves exactly the same way.
+ *     holds, intersected with what they were already sent or confirmed to receive (the R3 gap fix:
+ *     a lens edit that would expose a new method does not flow until the per-recipient widening
+ *     confirm lands its key in the grant's `sent` set). The lens plays no part in the signed
+ *     contact.update: lens methods NEVER go through buildAndSignContactUpdate and NEVER join
+ *     CONTACT_UPDATE_ALLOWED_FIELDS (R9) — they travel only in this MAC'd, per-recipient schema.
+ *   • THE SEND FILTER FAILS CLOSED (R2) — a recipient with NO record, an unreadable one, or a grant
+ *     naming a deleted lens is sent ZERO methods: the update is HELD (no payload built, no seq
+ *     bumped) and reported, so the sender sees it has not gone. There is NO default/tie-break face —
+ *     a tie or a default never decides what a person gets.
  *   • THE GATE IS REQUIRED (R5) — `admit` is the existing RecipientGate (the book as it stands at
  *     send time). A blocked or removed recipient is skipped here; there is no second path around it.
  *   • CAPABILITY-GATED (R7) — 'methods' goes only to a recipient whose HELLO we have verified
@@ -18,7 +21,9 @@
  *     gone — never sent to a client that cannot take it.
  *   • FAIL-CLOSED PER RECIPIENT — no usable public key / no verified ML-KEM pubkey / an encode or
  *     seal error skips THAT recipient (reported) and never aborts the batch, and nothing is ever
- *     sent in a downgraded form.
+ *     sent in a downgraded form. A lens whose body cannot fit one cell reports 'too-large' — the
+ *     sender-facing copy for it lives in lens-copy.ts (LENS_TOO_LARGE_LINE); a person never sees
+ *     "encode-failed".
  *
  * S_pair is provided by the caller (sPairFor) — derived from the identity keys elsewhere
  * (deriveSharedSecret(owner ed25519 seed, recipient ed25519 pub)); this module never touches key
@@ -33,11 +38,13 @@ import {
   LENS_KIND_METHODS,
   LENS_KIND_HELLO,
   LENS_HELLO_BODY,
+  LENS_MAX_BODY,
   buildLensCell,
   encodeLensMethodsBody,
+  lensMethodKey,
   type LensMethodWire,
 } from './lens-wire';
-import { lensForRecipient, nextLensSeq, peerIsCapable, type LensGrantBook } from './lens-grants';
+import { lensForRecipient, lensSentKeys, nextLensSeq, peerIsCapable, recordLensKeys, type LensGrantBook } from './lens-grants';
 
 export interface LensRecipient {
   fingerprint: string;
@@ -57,51 +64,47 @@ export type LensSkipReason =
   | 'no-public-key'
   | 'no-pq-kem'
   | 'no-pair-secret'
+  | 'too-large'
   | 'encode-failed'
   | 'encrypt-failed';
 
-export type LensHoldReason = 'no-capability';
+export type LensHoldReason =
+  /** No grant record, an unreadable one, or a grant naming a deleted lens (R2): ZERO methods go —
+   *  no payload is built and no seq is bumped. The sender assigns + confirms a lens to release. */
+  | 'no-record'
+  /** The peer has not shown it can take lens payloads (R7). */
+  | 'no-capability'
+  /** Every method the lens would expose still awaits a widening confirm — nothing deliverable. */
+  | 'unconfirmed'
+  /** The granted lens resolves but exposes no methods at all — a zero-method payload would only
+   *  leak that an update happened, so nothing is built (same "not an empty list sent" rule). */
+  | 'empty-lens';
 
 export interface LensSendPlan {
   deposits: LensDeposit[];
   skipped: Array<{ fingerprint: string; reason: LensSkipReason }>;
-  /** Recipients whose payload was built-class but NOT sent (R7): they have not shown they can take
-   *  it. The sender's UI shows this as "hasn't gone" — the payload is held, never sent. */
+  /** Recipients whose payload was NOT sent: no record (R2) or no verified capability (R7). The
+   *  sender's UI shows this as "hasn't gone" — the payload is held, never sent, and NO seq bumps. */
   held: Array<{ fingerprint: string; reason: LensHoldReason }>;
-  /** The grant book with this send's seq bumps applied — the caller persists it. */
+  /** Methods a recipient's current lens would expose that are NOT yet sent-or-confirmed — widenings
+   *  awaiting the per-recipient confirm (the R3 gap). They were excluded from this send; the view
+   *  prompts the confirm, which lands the keys in `sent` for the next one. */
+  wideningPending: Array<{ fingerprint: string; methods: LensMethodWire[] }>;
+  /** The grant book with this send's seq bumps + sent-set unions applied — the caller persists it. */
   book: LensGrantBook;
 }
 
 /**
- * R2 — the narrowest face: the lens exposing the fewest resolvable methods. The default lens wins
- * ties (it is the face the owner chose to hand out by default); absent all lenses, the empty face.
- * THIS IS THE FAIL-CLOSED FLOOR: a recipient with no record, a corrupt record, or a record naming a
- * lens that no longer exists resolves HERE — never to a wider face.
+ * Resolve the lens a send may draw on for this recipient: the lens their grant names, when that
+ * lens still exists. NULL otherwise — no record, an unreadable record, or a grant naming a deleted
+ * lens all resolve to null (R2 ruling: there is NO fallback face; zero methods go and the send
+ * holds). Callers that only want "what face does this person currently get" use the same function —
+ * a null answer renders as no face, never as a guessed one.
  */
-export function narrowestLens(bag: OwnerCardBag): OwnerLens | null {
-  if (!bag || !Array.isArray(bag.lenses) || bag.lenses.length === 0) return null;
-  const count = (l: OwnerLens) =>
-    l.methodIds.reduce((n, id) => {
-      const m = bag.methods.find((x) => x.id === id);
-      return m && m.value.trim() ? n + 1 : n;
-    }, 0);
-  let best: OwnerLens | null = null;
-  for (const l of bag.lenses) {
-    if (best === null) best = l;
-    else if (count(l) < count(best)) best = l;
-    else if (count(l) === count(best) && l.id === bag.defaultLensId) best = l;
-  }
-  return best;
-}
-
-/** Resolve a recipient's lens: their grant's lens if it still exists, else the narrowest face (R2). */
 export function lensForSend(bag: OwnerCardBag, book: LensGrantBook, recipientFingerprint: string): OwnerLens | null {
   const granted = lensForRecipient(book, recipientFingerprint);
-  if (granted !== null) {
-    const lens = bag.lenses.find((l) => l.id === granted);
-    if (lens) return lens; // a grant naming a deleted lens falls through to the floor
-  }
-  return narrowestLens(bag);
+  if (granted === null) return null;
+  return bag.lenses.find((l) => l.id === granted) ?? null;
 }
 
 /** The wire method list for one lens: resolved, value-bearing, bounded at encode time. */
@@ -126,18 +129,23 @@ export interface BuildLensDepositsArgs {
   admit: RecipientGate;
   /** The pair secret per recipient (caller derives it from the identity keys). null ⇒ 'no-pair-secret' skip. */
   sPairFor: (recipientFingerprint: string) => Promise<Uint8Array | null> | Uint8Array | null;
+  /** Wall-clock seconds source for the seq anchor (review-1 item 4). Injected for determinism. */
+  nowSeconds?: () => number;
 }
 
 /**
- * Build one sealed 'methods' deposit per capable, admitted recipient. Returns the plan AND the
- * seq-bumped grant book for the caller to persist — even a partially-failed send bumps only the
- * recipients whose payload was actually built (the bumped seq is written on success only).
+ * Build one sealed 'methods' deposit per capable, admitted, granted recipient. Each payload carries
+ * only the recipient's sent-or-confirmed method keys; unconfirmed lens methods are reported in
+ * wideningPending and stay behind. Returns the plan AND the updated grant book for the caller to
+ * persist — a recipient's row changes (seq bump + sent union) only when their payload was built.
  */
 export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<LensSendPlan> {
   if (typeof args.admit !== 'function') throw new Error('refusing to send a lens payload without a recipient check');
+  const nowSeconds = args.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const deposits: LensDeposit[] = [];
   const skipped: LensSendPlan['skipped'] = [];
   const held: LensSendPlan['held'] = [];
+  const wideningPending: LensSendPlan['wideningPending'] = [];
   let book = args.book;
 
   for (const r of args.recipients) {
@@ -148,6 +156,11 @@ export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<Le
     }
     if (!args.admit(fp)) {
       skipped.push({ fingerprint: fp, reason: 'blocked' }); // R5: the gate is the only path
+      continue;
+    }
+    const lens = lensForSend(args.bag, book, fp);
+    if (lens === null) {
+      held.push({ fingerprint: fp, reason: 'no-record' }); // R2: zero methods go — held, shown, no seq bump
       continue;
     }
     if (typeof r.publicKeyArmored !== 'string' || r.publicKeyArmored.length === 0) {
@@ -167,13 +180,29 @@ export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<Le
       skipped.push({ fingerprint: fp, reason: 'no-pair-secret' });
       continue;
     }
-    const lens = lensForSend(args.bag, book, fp); // R2: record || narrowest face
+    // The R3-gap filter: only keys already sent or confirmed flow; the rest are widenings awaiting
+    // the per-recipient confirm — reported, never sent (a lens edit cannot widen anyone silently).
+    const sent = lensSentKeys(book, fp);
+    const lensMethods = methodsForSend(args.bag, lens);
+    const allowed = lensMethods.filter((m) => sent.has(lensMethodKey(m)));
+    const pending = lensMethods.filter((m) => !sent.has(lensMethodKey(m)));
+    if (pending.length) wideningPending.push({ fingerprint: fp, methods: pending });
+    if (allowed.length === 0) {
+      held.push({ fingerprint: fp, reason: pending.length ? 'unconfirmed' : 'empty-lens' });
+      continue;
+    }
     let cell: Uint8Array;
+    let sentKeys: string[];
     try {
-      const body = encodeLensMethodsBody(methodsForSend(args.bag, lens));
-      const next = nextLensSeq(book, fp);
+      const body = encodeLensMethodsBody(allowed);
+      if (body.length > LENS_MAX_BODY) {
+        skipped.push({ fingerprint: fp, reason: 'too-large' }); // sender copy: LENS_TOO_LARGE_LINE
+        continue;
+      }
+      const next = nextLensSeq(book, fp, nowSeconds());
       cell = buildLensCell({ kind: LENS_KIND_METHODS, fpSender: args.ownerFingerprint, fpReceiver: fp, seq: next.seq, body, sPair });
       book = next.book;
+      sentKeys = allowed.map(lensMethodKey);
     } catch {
       skipped.push({ fingerprint: fp, reason: 'encode-failed' });
       continue;
@@ -181,12 +210,13 @@ export async function buildLensDeposits(args: BuildLensDepositsArgs): Promise<Le
     try {
       const blob = await sealLivingBookHybrid(cell, r.publicKeyArmored, r.pqKemPublicKey);
       deposits.push({ mailbox_id: deriveMailboxId(fp), blob });
+      book = recordLensKeys(book, fp, sentKeys); // last-sent ∪ confirmed — union only, never un-disclose
     } catch {
       skipped.push({ fingerprint: fp, reason: 'encrypt-failed' });
     }
   }
 
-  return { deposits, skipped, held, book };
+  return { deposits, skipped, held, wideningPending, book };
 }
 
 /**

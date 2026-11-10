@@ -1,21 +1,26 @@
-// src/lib/lenses/lens-grants.test.ts — contract R1 (separate device-local store) + R2 (fail-closed).
+// src/lib/lenses/lens-grants.test.ts — contract R1 (separate device-local store, sealed at rest)
+// + R2 (fail-closed: no record ⇒ zero methods) + review-1 item 4 (seq floor) + item 6 (sealed book).
 // Run: npx tsx --test src/lib/lenses/lens-grants.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  LENS_MAX_FUTURE_SEQ_S,
   acceptInSeq,
   lensForRecipient,
   lensGrantKey,
+  lensSentKeys,
   loadLensGrants,
   markPeerCapable,
   nextLensSeq,
   peerIsCapable,
+  recordLensKeys,
   saveLensGrants,
   setRecipientLens,
   type LensGrantBook,
 } from './lens-grants';
+import { lensMethodKey } from './lens-wire';
 
 const OWNER = 'c'.repeat(64);
 const FP_A = 'a'.repeat(64);
@@ -27,76 +32,123 @@ function memStorage(): { getItem(k: string): string | null; setItem(k: string, v
 }
 
 const emptyBook = (): LensGrantBook => ({ v: 1, grants: {} });
+const NOW = 1_800_000_000; // fixed wall-clock seconds for deterministic seq tests
 
-test('R1: the grant book lives under its own namespaced key — never on a contact record', () => {
+test('R1: the grant book round-trips through its own store — never on a contact record', async () => {
   const s = memStorage();
   let book = emptyBook();
   book = setRecipientLens(book, FP_A, 'lens-work');
-  saveLensGrants(OWNER, book, s);
+  await saveLensGrants(OWNER, book, s);
   // The store key is namespaced to the owner — and the record is keyed by CONTACT fp, not a contact row.
   const keys = [...s.map.keys()];
   assert.equal(keys.length, 1);
   assert.match(keys[0], /^svrnty\.lens-grants\.c{64}$/);
-  const back = loadLensGrants(OWNER, s);
+  const back = await loadLensGrants(OWNER, s);
   assert.equal(lensForRecipient(back, FP_A), 'lens-work');
 });
 
-test('R1: exportAll cannot include the record — client-store never references the grants store (source guard)', () => {
-  // The R1 boundary is STRUCTURAL: the grant record rides no payload/card/log/relay and lives in a
-  // store exportAll does not read. Pin it: the export path must not import or name the grants store.
+test('item 6: the grant book is SEALED at rest — never plaintext localStorage', async () => {
+  // The production default is the client-store sealed record (AAD-bound, throws when locked).
+  // Pin it: this module must never reach for localStorage again, and it must use the sealed path.
   const dir = fileURLToPath(new URL('.', import.meta.url));
-  const clientStore = readFileSync(`${dir}/../identity/client-store.ts`, 'utf8');
-  assert.equal(clientStore.includes('lens-grants'), false, 'exportAll must never read the lens-grants store');
-  assert.equal(clientStore.includes('svrnty.lens-grants'), false);
   const grantSrc = readFileSync(`${dir}/lens-grants.ts`, 'utf8');
-  // And the grants module itself never touches contact records or a fetch (no path to the wire).
+  assert.equal(grantSrc.includes('localStorage'), false, 'grant book must never touch localStorage');
+  assert.match(grantSrc, /readLensGrantBook|writeLensGrantBook/, 'default store must be the sealed client-store record');
+  const clientStore = readFileSync(`${dir}/../identity/client-store.ts`, 'utf8');
+  // The sealed record itself: session-key guard on write (fail-closed, throws — never plaintext),
+  // encryptContactRecord under a reserved id, the settings store exportAll never reads.
+  assert.match(clientStore, /export async function readLensGrantBook\(/);
+  const write = clientStore.slice(clientStore.indexOf('export async function writeLensGrantBook('));
+  assert.match(write, /if \(!_sessionKey\) throw new Error\(/, 'write must throw when locked');
+  assert.match(write, /encryptContactRecord\(_sessionKey, LENS_BOOK_RECORD_ID/, 'must seal via the AAD-bound contact-crypto path');
+  const readFn = clientStore.slice(clientStore.indexOf('export async function readLensGrantBook('), clientStore.indexOf('export async function writeLensGrantBook('));
+  assert.match(readFn, /if \(!_sessionKey\) return null;/, 'locked read is fail-closed null (empty book)');
+  assert.match(clientStore, /txPut\('settings', \{ key: lensBookSettingKey/, 'the record lives in the settings store');
+  // exportAll reads identity + contacts (+ explicit named records) — never the settings store wholesale,
+  // and the lens record is not one it names: the book cannot ride a backup.
+  const exportAll = clientStore.slice(clientStore.indexOf('export async function exportAll('), clientStore.indexOf('export async function exportAll(') + 1400);
+  assert.equal(exportAll.includes('lens'), false, 'exportAll must not name the lens record');
+  assert.equal(exportAll.includes("txGetAll('settings')"), false, 'exportAll must not dump the settings store');
+});
+
+test('item 6: with NO injected store the default sealed path reads empty when locked and THROWS on write', async () => {
+  // Locked session (no _sessionKey): read ⇒ empty book (zero methods go); write ⇒ throws, retryable,
+  // and nothing is written anywhere — no plaintext fallback.
+  assert.deepEqual(await loadLensGrants(OWNER), { v: 1, grants: {}, inSeq: {} });
+  await assert.rejects(() => saveLensGrants(OWNER, emptyBook()), /Session locked|unencrypted/);
+});
+
+test('R1: the record rides no wire path (source guard — unchanged boundary)', () => {
+  const dir = fileURLToPath(new URL('.', import.meta.url));
+  const grantSrc = readFileSync(`${dir}/lens-grants.ts`, 'utf8');
   assert.equal(grantSrc.includes('fetch('), false);
   assert.equal(/getAllContacts|updateContact|addContact/.test(grantSrc), false);
 });
 
-test('R2: corrupt or unreadable records read as EMPTY — identical to no record', () => {
+test('R2: corrupt or unreadable records read as EMPTY — identical to no record', async () => {
   const s = memStorage();
   s.map.set(lensGrantKey(OWNER), '{not json');
-  assert.deepEqual(loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {} });
+  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {} });
   s.map.set(lensGrantKey(OWNER), '{"v":2,"grants":{}}'); // wrong version
-  assert.deepEqual(loadLensGrants(OWNER, s).grants, {});
+  assert.deepEqual((await loadLensGrants(OWNER, s)).grants, {});
   s.map.set(lensGrantKey(OWNER), '{"v":1,"grants":{"not-a-fp":{"lens":"x"},"' + FP_A + '":{"lens":17}}}');
-  const back = loadLensGrants(OWNER, s);
+  const back = await loadLensGrants(OWNER, s);
   assert.equal(lensForRecipient(back, FP_A), null); // non-canonical key and junk row both dropped
   assert.equal(lensForRecipient(back, 'not-a-fp'), null);
   // A throwing storage never propagates.
   const hostile = { getItem: () => { throw new Error('io'); }, setItem: () => {} };
-  assert.deepEqual(loadLensGrants(OWNER, hostile).grants, {});
+  assert.deepEqual((await loadLensGrants(OWNER, hostile)).grants, {});
 });
 
-test('R2: lensForRecipient returns null with no record — the caller then gives the narrowest face', () => {
+test('R2: lensForRecipient returns null with no record — the caller sends ZERO methods and holds', () => {
   const book = emptyBook();
   assert.equal(lensForRecipient(book, FP_B), null);
 });
 
-test('grants: set → read → clear; seq bumps monotonically; capability marks', () => {
+test('grants: set → read → clear; capability marks; sent-set unions', () => {
   let book = setRecipientLens(emptyBook(), FP_A, 'lens-friends');
   assert.equal(lensForRecipient(book, FP_A), 'lens-friends');
   book = setRecipientLens(book, FP_A, null);
   assert.equal(lensForRecipient(book, FP_A), null);
-  const n1 = nextLensSeq(book, FP_A);
-  const n2 = nextLensSeq(n1.book, FP_A);
-  assert.equal(n1.seq, 1);
-  assert.equal(n2.seq, 2);
-  assert.equal(peerIsCapable(n2.book, FP_A), false);
-  const capable = markPeerCapable(n2.book, FP_A);
+  assert.equal(peerIsCapable(book, FP_A), false);
+  const capable = markPeerCapable(book, FP_A);
   assert.equal(peerIsCapable(capable, FP_A), true);
+  // sent-set: union-only, deduped, survives a second merge unchanged.
+  const k1 = lensMethodKey({ kind: 'email' });
+  const k2 = lensMethodKey({ kind: 'signal', label: 'work' });
+  const m1 = recordLensKeys(book, FP_A, [k1, k2]);
+  assert.deepEqual(lensSentKeys(m1, FP_A), new Set([k1, k2]));
+  const m2 = recordLensKeys(m1, FP_A, [k2]);
+  assert.equal(m2, m1, 'a fully-known merge returns the same book');
 });
 
-test('receive floor: acceptInSeq accepts only strictly-greater seqs (replay/stale refused)', () => {
+test('item 4: nextLensSeq is max(prev+1, whole seconds since epoch) — a wiped book resumes above the floor', () => {
+  // A restored/cleared book (seq absent) still stamps a seq ABOVE anything the old book produced,
+  // because it anchors to wall time — the strictly-greater receiver floor never strands the sender.
+  const wiped = emptyBook();
+  const n = nextLensSeq(wiped, FP_A, NOW);
+  assert.equal(n.seq, NOW);
+  // And it still bumps monotonically off a populated counter.
+  const n2 = nextLensSeq({ v: 1, grants: { [FP_A]: { seq: NOW } } }, FP_A, NOW);
+  assert.equal(n2.seq, NOW + 1);
+  // A book AHEAD of the clock keeps its own monotonicity (prev+1 dominates).
+  const n3 = nextLensSeq({ v: 1, grants: { [FP_A]: { seq: NOW + 5000 } } }, FP_A, NOW);
+  assert.equal(n3.seq, NOW + 5001);
+});
+
+test('receive floor: acceptInSeq accepts strictly-greater seqs and refuses a far-future seq', () => {
   let book = emptyBook();
-  const a1 = acceptInSeq(book, FP_A, 5);
+  const a1 = acceptInSeq(book, FP_A, 5, NOW);
   assert.notEqual(a1, null);
-  assert.equal(acceptInSeq(a1!, FP_A, 5), null); // replay
-  assert.equal(acceptInSeq(a1!, FP_A, 4), null); // stale
-  const a2 = acceptInSeq(a1!, FP_A, 6);
+  assert.equal(acceptInSeq(a1!, FP_A, 5, NOW), null); // replay
+  assert.equal(acceptInSeq(a1!, FP_A, 4, NOW), null); // stale
+  const a2 = acceptInSeq(a1!, FP_A, 6, NOW);
   assert.notEqual(a2, null);
   // A different sender's floor is independent.
-  assert.notEqual(acceptInSeq(a2!, FP_B, 1), null);
-  assert.equal(acceptInSeq(a2!, FP_A, -1), null);
+  assert.notEqual(acceptInSeq(a2!, FP_B, 1, NOW), null);
+  assert.equal(acceptInSeq(a2!, FP_A, -1, NOW), null);
+  // item 4: a seq more than a day ahead of the receiver's clock is REFUSED — a wrong clock cannot
+  // poison the floor (inside the bound still accepts).
+  assert.equal(acceptInSeq(emptyBook(), FP_A, NOW + LENS_MAX_FUTURE_SEQ_S + 1, NOW), null);
+  assert.notEqual(acceptInSeq(emptyBook(), FP_A, NOW + LENS_MAX_FUTURE_SEQ_S, NOW), null);
 });

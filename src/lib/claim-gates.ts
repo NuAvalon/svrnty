@@ -125,8 +125,8 @@ export function isMutualTrustWireLive(): boolean {
  * recipient→lens device-local record, the send filter, the Revise view) is live end-to-end.
  *
  * FALSE today: the mechanism is BUILT under src/lib/lenses/* (lens-wire codec, lens-grants store,
- * lens-send composer, lens-consume seam, lens-plan + the Revise view) behind athena's contract
- * (athena-lenses-v1.3, sha256 b03b9f45), but it is a DRAFT — no runtime wiring calls it, no deploy.
+ * lens-send composer, lens-consume seam, lens-plan + the Revise view) under the lenses v1.3
+ * contract, but it is a DRAFT — no runtime wiring calls it, no deploy.
  * Flip to true ONLY when the wiring lands (hello emit + consume seam in live-book-poll + the Revise
  * view mounted) AND a two-identity browser run is verified, and update claim-gates.test.ts.
  * The "Extra methods stay on this device…" line (R6) is gated on THIS flag.
