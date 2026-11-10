@@ -140,17 +140,6 @@ export class UnverifiedKeyRotate {
     return o;
   }
 
-  /**
-   * UNVERIFIED, for routing only: the successor epoch this object CLAIMS. It lets a receiver tell a stale object (acked) from one that is
-   * ahead (kept for retry) without running the verifier on a claim that cannot chain yet. Never trust it: nothing but verify() returns a
-   * field a caller may act on, and a wrong claim only chooses a branch that changes no state.
-   */
-  claimedSuccessorEpoch(): number {
-    const input = FIELDS.get(this);
-    if (!input) throw new KeyRotateRefused('no-fields');
-    return input.successor_epoch;
-  }
-
   /** Run the existing rotation verifier against the contact we hold. Nothing is returned unless it all passes. */
   async verify(known: KnownContactIdentity): Promise<VerifiedKeyRotate> {
     const input = FIELDS.get(this);

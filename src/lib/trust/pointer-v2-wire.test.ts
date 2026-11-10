@@ -332,7 +332,7 @@ test('P14 dark: nothing outside tests imports the pointer v2 module', () => {
       const p = join(d, n);
       if (statSync(p).isDirectory()) { if (n !== 'node_modules') walk(p); continue; }
       if (!/\.(ts|tsx)$/.test(n) || /\.test\.(ts|tsx)$/.test(n)) continue;
-      if (/from ['"][^'"]*pointer-v2-wire['"]/.test(readFileSync(p, 'utf8')) && !/(pointer-v2-wire|rotation-receive)\.ts$/.test(p)) hits.push(p); // rotation-receive is the one consumer, itself guarded dark by its own test
+      if (/from ['"][^'"]*pointer-v2-wire['"]/.test(readFileSync(p, 'utf8')) && !/pointer-v2-wire\.ts$/.test(p)) hits.push(p);
     }
   };
   walk(root);
