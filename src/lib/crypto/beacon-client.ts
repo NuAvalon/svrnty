@@ -515,12 +515,18 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       try { await commit(rec); } catch { return 'unsaved'; }
       return { kind: 'refused', reason: 'wire' };                     // locally indistinguishable: never send it
     }
-    // L10 write-ahead: the 'unknown' row is durable BEFORE the fetch leaves (seed stays sealed).
+    // L10 write-ahead + L15d BEFORE: the 'unknown' row is durable BEFORE the fetch leaves (seed
+    // stays sealed), and the commit's MERGE RESULT is checked in the same step — a Remove's commit
+    // that landed between the intent write and here stops the send: row not recorded, 0 requests.
     // G11: if this save fails, NOTHING is sent — the tap reports 'busy' with 0 requests.
     // R6: a failed write-ahead save means the minted seed is released at once, never held forever.
     if (freshMint) rec.rows.push(row);
     try {
-      await commit(rec);
+      const w = await commitWriteAhead(rec);
+      if ('stopped' in w) {                                         // L15d: merged tap/latch says stop
+        if (freshMint) { dropRow(rec, row); await deps.secrets.releaseRow(row.rowId); }
+        return 'latched';
+      }
     } catch {
       if (freshMint) { dropRow(rec, row); await deps.secrets.releaseRow(row.rowId); }
       return 'unsaved';
@@ -536,8 +542,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       return 'latched';
     }
     const a = await post('deposit', built.body);
-    // L2c: re-read the latch BEFORE recording or acting on the answer.
+    // L2c + L15d AFTER: re-read the latch AND the stored tap BEFORE recording or acting on the
+    // answer — a Remove's commit can land after the BEFORE check and before the answer arrives;
+    // without this, the row stands with tap false and nothing queued. On stop the tap is 'latched'.
     const latchedNow = await removed(rec.pairId);
+    const storedTap = (await deps.store.get(rec.pairId))?.tap;
+    const stopped = latchedNow || storedTap?.trust !== true;
     if (a.kind === 'accepted' || a.kind === 'already') {
       if (a.kind === 'already' && freshMint) {
         // L10b: the server keeps the FIRST K — 'already' to a fresh mint means the held row is
@@ -547,11 +557,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         return 'already-fresh';
       }
       row.state = 'standing';
-      if (latchedNow) {
+      if (stopped) {
         // L6b: the durable queue entry commits BEFORE the withdraw fetch leaves.
         queueWithdraw(rec, row.rowId, 0);
         await commit(rec);
         if ((await withdrawRow(rec, row)) === 'done') unqueueWithdraw(rec, row.rowId, row.epoch);
+        return 'latched';
       }
       await commit(rec);
       return a;
@@ -561,7 +572,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       dropRow(rec, row);
       await deps.secrets.releaseRow(row.rowId);
       await commit(rec);
-      return a;
+      return stopped ? 'latched' : a;
     }
     if (a.kind === 'refused') {
       // L10c: drop + release on `refused` ONLY IF this very call minted the row and the refusal
@@ -573,19 +584,19 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         dropRow(rec, row);
         await deps.secrets.releaseRow(row.rowId);
         await commit(rec);
-        return a;
+        return stopped ? 'latched' : a;
       }
       // a pinned retry refused: keep row + seed; a final refusal is recorded above and the row
       // retires at epoch close (L11). Remove mid-flight still owes the withdraw the send may need.
-      if (latchedNow) queueWithdraw(rec, row.rowId, 0);
+      if (stopped) queueWithdraw(rec, row.rowId, 0);
       await commit(rec);
-      return a;
+      return stopped ? 'latched' : a;
     }
     // UNKNOWN (busy / unreadable / HTTP timeout / 429 / 503): the deposit may have landed —
     // keep the row 'unknown' and its seed; the retry re-deposits the SAME K.
-    if (latchedNow) queueWithdraw(rec, row.rowId, 0);                 // Remove mid-flight: withdraw queued (L2c)
+    if (stopped) queueWithdraw(rec, row.rowId, 0);                    // Remove mid-flight: withdraw queued (L2c)
     await commit(rec);
-    return a;
+    return stopped ? 'latched' : a;
   }
 
   async function withdrawRow(rec: PairRecord, row: RowRecord): Promise<'done' | 'queued'> {
@@ -644,6 +655,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     const ex = rec.pendingWithdraws.find((w) => w.rowId === rowId);
     if (ex) { ex.attempts = attempts; ex.nextAt = due; } else rec.pendingWithdraws.push({ rowId, attempts, nextAt: due });
   };
+  /** L6e: the withdraws a Remove queues are due NOW — backoff applies from the first RETRY, never
+   * the first attempt. Queues made by a deposit path after a send keep their backoff. */
+  const queueWithdrawNow = (rec: PairRecord, rowId: string): void => {
+    const ex = rec.pendingWithdraws.find((w) => w.rowId === rowId);
+    if (ex) { ex.nextAt = now(); } else rec.pendingWithdraws.push({ rowId, attempts: 0, nextAt: now() });
+  };
   const unqueueWithdraw = (rec: PairRecord, rowId: string, epoch: string): void => {
     rec.pendingWithdraws = rec.pendingWithdraws.filter((x) => x.rowId !== rowId);
     (rec.deletedWithdraws ??= []).push({ id: rowId, epoch: String(Math.max(Number(epoch), epochAt(now()))) });
@@ -664,9 +681,59 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         await deps.secrets.releaseRow(row.rowId);
         continue;
       }
-      queueWithdraw(rec, row.rowId, 0);                               // durable queue entry per covered row
+      queueWithdrawNow(rec, row.rowId);                               // L6e: durable queue entry, due NOW
     }
     await commitIntent(rec, false);
+    // L6d: a Remove retires every live row of the MERGED record. Its own commit merges in rows a
+    // concurrent deposit wrote — they have no queue entry, and the drain walks only the queue.
+    // Bounded passes (the 8-swap rule): queue every live unqueued row of the merged record, commit
+    // again if any were added, repeat until a pass adds nothing. Each pass — and the latch
+    // re-assert — applies only while the merged tap is still THIS Remove's (trust false at the
+    // generation this commit wrote); a newer tap owns the pair and its rows are never queued.
+    const myGen = rec.tap?.gen;
+    for (let i = 0; i < 8; i++) {
+      const cur = await deps.store.get(rec.pairId);
+      if (cur?.tap?.gen !== myGen || cur.tap.trust !== false) break;      // a newer tap holds it
+      let added = false;
+      for (const row of rec.rows) {
+        if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
+        if (!live.has(row.epoch)) continue;
+        if (rec.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
+        queueWithdrawNow(rec, row.rowId);
+        added = true;
+      }
+      if (!added) break;
+      await commit(rec);                                                // merge pulls in rows that landed since
+    }
+    // L6d: re-assert the LOCAL latch if it is gone — a Trust that cleared it but lost the commit
+    // race must leave the pair visibly 'removed' so L6c can still see (and repair) it. Same
+    // generation guard: beside a NEWER trust-true tap, a latch here would read as a half-done
+    // Remove and undo that Trust.
+    const last = await deps.store.get(rec.pairId);
+    if (last?.tap?.gen === myGen && last.tap.trust === false &&
+        (await deps.latch.kindOf(rec.pairId, 'local')) !== 'removed')
+      await deps.latch.setLatched(rec.pairId, 'local');
+  };
+
+  /** L15d BEFORE: the write-ahead commit of a deposit row is a compare-and-swap whose MERGE RESULT
+   * is checked in that same step — never an earlier separate read. "stop" = a 'removed' latch
+   * (either source, read alongside) OR the merged tap is not trust-true (a higher generation or a
+   * false-wins tie holds the intent — mergeTap already embodies both). On stop: the row is not
+   * recorded, nothing is sent, the caller returns 'latched'. */
+  const commitWriteAhead = async (rec: PairRecord): Promise<{ ok: true } | { stopped: true }> => {
+    if (await removed(rec.pairId)) return { stopped: true };
+    for (let i = 0; i < 8; i++) {
+      const cur = await deps.store.get(rec.pairId);
+      const base = cur?.version ?? 0;
+      const next = mergeRec(cur, rec);
+      if (next.tap?.trust !== true) return { stopped: true };         // the MERGE RESULT decides
+      next.version = base + 1;
+      if (await deps.store.cas(rec.pairId, base, next)) {
+        Object.assign(rec, next);
+        return { ok: true };
+      }
+    }
+    throw new Error(`beacon write-ahead: CAS lost 8 attempts for ${rec.pairId}`);
   };
 
   /** The Remove queue drain: a confirmed withdraw removes its entry (idempotent on the server). */
@@ -787,6 +854,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         return { kind: 'pending' };                                   // unknown/transient: owed, retried pinned-K
       };
       const out = result();
+      // L15d: on either stop the tap is 'latched' — restore the LOCAL latch if THIS call cleared
+      // it, decided from the same stored read that resolved the state ('removed' visibility must
+      // outlive a lost race); never while the stored trust is true — a Trust that landed keeps its
+      // cleared latch.
+      if (out.kind === 'latched' && clearedLocal && stored.tap?.trust !== true)
+        await deps.latch.setLatched(pairId, 'local');
       // L13e: a FIRST tap the person was told failed with nothing possibly on the server restores
       // the intent to FALSE under a new gen — only while the stored gen is still this tap's (L13e-3).
       const RESTORABLE = new Set(['busy', 'unsent', 'failed', 'latched']);
