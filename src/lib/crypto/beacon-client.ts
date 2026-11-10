@@ -49,7 +49,9 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * if either source is 'removed', the pair is 'removed'. isLatched(p) === (kindOf(p) !== null). */
 export interface LatchPort {
   isLatched(pairId: string): Promise<boolean>;
-  kindOf(pairId: string): Promise<'removed' | 'frozen' | null>;
+  /** L6c: `source` narrows the answer to one side — 'local' sees only my Remove/Block, 'remote' only
+   * the peer's un-trust. With no source the meaning is unchanged: 'removed' if either side removed. */
+  kindOf(pairId: string, source?: 'local' | 'remote'): Promise<'removed' | 'frozen' | null>;
   setLatched(pairId: string, source: 'local' | 'remote'): Promise<void>;
   clearLatched(pairId: string, source: 'local' | 'remote'): Promise<void>;
 }
@@ -241,7 +243,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       const win = ot.gen > ct.gen ? ours : cur;
       return { tap: win.tap, clock: validClock(win.firstMatchEpoch, win.tap) };
     }
-    if (ot.trust === ct.trust) return { tap: ot, clock: validClock(ours.firstMatchEpoch, ot) };   // tie: ours
+    // L14d: equal gen + equal trust — the clock is ours if it is valid for that gen, else the
+    // STORED one if it is. A copy read before the first match must not wipe the recorded clock.
+    if (ot.trust === ct.trust)
+      return { tap: ot, clock: validClock(ours.firstMatchEpoch, ot) ?? validClock(cur.firstMatchEpoch, ct) };
     return { tap: { gen: ot.gen, trust: false }, clock: null };                                 // tie: false wins
   };
   const mergeRec = (cur: PairRecord | undefined, ours: PairRecord): PairRecord => {
@@ -259,9 +264,14 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     const { tap, clock } = mergeTap(ours, cur);
     const dedup = (a: RowTombstone[] = [], b: RowTombstone[] = []) =>
       [...new Map([...a, ...b].map((t) => [t.id, t])).values()];
-    // R8: the higher closedFloor wins; every unioned, epoch-keyed list is filtered by it — a stale
-    // writer cannot resurrect an epoch the other side already retired.
-    const floor = Math.max(Number(cur.closedFloor ?? 0), Number(ours.closedFloor ?? 0));
+    // R8/L16: the higher closedFloor wins, CAPPED at the local clock — the floor is derived state,
+    // never a source of time. A forward clock excursion that once wrote a high floor must not pin
+    // it: real epochs below a stale floor would be erased on every merge (spent re-deposited,
+    // final refusals retried every renew).
+    const floor = Math.min(
+      Math.max(Number(cur.closedFloor ?? 0), Number(ours.closedFloor ?? 0)),
+      epochAt(now()) - 2,
+    );
     const kept = (e: string) => Number(e) >= floor;
     return {
       ...ours,
@@ -297,10 +307,17 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   /** L13c: a tap-intent write is its own compare-and-swap — the generation is computed from the
    * STORED record inside every attempt (`stored gen + 1`), never from the copy read at call start.
    * trust:false also clears the match clock in the same write (Remove's tombstone, L6b); a clock
-   * that no longer matches the new generation is normalized away. */
-  const commitIntent = async (rec: PairRecord, trust: boolean): Promise<void> => {
+   * that no longer matches the new generation is normalized away.
+   * L15: `expectGen` is the durable generation the caller read at call start — the write applies
+   * only while the stored gen is still that gen. If it moved, a tap this client cannot order
+   * against landed; the caller gets the STORED record back once and decides from that one read. */
+  const commitIntent = async (
+    rec: PairRecord, trust: boolean, expectGen?: number,
+  ): Promise<{ ok: true } | { moved: PairRecord }> => {
     for (let i = 0; i < 8; i++) {
       const cur = await deps.store.get(rec.pairId);
+      if (expectGen !== undefined && (cur?.tap?.gen ?? 0) !== expectGen)
+        return { moved: cur ?? rec };                                 // a tap we cannot order against landed
       const base = cur?.version ?? 0;
       const next = mergeRec(cur, rec);
       next.tap = { gen: (cur?.tap?.gen ?? 0) + 1, trust };
@@ -310,7 +327,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       next.version = base + 1;
       if (await deps.store.cas(rec.pairId, base, next)) {
         Object.assign(rec, next);
-        return;
+        return { ok: true };
       }
     }
     throw new Error(`beacon intent-commit: CAS lost 8 attempts for ${rec.pairId}`);
@@ -327,6 +344,9 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       next.version = (cur.version ?? 0) + 1;
       if (await deps.store.cas(pairId, cur.version ?? 0, next)) return;
     }
+    // L13g: a failed restore throws — like commit/commitIntent, loud never silent. Told `busy`
+    // while the intent stays true, a later renew would deposit what they were told did not happen.
+    throw new Error(`beacon intent-restore: CAS lost 8 attempts for ${pairId}`);
   };
 
   /** Latch gates: 'removed' stops every wire action for the pair (L3); 'frozen' only masks the local match view —
@@ -334,9 +354,13 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const removed = (pairId: string) => deps.latch.kindOf(pairId).then((k) => k === 'removed');
 
   /** Call order per pair: the LAST tap issued owns the pair's fate. A trust tap clears its local latch only while it
-   * is still the latest call — otherwise a Remove issued a tick later would have its latch write silently undone. */
+   * is still the latest call — otherwise a Remove issued a tick later would have its latch write silently undone.
+   * Cheap same-tab fast path only (L15): a second tab has its own map — the durable generation is the guarantee. */
   const lastCall = new Map<string, number>();
   let callSeq = 0;
+  /** L6c: pairs with a removeAtTap in flight IN THIS CLIENT — the repair must not bump gen twice in the
+   * window between setLatched and the L6b commit. */
+  const removing = new Set<string>();
 
   // ---- transport (module-private: the raw answer must not leave this file, v2 L4) ----
 
@@ -624,15 +648,72 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     rec.pendingWithdraws = rec.pendingWithdraws.filter((x) => x.rowId !== rowId);
     (rec.deletedWithdraws ??= []).push({ id: rowId, epoch: String(Math.max(Number(epoch), epochAt(now()))) });
   };
+
+  /** L6b/L6c: the ONE Remove commit — intent false under gen+1, clock tombstoned, a queued withdraw
+   * per live row, closed rows dropped and released. removeAtTap and the half-done-Remove repair
+   * share it; it commits BEFORE any withdraw fetch leaves. */
+  const removeCommitBody = async (rec: PairRecord): Promise<void> => {
+    rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock
+    rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: false };         // L13: intent false under a new gen
+    const live = visibleEpochs(now());
+    for (const row of rec.rows) {
+      // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
+      if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
+      if (!live.has(row.epoch)) {                                     // epoch closed: drop + release (L11)
+        dropRow(rec, row);
+        await deps.secrets.releaseRow(row.rowId);
+        continue;
+      }
+      queueWithdraw(rec, row.rowId, 0);                               // durable queue entry per covered row
+    }
+    await commitIntent(rec, false);
+  };
+
+  /** The Remove queue drain: a confirmed withdraw removes its entry (idempotent on the server). */
+  const drainQueuedWithdraws = async (rec: PairRecord): Promise<void> => {
+    const live = visibleEpochs(now());
+    const cur = epochAt(now());
+    for (const w of [...rec.pendingWithdraws]) {
+      const row = rec.rows.find((r) => r.rowId === w.rowId);
+      if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {
+        unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
+        if (row) await deps.secrets.releaseRow(row.rowId);
+        continue;
+      }
+      if ((await withdrawRow(rec, row)) === 'done') unqueueWithdraw(rec, row.rowId, row.epoch);
+    }
+  };
+
+  /** L6c: a half-done Remove — the LOCAL latch is 'removed' AND tap.trust is still true. The commit
+   * in removeAtTap never landed (crash, or 8 lost swaps); the queued withdraws were never written.
+   * Repair with the SAME single commit, then the caller's normal drain retires the queue.
+   * A REMOTE 'removed' never triggers it and never changes tap (L14b: clock cleared, trust
+   * unchanged, no withdraw queued). Skipped while a removeAtTap for the pair is in flight HERE —
+   * the setLatched→commit window must not bump gen twice. */
+  const repairHalfDoneRemove = async (pairId: string): Promise<boolean> => {
+    if (removing.has(pairId)) return false;
+    if ((await deps.latch.kindOf(pairId, 'local')) !== 'removed') return false;
+    const rec = await deps.store.get(pairId);
+    if (!rec || rec.tap?.trust !== true) return false;
+    await removeCommitBody(rec);
+    return true;
+  };
   return {
     /** v2 s1: the first deposit happens AT THE TAP. Clears the LOCAL latch only (L5); a remote latch still blocks. */
     async trustAtTap(pairId) {
       const mine = ++callSeq;
       lastCall.set(pairId, mine);                                       // synchronous, before the first await
+      // L15: capture the DURABLE generation as the FIRST await — the intent write applies only
+      // while the stored gen is still g0; if it moved, a tap this client cannot order against won.
+      const g0 = (await deps.store.get(pairId))?.tap?.gen ?? 0;
       if (!(await deps.confirmed.isConfirmed(pairId))) return { kind: 'unconfirmed' };   // L7: fail closed
       if (lastCall.get(pairId) !== mine) return { kind: 'latched' };    // a newer tap owns this pair now — step aside
       // v3 L5: the tap clears a 'removed' LOCAL latch only — 'frozen' ends only by explicit Unfreeze.
-      if ((await deps.latch.kindOf(pairId)) === 'removed') await deps.latch.clearLatched(pairId, 'local');
+      let clearedLocal = false;                                         // L15: yield must un-do our own clear
+      if ((await deps.latch.kindOf(pairId)) === 'removed') {
+        await deps.latch.clearLatched(pairId, 'local');
+        clearedLocal = true;
+      }
       if (await removed(pairId)) return { kind: 'latched' };            // a 'removed' latch stands ('frozen' does not block)
       const rec = await getRec(pairId);
       // L13 TAP INTENT, written durably BEFORE the first proof (L13d: after the checks above — an
@@ -641,14 +722,29 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       // computed from the STORED record inside the compare-and-swap.
       const firstTap = rec.tap?.trust !== true;
       let intentGen: number | undefined;
+      let wroteIntent = false;
       if (firstTap) {
         rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: true };
+        let w: { ok: true } | { moved: PairRecord };
         try {
-          await commitIntent(rec, true);
+          w = await commitIntent(rec, true, g0);                        // L15: applies only while gen is still g0
         } catch {
           return { kind: 'busy' };                                    // the intent write failed — nothing left
         }
-        intentGen = rec.tap!.gen;                                     // the generation THIS tap wrote
+        if ('moved' in w) {
+          // L15: a tap this client cannot order against landed between the read and the write.
+          // Decide EVERYTHING from this one stored record — no second `get`.
+          if (w.moved.tap?.trust !== true) {
+            if (clearedLocal) await deps.latch.setLatched(pairId, 'local');  // un-do our own latch clear
+            return { kind: 'latched' };                                    // yield to the Remove — 0 requests
+          }
+          // stored trust TRUE: another Trust won — continue as an ordinary repeat tap (L13b):
+          // no intent write, do NOT restore the latch, report the real result, never 'latched'.
+          Object.assign(rec, w.moved);
+        } else {
+          intentGen = rec.tap!.gen;                                     // the generation THIS tap wrote
+          wroteIntent = true;
+        }
       }
       const touched = depositableEpochs(now());
       // R7: the tap's result starts NEUTRAL — 'deposited' needs a wire answer or a covering row;
@@ -674,17 +770,18 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         touchedSet.has(r.epoch) &&
         (r.state === 'unknown' || r.state === 'standing' || r.state === 'matched' || r.state === 'unreachable'));
       const result = (): TrustResult => {
-        if (commitFailed) return { kind: 'busy' };
         if (saw === 'covered') return { kind: 'deposited' };          // a standing/matched row covers the epoch
         if (saw === 'covered-unreachable' || saw === 'already-fresh') return { kind: 'unreachable' };
         if (saw === 'spent-epoch') return { kind: 'spent' };          // spent incl. L8d queued-withdraw epochs
         if (saw === 'latched') return { kind: 'latched' };            // Remove mid-proof — nothing sent
         if (saw.kind === 'accepted' || saw.kind === 'already') return { kind: 'deposited' };
         if (saw.kind === 'withdrawn') return { kind: 'spent' };
-        if (liveRow) return { kind: 'pending' };                      // L13e-2: may be on the server — 'pending'
+        if (liveRow) return { kind: 'pending' };                      // L13e-2: a fetch LEFT — pending even when the
+        //                                                            // final commit failed after that fetch (delta7)
         if (saw === 'refused-epoch') return { kind: 'failed' };       // a final refusal stands for this epoch
         if (saw === 'unsent') return { kind: 'unsent' };              // proof threw / no secrets — nothing sent
         if (saw === 'unsaved') return { kind: 'busy' };               // write-ahead lost CAS — 'busy' ONLY if nothing left
+        if (commitFailed) return { kind: 'busy' };                    // nothing reached the wire AND the save lost
         if (saw.kind === 'refused' && (NO_RETRY.has(saw.reason) || saw.reason.startsWith('point:'))) return { kind: 'failed' };
         if (saw.kind === 'busy' || saw.kind === 'unreadable') return { kind: 'pending' };  // the fetch LEFT (L13e-2)
         return { kind: 'pending' };                                   // unknown/transient: owed, retried pinned-K
@@ -693,7 +790,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       // L13e: a FIRST tap the person was told failed with nothing possibly on the server restores
       // the intent to FALSE under a new gen — only while the stored gen is still this tap's (L13e-3).
       const RESTORABLE = new Set(['busy', 'unsent', 'failed', 'latched']);
-      if (firstTap && !liveRow && intentGen !== undefined && RESTORABLE.has(out.kind))
+      if (wroteIntent && !liveRow && intentGen !== undefined && RESTORABLE.has(out.kind))
         await restoreIntent(pairId, intentGen);
       return out;
     },
@@ -705,35 +802,17 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
      * Bound: this closes the CRASH window only; until a withdraw lands the server holds the row. */
     async removeAtTap(pairId) {
       lastCall.set(pairId, ++callSeq);                                  // synchronous, before the first await
-      await deps.latch.setLatched(pairId, 'local');                     // L1: first and durably, before any network
-      const rec = await getRec(pairId);
-      rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock
-      rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: false };         // L13: intent false under a new gen
-      const live = visibleEpochs(now());
-      const cur = epochAt(now());
-      for (const row of rec.rows) {
-        // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
-        if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-        if (!live.has(row.epoch)) {                                     // epoch closed: drop + release (L11)
-          dropRow(rec, row);
-          await deps.secrets.releaseRow(row.rowId);
-          continue;
-        }
-        queueWithdraw(rec, row.rowId, 0);                               // durable queue entry per covered row
+      removing.add(pairId);                                             // L6c: in-flight marker — the repair must not double-commit
+      try {
+        await deps.latch.setLatched(pairId, 'local');                   // L1: first and durably, before any network
+        const rec = await getRec(pairId);
+        await removeCommitBody(rec);                                    // ONE durable commit BEFORE the first fetch
+        await drainQueuedWithdraws(rec);                                // confirmed withdraws retire their entries
+        await commit(rec);
+        return { observedMatch: rec.observedMatch };
+      } finally {
+        removing.delete(pairId);
       }
-      await commitIntent(rec, false);                                   // ONE durable commit BEFORE the first fetch
-      // drain the queue: a confirmed withdraw removes its entry (idempotent on the server).
-      for (const w of [...rec.pendingWithdraws]) {
-        const row = rec.rows.find((r) => r.rowId === w.rowId);
-        if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {
-          unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
-          if (row) await deps.secrets.releaseRow(row.rowId);
-          continue;
-        }
-        if ((await withdrawRow(rec, row)) === 'done') unqueueWithdraw(rec, row.rowId, row.epoch);
-      }
-      await commit(rec);
-      return { observedMatch: rec.observedMatch };
     },
 
     /** v2 L4: the ONE consumer-facing match view — latch applied (either kind), closed epochs faded. Consumers: the
@@ -763,7 +842,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     /** the scheduled action (v1 s3.4 + v2 L3): owed deposits, then poll, then the withdraw queue. */
     async renew(pairId) {
       if (!(await deps.confirmed.isConfirmed(pairId))) return;
-      if (await removed(pairId)) return;                                // 'removed' skips; 'frozen' renews on schedule
+      if (await removed(pairId)) {
+        // L6c: a half-done Remove (local latch set, intent still true) is repaired here too —
+        // same commit, then the normal drain retires the queue. Remote 'removed' never triggers.
+        if (await repairHalfDoneRemove(pairId)) await this.drainPendingWithdraws();
+        return;                                                       // 'removed' skips; 'frozen' renews on schedule
+      }
       const rec = await getRec(pairId);
       // L13: renewal runs only while the tap intent is true — a confirmed pair with no record, or a
       // record with no `tap` (or a restored trust:false), deposits NOTHING and builds no proof.
@@ -817,7 +901,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     async drainPendingWithdraws() {
       const live = visibleEpochs(now());
       const cur = epochAt(now());
-      for (const rec of await deps.store.pairs()) {
+      for (const stored of await deps.store.pairs()) {
+        // L6c: repair a half-done Remove before touching the pair's queue — same single commit,
+        // then THIS drain retires the entries it queued.
+        if (await repairHalfDoneRemove(stored.pairId)) { /* committed inside repair; rec reload below */ }
+        const rec = (await deps.store.get(stored.pairId)) ?? stored;      // refresh after a repair
         let dirty = false;
         // G2/G7: a 'removed' latch observed on a WRITE path tombstones the match clock —
         // covers latches set outside removeAtTap (remote un-trust notes). Reads never do it.
