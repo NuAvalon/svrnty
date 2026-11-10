@@ -217,7 +217,7 @@ test('K7 the parsed object exposes nothing before verify', async () => {
   assert.equal(JSON.stringify(u), '{}');
   assert.deepEqual(Object.getOwnPropertyNames(u), []);
   const proto = Object.getOwnPropertyNames(Object.getPrototypeOf(u)).sort();
-  assert.deepEqual(proto, ['constructor', 'verify']);
+  assert.deepEqual(proto, ['claimedSuccessorEpoch', 'constructor', 'verify'], 'verify, and ONE routing method that returns a single unverified integer (task #810 step 1)');
 });
 
 // ---------- size, on the real hybrid seal ----------
@@ -254,7 +254,7 @@ test('K10 dark: nothing outside tests imports the codec modules', () => {
       if (statSync(p).isDirectory()) { if (n !== 'node_modules') walk(p); continue; }
       if (!/\.(ts|tsx)$/.test(n) || /\.test\.(ts|tsx)$/.test(n)) continue;
       const s = readFileSync(p, 'utf8');
-      if (/from ['"][^'"]*(key-rotate-wire|lp-reader)['"]/.test(s) && !/(key-rotate-wire|pointer-v2-wire|lp-reader)\.ts$/.test(p)) hits.push(p); // the sibling codecs may import the shared reader; nothing else may import either
+      if (/from ['"][^'"]*(key-rotate-wire|lp-reader)['"]/.test(s) && !/(key-rotate-wire|pointer-v2-wire|lp-reader|rotation-receive)\.ts$/.test(p)) hits.push(p); // the sibling codecs and rotation-receive (itself guarded dark by its own test) may import the shared reader; nothing else may import either
     }
   };
   walk(root);
@@ -312,4 +312,15 @@ test('K14 the verified successor is deeply frozen: no level can be changed or sh
   assert.throws(() => { (auth.auth_pubkeys as { sign: string }).sign = 'x'; }, TypeError);
   const v2 = await parseKeyRotate(encodeKeyRotate(successor)).verify(known);
   assert.notEqual(v2.successor.auth, v.successor.auth, 'a second verify of the same bytes returns independent objects');
+});
+
+// ---------- routing claim (added with task #810 step 1) ----------
+test('K-claim claimedSuccessorEpoch returns exactly the epoch the object claims, before verification, and exposes nothing else', async () => {
+  const { successor } = await realRotation();
+  const parsed = parseKeyRotate(encodeKeyRotate(successor));
+  assert.equal(parsed.claimedSuccessorEpoch(), successor.successor_epoch);
+  const other = parseKeyRotate(encodeKeyRotate({ ...successor, successor_epoch: 9, prior_epoch: 8 }));
+  assert.equal(other.claimedSuccessorEpoch(), 9);
+  assert.deepEqual(Object.keys(parsed), [], 'still no readable property: the one accessor is a method returning one integer');
+  assert.deepEqual(Object.getOwnPropertyNames(Object.getPrototypeOf(parsed)).sort(), ['claimedSuccessorEpoch', 'constructor', 'verify']);
 });
