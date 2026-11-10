@@ -2166,3 +2166,449 @@ test('L6e: crash after the Remove commit — reopen, ONE drainPendingWithdraws r
   assert.equal(rec.pendingWithdraws.length, 0, 'the withdraw was made in that drain — no backoff stall');
   assert.equal(rec.rows[0]?.state, 'withdrawn');
 });
+
+// ---------- L17 mutant audit: every test below kills a named surviving mutant ----------
+
+const until = async (fn: () => Promise<boolean> | boolean) => {
+  for (let i = 0; i < 2000; i++) {
+    if (await fn()) return;
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  throw new Error('until: condition never held');
+};
+
+/** a delegating wrapper so ONE client's store calls can be hooked/counted without touching the rest. */
+const wrapStore = (s: ReturnType<typeof memStore>): BeaconStorePort => ({
+  get: (p: string) => s.get(p),
+  put: (r: PairRecord) => s.put(r),
+  cas: (p: string, v: number, n: PairRecord) => s.cas(p, v, n),
+  pairs: () => s.pairs(),
+});
+
+test('L14d: a stale copy commit must not erase the stored match clock (ours-only clock merge)', async () => {
+  let t = MID;
+  const gate = defer(), parked = defer();
+  const prover = makeProver();
+  let arm = false;
+  const base = prover.buildDeposit;
+  prover.buildDeposit = async (keys: any) => {
+    if (arm) { parked.release(); await gate.p; }
+    return base(keys);
+  };
+  const { client, f, store } = harness({ prover, now: () => t });
+  f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('match'), ok('accepted'));
+  await client.trustAtTap('pair-1');
+  t = LATE;
+  arm = true;
+  const r = client.renew('pair-1');
+  await parked.p;
+  await client.pollNow('pair-1');
+  gate.release();
+  await r;
+  const rec = (await store.get('pair-1'))!;
+  assert.deepEqual(rec.firstMatchEpoch, { epoch: String(EPOCH), gen: 1 },
+    'the stored clock is valid for this gen — a stale copy may not wipe it');
+  assert.equal(await client.matchSince('pair-1'), EPOCH);
+});
+
+test('T-R3: a stale save cannot resurrect a tombstoned row — checked AT the save', async () => {
+  let t = LATE;
+  const shared = memStore(), sharedLatch = memLatch();
+  const h1 = harness({ store: shared, latch: sharedLatch, now: () => t });
+  h1.f.queue.push(ok('accepted'));
+  await h1.client.trustAtTap('pair-1');                     // row-1 standing epoch 3000, gen1
+  const gate = defer(), parked = defer();
+  const p2 = makeProver();
+  const base = p2.buildDeposit;
+  p2.buildDeposit = async (keys: any) => { parked.release(); await gate.p; return base(keys); };
+  const w2 = wrapStore(shared);
+  let gateOpen = false;
+  const staleSaves: string[][] = [];
+  w2.cas = async (p, v, n) => {
+    if (gateOpen) staleSaves.push(n.rows.map((r) => r.rowId));   // every save after the tombstone lands
+    return shared.cas(p, v, n);
+  };
+  const h2 = harness({ store: w2, latch: sharedLatch, prover: p2, now: () => t });
+  h2.f.queue.push(ok('accepted'));
+  const t2 = h2.client.trustAtTap('pair-1');                // rec captured pre-tombstone, parked mid-proof
+  await parked.p;
+  t = MID + 3 * EPOCH_SECONDS * 1000;                       // epoch 3003: 3000 closed
+  await h1.client.drainPendingWithdraws();                  // closeEpochs: row-1 dropped + tombstoned
+  gateOpen = true;
+  gate.release();
+  await t2;
+  assert.ok(staleSaves.length > 0, 'the stale save must have run');
+  assert.ok(staleSaves.every((ids) => !ids.includes('row-1')),
+    `the stale save resurrected a tombstoned row: ${JSON.stringify(staleSaves)}`);
+  const rec = (await shared.get('pair-1'))!;
+  assert.ok(!rec.rows.some((r) => r.rowId === 'row-1'));
+  assert.ok(rec.deletedRows!.some((d) => d.id === 'row-1'));
+});
+
+test('T-R3/L14c: a stale save cannot resurrect a retired withdraw entry — checked AT the save', async () => {
+  let t = MID;
+  const shared = memStore(), sharedLatch = memLatch();
+  const f1 = makeFetch();
+  f1.queue.push(ok('accepted'));
+  const h1 = harness({ store: shared, latch: sharedLatch, fetch: f1.fetch as any, now: () => t });
+  await h1.client.trustAtTap('pair-1');                     // row-1 standing, gen1
+  t = LATE;
+  const h2get = defer(), commitGetArmed = defer(), commitGet = defer();
+  const w2 = wrapStore(shared);
+  let gets = 0;
+  w2.get = async (p: string) => {
+    const n = ++gets;
+    if (n === 2) await h2get.p;                             // getRec: released once the queue entry is durable
+    if (n === 3) { commitGetArmed.release(); await commitGet.p; }  // commit's cur-read: released after the tombstone
+    return shared.get(p);
+  };
+  const h2 = harness({ store: w2, latch: sharedLatch, now: () => t });
+  const t2 = h2.client.trustAtTap('pair-1');
+  const withdrawFetch = defer();
+  f1.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'));
+  const f1x = async (url: string, init: any) => {
+    if (url.endsWith('/deposit')) sharedLatch.remote.set('pair-1', 'removed');
+    if (url.endsWith('/nonce') && JSON.parse(init.body).op === 'withdraw') await withdrawFetch.p;
+    return f1.fetch(url, init);
+  };
+  const h1b = harness({ store: shared, latch: sharedLatch, secrets: h1.secrets, fetch: f1x as any, now: () => t });
+  const t1 = h1b.client.trustAtTap('pair-1');               // stopped: queue row-2 + commit, parks at the withdraw
+  await until(async () => (await shared.get('pair-1'))!.pendingWithdraws.length === 1);
+  h2get.release();                                          // h2's getRec sees the queued entry
+  await commitGetArmed.p;
+  withdrawFetch.release();                                  // h1 retires the entry: withdrawn + tombstone commit
+  await t1;
+  await until(async () => ((await shared.get('pair-1'))!.deletedWithdraws ?? []).some((d) => d.id === 'row-2'));
+  commitGet.release();
+  await t2;
+  const rec = (await shared.get('pair-1'))!;
+  assert.ok(!rec.pendingWithdraws.some((w) => w.rowId === 'row-2'),
+    'the retired entry must stay retired — ours filtered AND the union respected');
+});
+
+test('L15b: a Trust that loses the durable-gen race continues as a repeat tap — deposits, restores nothing', async () => {
+  const shared = memStore(), sharedLatch = memLatch();
+  sharedLatch.local.set('pair-1', 'removed');
+  const w1 = wrapStore(shared);
+  const hit3 = defer(), parked = defer();
+  let gets = 0;
+  w1.get = async (p: string) => {
+    const n = ++gets;
+    if (n === 3) { hit3.release(); await parked.p; }        // h1's commitIntent read — both g0s captured, nothing written
+    return shared.get(p);
+  };
+  const h1 = harness({ store: w1, latch: sharedLatch });
+  const h2 = harness({ store: shared, latch: sharedLatch });
+  h2.f.queue.push(ok('accepted'));
+  const t1 = h1.client.trustAtTap('pair-1');
+  await hit3.p;
+  const out2 = await h2.client.trustAtTap('pair-1');        // h2's g0 is also 0 — the winning intent + deposit
+  parked.release();
+  const out1 = await t1;
+  assert.deepEqual(out2, { kind: 'deposited' });
+  assert.deepEqual(out1, { kind: 'deposited' }, 'the losing Trust reports the real result, never latched');
+  assert.equal(sharedLatch.local.get('pair-1'), undefined, 'no latch is restored beside a trust-true stored tap');
+  assert.equal((await shared.get('pair-1'))!.tap!.gen, 1);
+});
+
+test('L15c: the latch restore is decided from the SAME stored read — a newer Trust does not spare it', async () => {
+  const shared = memStore(), sharedLatch = memLatch();
+  sharedLatch.local.set('pair-1', 'removed');
+  const w1 = wrapStore(shared);
+  const h2 = harness({ store: shared, latch: sharedLatch });
+  const h3 = harness({ store: shared, latch: sharedLatch });
+  h2.f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));
+  h3.f.queue.push(ok('accepted'));
+  const f1 = makeFetch();
+  f1.queue.push(ok('accepted'), nonceOk(NONCE_B), ok('withdrawn'));
+  const f1x = async (url: string, init: any) => {
+    if (url.endsWith('/deposit')) await h2.client.removeAtTap('pair-1');   // Remove commits before the answer lands
+    return f1.fetch(url, init);
+  };
+  const h1 = harness({ store: w1, latch: sharedLatch, fetch: f1x as any });
+  let armed = false, interleaved = false;
+  const origCas = shared.cas;
+  w1.cas = async (p, v, n) => {
+    const done = await origCas(p, v, n);
+    if (done && f1.calls.length >= 3) armed = true;         // the post-withdraw commit is the last write
+    return done;
+  };
+  w1.get = async (p: string) => {
+    if (armed && !interleaved) {                            // the ONE stored read the outcome is decided from
+      interleaved = true;
+      const stale = await shared.get(p);                    // trust false at this read
+      await h3.client.trustAtTap('pair-1');                 // a newer Trust lands before the decision is used
+      return stale;
+    }
+    return shared.get(p);
+  };
+  const out = await h1.client.trustAtTap('pair-1');
+  assert.deepEqual(out, { kind: 'latched' });
+  assert.equal(sharedLatch.local.get('pair-1'), 'removed',
+    'the single stored read said trust false — the cleared latch is restored from it, not from a second get');
+  assert.equal((await shared.get('pair-1'))!.tap!.trust, true, 'the newer Trust still owns the record');
+});
+
+test('L6c: renew ALONE repairs a half-done Remove — the drain is not a precondition', async () => {
+  const { client, f, store, latch } = harness();
+  f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'));
+  await client.trustAtTap('pair-1');
+  latch.local.set('pair-1', 'removed');                     // crash shape: latch set, the commit never landed
+  await client.renew('pair-1');
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.tap!.trust, false);
+  assert.equal(rec.tap!.gen, 2);
+  assert.equal(rec.pendingWithdraws.length, 0);
+  assert.equal(rec.rows[0].state, 'withdrawn');
+});
+
+test('L6c/L3: a remote-removed renew does nothing — owed epoch or not', async () => {
+  const shared = memStore(), sharedLatch = memLatch(), sharedSecrets = memSecrets();
+  const h1 = harness({ store: shared, latch: sharedLatch, secrets: sharedSecrets });
+  h1.f.queue.push(ok('accepted'));
+  await h1.client.trustAtTap('pair-1');
+  sharedLatch.remote.set('pair-1', 'removed');
+  const h2 = harness({ store: shared, latch: sharedLatch, secrets: sharedSecrets, now: () => MID + EPOCH_SECONDS * 1000 });
+  await h2.client.renew('pair-1');
+  assert.equal(h2.f.calls.length, 0);
+  const rec = (await shared.get('pair-1'))!;
+  assert.equal(rec.rows.length, 1);
+  assert.equal(rec.tap!.trust, true);
+});
+
+test('L6c: a drain after a COMPLETE Remove does not bump the generation (repair reads tap.trust)', async () => {
+  const { client, f, store } = harness();
+  f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'));
+  await client.trustAtTap('pair-1');
+  await client.removeAtTap('pair-1');
+  const gen = (await store.get('pair-1'))!.tap!.gen;
+  await client.drainPendingWithdraws();
+  assert.equal((await store.get('pair-1'))!.tap!.gen, gen, 'nothing left to repair — the gen must not move');
+});
+
+test('L6c: a drain mid-Remove does not double-commit (in-flight guard)', async () => {
+  const shared = memStore(), sharedLatch = memLatch();
+  const h = harness({ store: shared, latch: sharedLatch });
+  h.f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'), nonceOk(NONCE_B), ok('withdrawn'));
+  await h.client.trustAtTap('pair-1');
+  const parked = defer(), armed = defer();
+  const origCas = shared.cas;
+  let first = true;
+  shared.cas = async (p, v, n) => {
+    if (first && n.tap?.trust === false) { first = false; armed.release(); await parked.p; }
+    return origCas(p, v, n);
+  };
+  const r = h.client.removeAtTap('pair-1');
+  await armed.p;
+  await h.client.drainPendingWithdraws();
+  parked.release();
+  await r;
+  const rec = (await shared.get('pair-1'))!;
+  assert.equal(rec.tap!.gen, 2, 'exactly one intent bump — the in-flight remove owns it');
+  assert.equal(rec.tap!.trust, false);
+});
+
+test('L15: a tap that never cleared a latch never sets one — even when it ends latched', async () => {
+  const store = memStore(), latch = memLatch(), secrets = memSecrets(), prover = makeProver();
+  const f = makeFetch();
+  f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'));
+  const fx = async (url: string, init: any) => {
+    if (url.endsWith('/deposit')) {
+      // a durable Remove lands mid-flight (tap false) with NO latch — the cleared-latch restore
+      // must still not fire: this call cleared nothing.
+      const cur = await store.get('pair-1');
+      await store.put({ ...cur!, tap: { gen: cur!.tap!.gen + 1, trust: false }, version: (cur!.version ?? 0) + 1 });
+    }
+    return f.fetch(url, init);
+  };
+  const c = createBeaconClient({ fetch: fx as any, baseUrl: '/api/trust', latch, confirmed: { isConfirmed: async () => true }, store, secrets, prover, now: () => MID, requestTimeoutMs: 50, backoffMs: () => 1000 });
+  const out = await c.trustAtTap('pair-1');                 // clearedLocal stays false
+  assert.deepEqual(out, { kind: 'latched' });
+  assert.equal((await store.get('pair-1'))!.tap!.trust, false);
+  assert.equal(latch.local.get('pair-1'), undefined, 'this call cleared nothing — it restores nothing');
+});
+
+test('R7: saw starts neutral — crossing the epoch boundary mid-tap never reports an unearned covered', async () => {
+  let calls = 0;
+  const now = () => (++calls === 1 ? MID : MID + EPOCH_SECONDS * 1000);   // touched=[3000], compare sees 3001
+  const { client, f } = harness({ now });
+  f.queue.push(ok('accepted'));
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'pending', 'the deposit went out for a stale epoch — it was never covered');
+});
+
+test('G3: a stale copy cannot drag a row back down the state rank', async () => {
+  const shared = memStore(), sharedLatch = memLatch();
+  const f1 = makeFetch(), f2 = makeFetch();
+  f1.queue.push(ok('accepted'));
+  f2.queue.push({ status: 500, body: 'oops' });             // h2's retry answers unreadable — its copy keeps 'unknown'
+  const g1 = defer(), g2 = defer();
+  let first1 = true;
+  const h1fetch = async (url: string, init: any) => {
+    if (first1 && url.endsWith('/deposit')) { first1 = false; await g1.p; }
+    return f1.fetch(url, init);
+  };
+  let h2parked = false;
+  const h2fetch = async (url: string, init: any) => {
+    if (url.endsWith('/deposit')) { h2parked = true; await g2.p; }
+    return f2.fetch(url, init);
+  };
+  const h1 = harness({ store: shared, latch: sharedLatch, fetch: h1fetch as any });
+  const h2 = harness({ store: shared, latch: sharedLatch, fetch: h2fetch as any });
+  const t1 = h1.client.trustAtTap('pair-1');                // write-ahead 'unknown' lands, fetch parked
+  await until(async () => !!(await shared.get('pair-1'))?.rows.length);
+  const t2 = h2.client.trustAtTap('pair-1');                // reads the 'unknown' row, retries pinned-K, parks at fetch
+  await until(() => h2parked);
+  g1.release();                                           // h1's answer lands: row-1 -> standing, committed
+  await t1;
+  g2.release();
+  await t2;
+  const rec = (await shared.get('pair-1'))!;
+  assert.equal(rec.rows[0].state, 'standing', 'rank merge: stored standing beats a stale unknown');
+});
+
+test('L2c/G6: a latch seen before the fetch leaves still queues a withdraw for a STORED unknown row', async () => {
+  const { client, f, store, latch } = harness();
+  f.queue.push({ status: 500, body: 'oops' });
+  await client.trustAtTap('pair-1');                      // unreadable: row-1 stays 'unknown' + pinned
+  assert.equal((await store.get('pair-1'))!.rows[0].state, 'unknown');
+  let watch = false, fired = false;
+  const origCas = store.cas;
+  store.cas = async (p, v, n) => {
+    const done = await origCas(p, v, n);
+    if (done && watch && n.tap?.trust === true && n.rows.some((r) => r.state === 'unknown')) fired = true;
+    return done;
+  };
+  const origKind = latch.kindOf;
+  latch.kindOf = async (p, s) => { if (fired) latch.local.set(p, 'removed'); return origKind(p, s); };
+  watch = true;
+  const out = await client.trustAtTap('pair-1');          // repeat tap: the stored 'unknown' row retries pinned-K
+  assert.deepEqual(out, { kind: 'latched' });
+  const rec = (await store.get('pair-1'))!;
+  assert.ok(rec.pendingWithdraws.some((w) => w.rowId === 'row-1'),
+    'an earlier call may have sent it — the stored unknown row is queued');
+});
+
+test('L10c: a refused retry under a Remove is still queued for withdraw', async () => {
+  const store = memStore(), latch = memLatch(), secrets = memSecrets(), prover = makeProver();
+  const f = makeFetch();
+  f.queue.push({ status: 500, body: 'oops' }, refused('rate'), nonceOk(NONCE_A), ok('withdrawn'));
+  let dep = 0, t = MID;
+  const fx = async (url: string, init: any) => {
+    const r = f.fetch(url, init);
+    if (url.endsWith('/deposit') && ++dep === 2) latch.remote.set('pair-1', 'removed');
+    return r;
+  };
+  const c = createBeaconClient({ fetch: fx as any, baseUrl: '/api/trust', latch, confirmed: { isConfirmed: async () => true }, store, secrets, prover, now: () => t, requestTimeoutMs: 50, backoffMs: () => 1000 });
+  await c.trustAtTap('pair-1');                           // 500: row-1 'unknown', intent stands
+  await c.renew('pair-1');                              // pinned retry refused transiently, stopped mid-flight
+  assert.ok((await store.get('pair-1'))!.pendingWithdraws.some((w) => w.rowId === 'row-1'),
+    'the refused retry stays queued — the Remove owes its withdraw');
+  t += 2000;
+  await c.drainPendingWithdraws();
+  assert.ok(f.calls.some((x) => x.url.endsWith('/withdraw')), 'the queued row must actually be withdrawn');
+  assert.equal((await store.get('pair-1'))!.rows[0].state, 'withdrawn');
+});
+
+test('L13c: racing Removes derive the generation from the STORE, never their stale copy', async () => {
+  const shared = memStore(), sharedLatch = memLatch();
+  const w1 = wrapStore(shared);
+  const parked = defer(), armed = defer();
+  let first = true;
+  w1.cas = async (p, v, n) => {
+    if (first && n.tap?.trust === false) { first = false; armed.release(); await parked.p; }
+    return shared.cas(p, v, n);
+  };
+  const h1 = harness({ store: w1, latch: sharedLatch });
+  const h2 = harness({ store: shared, latch: sharedLatch });
+  const h3 = harness({ store: shared, latch: sharedLatch });
+  h1.f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'));
+  h2.f.queue.push(nonceOk(NONCE_B), ok('withdrawn'));
+  await h1.client.trustAtTap('pair-1');                   // gen1, row-1 standing
+  const r1 = h1.client.removeAtTap('pair-1');             // parked at its intent cas
+  await armed.p;
+  const gens: number[] = [];
+  const logCas = shared.cas;
+  shared.cas = async (p, v, n) => { const d = await logCas(p, v, n); if (d && n.tap) gens.push(n.tap.gen); return d; };
+  await h2.client.removeAtTap('pair-1');                  // gen2
+  await h3.client.removeAtTap('pair-1');                  // gen3
+  parked.release();
+  await r1;
+  const rec = (await shared.get('pair-1'))!;
+  assert.equal(rec.tap!.gen, Math.max(...gens), 'every intent write must be a NEW maximum — a copy-derived gen collides or regresses');
+  assert.equal(rec.tap!.trust, false);
+});
+
+test('L13e: a live durable row keeps the intent standing even on a latched outcome', async () => {
+  const store = memStore(), latch = memLatch(), secrets = memSecrets(), prover = makeProver();
+  const f = makeFetch();
+  f.queue.push({ status: 500, body: 'oops' });
+  const fx = async (url: string, init: any) => {
+    const r = f.fetch(url, init);
+    if (url.endsWith('/deposit')) latch.remote.set('pair-1', 'removed');
+    return r;
+  };
+  const c = createBeaconClient({ fetch: fx as any, baseUrl: '/api/trust', latch, confirmed: { isConfirmed: async () => true }, store, secrets, prover, now: () => MID, requestTimeoutMs: 50, backoffMs: () => 1000 });
+  const out = await c.trustAtTap('pair-1');
+  assert.deepEqual(out, { kind: 'latched' });
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.tap!.trust, true, 'something may be on the server — the intent stands, no restore');
+  assert.ok(rec.pendingWithdraws.some((w) => w.rowId === 'row-1'));
+});
+
+test('L13e: the DURABLE record decides — another instance\'s row makes the outcome pending, never failed', async () => {
+  const shared = memStore(), sharedLatch = memLatch(), sharedSecrets = memSecrets();
+  const gate = defer(), atGate = defer();
+  const w2 = wrapStore(shared);
+  w2.cas = async (p, v, n) => {
+    if (n.rows.length > 0) { atGate.release(); await gate.p; }   // h2's write-ahead, parked mid-landing
+    return shared.cas(p, v, n);
+  };
+  const h2 = harness({ store: w2, latch: sharedLatch, secrets: sharedSecrets });
+  const w1 = wrapStore(shared);
+  let armed = false;
+  w1.get = async (p: string) => {
+    if (armed) {
+      armed = false;
+      gate.release();
+      await until(async () => ((await shared.get(p))?.rows.length ?? 0) > 0);
+    }
+    return shared.get(p);
+  };
+  const h1 = harness({ store: w1, latch: sharedLatch, secrets: sharedSecrets });
+  h1.f.queue.push(refused('wire'));
+  h2.f.queue.push(ok('accepted'));
+  let emptyCas = 0;
+  const origCas = shared.cas;
+  shared.cas = async (p, v, n) => {
+    const done = await origCas(p, v, n);
+    if (done && h1.f.calls.length >= 1 && n.rows.length === 0 && ++emptyCas === 2) armed = true;
+    return done;
+  };
+  const t2 = h2.client.trustAtTap('pair-1');
+  await atGate.p;
+  const out = await h1.client.trustAtTap('pair-1');
+  await t2;
+  assert.equal(out.kind, 'pending', 'the durable row may be on the server — pending, never failed');
+  const rec = (await shared.get('pair-1'))!;
+  assert.equal(rec.tap!.trust, true, 'a live durable row keeps the intent standing');
+});
+
+test('L6b: on the stopped path the durable queue entry lands BEFORE the withdraw fetch leaves', async () => {
+  const store = memStore(), latch = memLatch(), secrets = memSecrets(), prover = makeProver();
+  const f = makeFetch();
+  f.queue.push({ status: 500, body: 'oops' });
+  const mk = (fx: any) => createBeaconClient({ fetch: fx, baseUrl: '/api/trust', latch, confirmed: { isConfirmed: async () => true }, store, secrets, prover, now: () => MID, requestTimeoutMs: 50, backoffMs: () => 1000 });
+  await mk(f.fetch).trustAtTap('pair-1');                 // 500: row-1 'unknown' + intent true
+  f.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('withdrawn'));
+  let queuedBeforeSend: boolean | null = null;
+  const fx = async (url: string, init: any) => {
+    if (url.endsWith('/deposit')) latch.remote.set('pair-1', 'removed');
+    if (url.endsWith('/nonce') && JSON.parse(init.body).op === 'withdraw' && queuedBeforeSend === null)
+      queuedBeforeSend = !!(await store.get('pair-1'))?.pendingWithdraws.some((w) => w.rowId === 'row-1');
+    return f.fetch(url, init);
+  };
+  const out = await mk(fx).trustAtTap('pair-1');
+  assert.deepEqual(out, { kind: 'latched' });
+  assert.equal(queuedBeforeSend, true, 'the queue entry must be durable before the withdraw fetch leaves');
+});
