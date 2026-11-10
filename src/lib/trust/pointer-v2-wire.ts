@@ -49,7 +49,7 @@ const ED_SIG = 64;
 const DSA_SIG = 4627;
 /**
  * One canonical spelling per origin, so string equality means "the same relay". A plain https origin only: lower-case host of at least two
- * labels (1-63 characters, letters, digits and inner hyphens, no empty label), whose last label contains a letter (so no IP literal) and
+ * labels (1-63 characters, letters, digits and inner hyphens, no empty label, none starting 'xn--'), whose last label STARTS with a letter (so no IP literal in any spelling: a last label of digits or 0x-hex is read as a number by a URL parser) and
  * is not 'localhost'; an optional explicit port 1-65535 with no leading zero and never 443 (the default is spelled by leaving it out);
  * no userinfo, path, query or fragment. Where the name RESOLVES (a private or loopback address) is a connect-time rule, not a byte rule.
  */
@@ -65,8 +65,9 @@ export function isCanonicalRelayOrigin(s: unknown): s is string {
   for (const l of labels) {
     if (l.length < 1 || l.length > 63) return false;
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(l)) return false;
+    if (l.startsWith('xn--')) return false; // an internationalised label is valid only if its punycode decodes, which this codec does not check: ASCII hosts only
   }
-  if (!/[a-z]/.test(labels[labels.length - 1])) return false;
+  if (!/^[a-z]/.test(labels[labels.length - 1])) return false;
   if (host === 'localhost' || host.endsWith('.localhost')) return false;
   if (m[2] !== undefined) {
     if (!/^[1-9][0-9]{0,4}$/.test(m[2])) return false;

@@ -17,6 +17,7 @@ import { mintHybridRecipient } from '../sync/hybrid-test-fixture';
 import { LpParseError } from '../crypto/lp-reader';
 import {
   encodePointerV2,
+  isCanonicalRelayOrigin,
   parsePointerV2,
   pointerV2Prefix,
   pointerV2SigningInput,
@@ -141,7 +142,7 @@ test('P4 relay shape: only a plain lower-case https origin is encodable', () => 
 
 test('R2 canonical relay origin: one spelling per origin, no IP literal, no localhost, no empty or edge-hyphen label, port 1-65535 never 443 never leading zero', () => {
   const ok = (relay: string) => { try { build({ relay }); return true; } catch { return false; } };
-  for (const good of ['https://relay.example.org', 'https://relay.example.org:8443', 'https://a.io:1', 'https://a.io:65535', 'https://r-1.example.org', 'https://xn--e1afmkfd.example', 'https://relay.example.org:444', 'https://a1.b2.c3.de', 'https://' + 'a'.repeat(63) + '.org']) {
+  for (const good of ['https://relay.example.org', 'https://relay.example.org:8443', 'https://a.io:1', 'https://a.io:65535', 'https://r-1.example.org', 'https://relay.example.org:444', 'https://a1.b2.c3.de', 'https://' + 'a'.repeat(63) + '.org']) {
     assert.equal(ok(good), true, good);
   }
   const bad = [
@@ -149,9 +150,32 @@ test('R2 canonical relay origin: one spelling per origin, no IP literal, no loca
     'https://a..b.org', 'https://.relay.example.org', 'https://relay.example.org.', 'https://-a.example.org', 'https://a-.example.org', 'https://a.-b.example.org', 'https://a.b-.example.org',
     'https://127.0.0.1', 'https://127.0.0.1:8471', 'https://10.0.0.5', 'https://1.2.3.4.5', 'https://192.168.1.1:8443', 'https://999.999.999.999', 'https://localhost', 'https://localhost:8471', 'https://relay.localhost', 'https://[::1]', 'https://[::1]:8471', 'https://0x7f.1', 'https://2130706433',
     'https://' + 'a'.repeat(64) + '.org', 'https://' + ('a'.repeat(60) + '.').repeat(5) + 'org', 'https://a', 'https://relay.example.org#x', 'https://relay.example.org?x', 'https://u:p@relay.example.org', 'HTTPS://relay.example.org', 'https://relay.exa_mple.org', 'https://relay.example.org:8443:1',
+    'https://xn--e1afmkfd.example', 'https://relay.xn--a1example', 'https://127.0x1', 'https://0x7f.0x0.0x0.0x1', 'https://10.0x0.0x5', 'https://192.168.0x0.0x1', 'https://169.254.169.0xfe', 'https://a.1b', 'https://a.0x', 'https://a.b.9',
   ];
   for (const b of bad) assert.equal(ok(b), false, b.slice(0, 60));
   assert.equal(ok('https://relay.example.org:' + '1'.repeat(10)), false);
+});
+
+test('R2 round trip: every origin the check accepts is exactly what a URL parser makes of it (no number, no normalisation)', () => {
+  const urlOk = (s: string) => { try { const u = new URL(s); return u.origin === s && s === 'https://' + u.host; } catch { return false; } };
+  // the five that the first version let through, each parsed to an IP address
+  for (const s of ['https://127.0x1', 'https://0x7f.0x0.0x0.0x1', 'https://10.0x0.0x5', 'https://192.168.0x0.0x1', 'https://169.254.169.0xfe']) {
+    assert.equal(new URL(s).hostname.split('.').length, 4, 'the URL parser reads it as an IPv4 address: ' + s);
+    assert.equal(isCanonicalRelayOrigin(s), false, s);
+  }
+  // deterministic fuzz over the pieces that make hosts, ports and numbers confusable
+  const pieces = ['a', 'z', '0', '1', '9', '0x', '0xf', 'x', '-', 'xn--', 'a1', '1a', 'localhost', 'example', 'org', 'io', 'E', '_'];
+  const ports = ['', ':443', ':80', ':0', ':8443', ':65535', ':65536', ':08', ':1', ':99999'];
+  let seed = 0x9e3779b9, accepted = 0, total = 0;
+  const next = (n: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
+  for (let i = 0; i < 30000; i++) {
+    const nl = 1 + next(4);
+    const labels = Array.from({ length: nl }, () => Array.from({ length: 1 + next(3) }, () => pieces[next(pieces.length)]).join(''));
+    const s = 'https://' + labels.join('.') + ports[next(ports.length)];
+    total++;
+    if (isCanonicalRelayOrigin(s)) { accepted++; assert.ok(urlOk(s), 'accepted but a URL parser changes it: ' + s); }
+  }
+  assert.ok(accepted > 200, 'the fuzz reaches the accepting branch: ' + accepted + ' of ' + total);
 });
 
 test('R2 the longest relay that fits is 247 host characters (the whole origin is capped at 255 bytes)', () => {
