@@ -416,6 +416,52 @@ test('#720 benign terminal: a contact-update that is stale (already applied) is 
 // ---------- lenses v1.7 review-3, gap E1: refused lens payloads through consumeInboundContactUpdates ----------
 
 import { isMessageReason, type DeadLetterRow } from './dead-letter';
+import { lensTerminalClass } from './consume-mailbox';
+
+test('R4-T1b: a refused lens result drops the fingerprint AT DISPATCH — not at the row gate', () => {
+  // The "a refusal stores the fingerprint again" mutant survived because makeDeadLetterRow's
+  // AUTHENTICATED_REASONS gate drops the fp anyway. This pins the dispatch itself: hand it a
+  // refused result WITH a fingerprint and none may come out the other side.
+  for (const refused of ['method-cap', 'shared-slot'] as const) {
+    const cls = lensTerminalClass({ refused, fingerprint: 'f'.repeat(64) });
+    assert.equal('fp' in cls, false, `${refused}: the dispatch carries no fp — a stored-fp mutant goes red here`);
+    assert.equal('reason' in cls && cls.reason, refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot');
+  }
+});
+
+test('R4-T1b end-to-end: a refused lens payload through consume records NO fingerprint even when the seam names one', async () => {
+  const recorded: DeadLetterRow[] = [];
+  const lens = {
+    verify: async () => new Uint8Array([1, 2, 3]),
+    accept: async () => ({ refused: 'method-cap' as const, fingerprint: bob.fingerprint }),
+  };
+  const ackLog: string[][] = [];
+  await consumeInboundContactUpdates(baseDeps({
+    lens,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].reason, 'lens-method-cap');
+  assert.equal('fp' in recorded[0], false, 'no fingerprint reaches the record — and not via the row gate alone');
+});
+
+test('R2a: a HELD lens payload is a benign terminal — acked, no record, nothing lost', async () => {
+  const recorded: DeadLetterRow[] = [];
+  const lens = {
+    verify: async () => new Uint8Array([1, 2, 3]),
+    accept: async () => ({ held: true as const }),
+  };
+  const ackLog: string[][] = [];
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    lens,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.deepEqual(ackLog, [['e1']], 'the envelope is consumed — the payload retries from the in-session hold');
+  assert.equal(recorded.length, 0, 'a held payload is not a loss — no dead-letter row');
+  assert.equal(summary.deadLettered, 0);
+});
 
 test('R3-E1: each refused lens payload is recorded under its OWN reason — NO fingerprint, never a message', async () => {
   const recorded: DeadLetterRow[] = [];

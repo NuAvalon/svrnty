@@ -497,3 +497,41 @@ test('R3-C/R7a: the FIRST hello still goes to a capable contact — nothing yet 
   });
   assert.equal(out.deposits.length, 1, 'capable means they said hello — we still owe ours once');
 });
+
+// ---------- lenses v1.9 review-4: R2a read-only book on the send side, S1 shared-slot kind ----------
+
+test('R2a: an unreadable book sends NOTHING — no methods, no hello, no seq bump, book untouched', async () => {
+  const r = await hybridOf();
+  const storage = { getItem: async () => '{corrupt', setItem: async () => {} };
+  const book = await loadLensGrants(OWNER, storage);
+  assert.equal(book.unreadable, true);
+  // methods side: held under book-unreadable — and the returned book is the SAME object (no seq,
+  // no sent-set, no marker): nothing for a persisting caller to write.
+  const plan = await buildLensDeposits({
+    ownerFingerprint: OWNER, bag, book,
+    recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, nowSeconds: () => NOW,
+  });
+  assert.equal(plan.deposits.length, 0);
+  assert.deepEqual(plan.held, [{ fingerprint: r.fingerprint, reason: 'book-unreadable' }]);
+  assert.equal(plan.book, book, 'the book is returned untouched — no seq bump rides an unreadable book');
+  // hello side: no hello is built from it either, and no hello marker is written.
+  const out = await buildLensHelloDeposits({
+    ownerFingerprint: OWNER, recipients: [recip(r)],
+    admit: admitAll, sPairFor: () => sPair, book, nowSeconds: () => NOW,
+  });
+  assert.equal(out.deposits.length, 0, 'an unreadable book builds no hello — it is read-only');
+  assert.deepEqual(out.skipped, [{ fingerprint: r.fingerprint, reason: 'book-unreadable' }]);
+  assert.equal(out.book, book, 'no hello marker is written on an unreadable book');
+  // Hypatia: on exactly this branch, the sanctioned line stays true — nothing went to {name}.
+  assert.equal(lensSenderLine('book-unreadable', { name: 'Ada' }),
+    "Your lenses couldn't be read on this device, so nothing was sent to Ada.");
+});
+
+test('S1: shared-slot REQUIRES the method kind — a missing kind throws, never falls back to "Custom"', () => {
+  assert.throws(() => lensSenderLine('shared-slot', { name: 'Ada' }), /requires the method kind/);
+  assert.throws(() => lensSenderLine('shared-slot', { name: 'Ada', kind: '' }), /requires the method kind/);
+  // With a kind the line still renders the kind's display label.
+  assert.equal(lensSenderLine('shared-slot', { name: 'Ada', kind: 'email' }),
+    'Two email addresses in this lens have the same label. Give each one its own label before you send it.');
+});

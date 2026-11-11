@@ -104,7 +104,15 @@ const LENS_SENDER_LINES: Record<LensHoldReason | LensSkipReason, SenderLine> = {
   'no-capability': ({ name }) => `Not sent to ${name} yet. Their app hasn't shown it can take this, so it's held here until it does.`,
   'unconfirmed': () => null,
   'empty-lens': ({ name }) => `This lens has nothing in it, so nothing was sent to ${name}.`,
-  'shared-slot': ({ kind }) => lensSharedSlotLine(kind ?? 'custom'),
+  'shared-slot': ({ kind }) => {
+    // The noun comes from the kind's display label — a missing kind must NEVER fall back to a
+    // guessed label ("Two Custom entries" would name a kind that isn't there). Throw instead:
+    // the composer reports which method kind collided, so a kind-less call is a bug, not copy.
+    if (typeof kind !== 'string' || kind.length === 0) {
+      throw new Error("lensSenderLine('shared-slot') requires the method kind");
+    }
+    return lensSharedSlotLine(kind);
+  },
   'bad-fingerprint': KEYS_MISSING_LINE,
   'blocked': () => null,
   'no-public-key': KEYS_MISSING_LINE,
@@ -118,7 +126,8 @@ const LENS_SENDER_LINES: Record<LensHoldReason | LensSkipReason, SenderLine> = {
 
 /**
  * The sender line for one send outcome. `name` is the recipient's display name; `kind` is the
- * method kind (required only for 'shared-slot' — the noun comes from its display label).
+ * method kind — REQUIRED for 'shared-slot' (the noun comes from its display label; a missing
+ * kind throws rather than falling back to a label that isn't there).
  */
 export function lensSenderLine(reason: LensHoldReason | LensSkipReason, args: SenderLineArgs): string | null {
   return LENS_SENDER_LINES[reason](args);

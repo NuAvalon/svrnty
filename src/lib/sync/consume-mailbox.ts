@@ -225,6 +225,7 @@ export interface LensResponseSeam {
     | { applied: true; id: string; fingerprint: string; ignited: boolean }
     | { hello: true }
     | { stale: true }
+    | { held: true } // R2a: book unreadable — MAC-verified payload HELD in-session, retried on the next good read
     | { refused: 'method-cap' | 'shared-slot'; fingerprint: string } // R8a: MAC-verified refusals, own reasons
     | null
   >;
@@ -378,6 +379,17 @@ export interface ConsumeSummary {
  * dead-letter.ts): acked with no record. Anything else is a LOSS and gets a record committed before the ack.
  */
 export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string; cause?: string };
+
+/**
+ * Lenses dispatch: a MAC-VERIFIED refusal maps to its own dead-letter reason — and the fingerprint
+ * is dropped HERE, at dispatch, not left to the dead-letter row gate downstream: the pair-MAC is
+ * classical-only, so a stored fp would be an attacker-placed name on a loss record (the visible
+ * stopped state names the contact through the seam instead). Named + exported so a test can pin
+ * the DISPATCH — the row gate is a second wall, not the only one (review-4 T1).
+ */
+export function lensTerminalClass(res: { refused: 'method-cap' | 'shared-slot'; fingerprint: string }): TerminalClass {
+  return { reason: res.refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot' };
+}
 
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
@@ -1084,11 +1096,14 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         }
         if (res && 'hello' in res) return { kind: 'terminal', cls: { benign: 'lens-hello' } };
         if (res && 'stale' in res) return { kind: 'terminal', cls: { benign: 'lens-stale' } };
+        // R2a: a payload HELD while the grant book was unreadable is kept in-session and retried
+        // after the next good read — consumed without a loss (its own benign terminal).
+        if (res && 'held' in res) return { kind: 'terminal', cls: { benign: 'lens-held' } };
         // R8a: a MAC-VERIFIED refusal is never 'unverified-frame' — each refusal carries its own
         // reason. NO fingerprint is stored: the lens pair-MAC is classical-only, so these reasons
         // are NOT in AUTHENTICATED_REASONS — the stopped state names the contact through the seam.
         if (res && 'refused' in res) {
-          return { kind: 'terminal', cls: { reason: res.refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot' } };
+          return { kind: 'terminal', cls: lensTerminalClass(res) };
         }
         return { kind: 'terminal', cls: { reason: 'unverified-frame' } };
       } catch (err) {

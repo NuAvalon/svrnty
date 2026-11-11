@@ -57,7 +57,10 @@ export interface LensGrantBook {
   inSeq?: Record<string, number>;
   /** Load-time marker, never persisted: the stored book was PRESENT but could not be read (corrupt
    *  or a throwing store). The send filter still fails closed (zero methods, held, no seq bump)
-   *  but reports 'book-unreadable' instead of 'no-record' so the sender can see the difference. */
+   *  but reports 'book-unreadable' instead of 'no-record' so the sender can see the difference.
+   *  R2a: while this marker stands the book is READ-ONLY — saveLensGrants refuses it outright, and
+   *  the receive seam holds verified payloads in memory instead of applying them (a replayed seq
+   *  must be judged against the floor as it really is, never against this empty stand-in). */
   unreadable?: boolean;
 }
 
@@ -114,7 +117,13 @@ export async function loadLensGrants(ownerFingerprint: string, storage?: LensGra
     const raw = await store.getItem(lensGrantKey(ownerFingerprint));
     if (!raw) return empty;
     const parsed = JSON.parse(raw) as LensGrantBook;
-    if (!parsed || typeof parsed !== 'object' || parsed.v !== 1 || typeof parsed.grants !== 'object' || parsed.grants === null) {
+    // R2a wrong-shape = unreadable: a valid parse is still a book that did not read if its
+    // version is unknown or its maps are not maps (an array parses clean and is still junk).
+    if (
+      !parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.v !== 1 ||
+      typeof parsed.grants !== 'object' || parsed.grants === null || Array.isArray(parsed.grants) ||
+      (parsed.inSeq !== undefined && (typeof parsed.inSeq !== 'object' || parsed.inSeq === null || Array.isArray(parsed.inSeq)))
+    ) {
       return { ...empty, unreadable: true };
     }
     // Sanitize each row: unknown keys are dropped; a non-canonical fingerprint key is dropped.
@@ -152,8 +161,14 @@ export async function loadLensGrants(ownerFingerprint: string, storage?: LensGra
 /**
  * Persist the book. With the default sealed store this THROWS when the session is locked —
  * retryable, and never a plaintext fallback (the reviewer's seal-at-rest requirement).
+ *
+ * R2a: a book carrying `unreadable` is REFUSED — silently, not a throw (a transient read error
+ * costs a delay, not a crash). This is the write-path wall behind the seam/sender checks: any
+ * caller that persists a just-loaded book can never overwrite the real grants or replay floor
+ * with the empty stand-in — the stored bytes stay byte-identical until a good read happens.
  */
 export async function saveLensGrants(ownerFingerprint: string, book: LensGrantBook, storage?: LensGrantStorage | null): Promise<void> {
+  if (book.unreadable === true) return;
   const store = storage === undefined ? sealedBookStorage(ownerFingerprint) : storage;
   if (!store) return;
   await store.setItem(lensGrantKey(ownerFingerprint), JSON.stringify({ v: 1, grants: book.grants, inSeq: book.inSeq ?? {} }));

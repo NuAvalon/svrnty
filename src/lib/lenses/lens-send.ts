@@ -275,16 +275,19 @@ export async function buildLensHelloDeposits(args: {
    *  per capability version + one retry after the envelope life). The caller persists the book. */
   book: LensGrantBook;
   nowSeconds?: () => number;
-}): Promise<{ deposits: LensDeposit[]; skipped: LensSendPlan['skipped']; book: LensGrantBook }> {
+}): Promise<{ deposits: LensDeposit[]; skipped: Array<{ fingerprint: string; reason: LensSkipReason | 'book-unreadable' }>; book: LensGrantBook }> {
   if (typeof args.admit !== 'function') throw new Error('refusing to send a lens hello without a recipient check');
   const nowSeconds = args.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const deposits: LensDeposit[] = [];
-  const skipped: LensSendPlan['skipped'] = [];
+  const skipped: Array<{ fingerprint: string; reason: LensSkipReason | 'book-unreadable' }> = [];
   let book = args.book;
   for (const r of args.recipients) {
     const fp = String(r?.fingerprint ?? '').toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(fp)) { skipped.push({ fingerprint: String(r?.fingerprint), reason: 'bad-fingerprint' }); continue; }
     if (!args.admit(fp)) { skipped.push({ fingerprint: fp, reason: 'blocked' }); continue; }
+    // R2a: an unreadable book is READ-ONLY — no hello is built from it and no marker is written;
+    // the book returns untouched so a persisting caller (guarded by saveLensGrants anyway) saves nothing.
+    if (book.unreadable === true) { skipped.push({ fingerprint: fp, reason: 'book-unreadable' }); continue; }
     if (!helloDue(book, fp, LENS_CAPABILITY_VERSION, nowSeconds())) { skipped.push({ fingerprint: fp, reason: 'hello-throttled' }); continue; }
     if (typeof r.publicKeyArmored !== 'string' || !r.publicKeyArmored) { skipped.push({ fingerprint: fp, reason: 'no-public-key' }); continue; }
     if (typeof r.pqKemPublicKey !== 'string' || !r.pqKemPublicKey) { skipped.push({ fingerprint: fp, reason: 'no-pq-kem' }); continue; }

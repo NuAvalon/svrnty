@@ -103,6 +103,35 @@ test('R2: corrupt or unreadable records read as EMPTY — identical to no record
   assert.deepEqual((await loadLensGrants(OWNER, hostile)).grants, {});
 });
 
+test('R2a/T1: a VALID-JSON wrong-shape book reads unreadable — v≠1, grants not a map, or junk maps', async () => {
+  const s = memStorage();
+  for (const bad of [
+    '{"v":2,"grants":{}}',           // valid parse, unknown version
+    '{"v":1,"grants":"junk"}',       // grants not an object
+    '{"v":1,"grants":null}',         // grants null
+    '{"v":1,"grants":[]}',           // grants an array — parses clean, still not a map
+    '{"v":1,"grants":{},"inSeq":[]}',// inSeq an array — same wrong-shape class
+    '[1,2,3]',                       // valid JSON, not a book at all
+  ]) {
+    s.map.set(lensGrantKey(OWNER), bad);
+    const book = await loadLensGrants(OWNER, s);
+    assert.equal(book.unreadable, true, `${bad} must read unreadable, not a readable empty book`);
+    assert.deepEqual(book.grants, {}, 'empty for the filter — R2a makes the book read-only, not absent');
+  }
+});
+
+test('R2a: saveLensGrants REFUSES an unreadable book — the stored bytes stay byte-identical', async () => {
+  const s = memStorage();
+  s.map.set(lensGrantKey(OWNER), '{not json'); // present but unreadable
+  const book = await loadLensGrants(OWNER, s);
+  assert.equal(book.unreadable, true);
+  await saveLensGrants(OWNER, book, s);
+  assert.equal(s.map.get(lensGrantKey(OWNER)), '{not json', 'the real (corrupt) bytes survive — a stand-in never overwrites them');
+  // Mutant-guard: a write-path that saves an unreadable book must go red.
+  await saveLensGrants(OWNER, { v: 1, grants: { [FP_A]: { lens: 'x' } } }, s);
+  assert.notEqual(s.map.get(lensGrantKey(OWNER)), '{not json', 'a READABLE book still persists normally');
+});
+
 test('R2: lensForRecipient returns null with no record — the caller sends ZERO methods and holds', () => {
   const book = emptyBook();
   assert.equal(lensForRecipient(book, FP_B), null);
