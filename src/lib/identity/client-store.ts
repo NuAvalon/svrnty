@@ -491,6 +491,8 @@ async function openDB(): Promise<IDBDatabase> {
  */
 async function ownerKeyAsync(fingerprint: string): Promise<string> {
   if (!isOwnerKeyLoaded()) (await openDB()).close();
+  // An empty string is not an owner and has nothing to resolve: keep today's behaviour for it (a read finds nothing) instead of a new throw.
+  if (fingerprint === '') return fingerprint;
   return ownerKey(fingerprint);
 }
 
@@ -1521,14 +1523,16 @@ export async function getContactByFingerprint(ownerFingerprint: string, fingerpr
   // Blinded index: encrypted records store idx = HMAC(indexKey, fp) in the `fingerprint` field.
   // Compute the same idx to look them up. Mixed-state during the on-unlock migration: legacy
   // plaintext records still hold the raw fp, so match either. (idx needs an unlocked session.)
+  const owner = await ownerKeyAsync(ownerFingerprint);
   const idx = _contactKeys ? await blindFingerprint(_contactKeys.indexKey, fingerprint) : null;
-  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  const recs = await txGetByIndex<any>('contacts', 'owner', owner);
   const found = recs.find(c => (idx !== null && c.fingerprint === idx) || c.fingerprint === fingerprint);
   return found ? decryptContactIfNeeded(found) : null;
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
-  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const recs = await txGetByIndex<any>('contacts', 'owner', owner);
   return Promise.all(recs.map(decryptContactIfNeeded));
 }
 
@@ -1543,7 +1547,8 @@ function contactIntegritySettingKey(ownerFingerprint: string): string {
  * the tamper-evidence; the flag just surfaces it. (Spec point 5: MAC-fail → cloud restore = wiring.)
  */
 export async function getContactBookIntegrity(ownerFingerprint: string): Promise<'ok' | 'corrupt'> {
-  const flag = await txGet<{ key: string; value: string }>('settings', contactIntegritySettingKey(ownerFingerprint));
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const flag = await txGet<{ key: string; value: string }>('settings', contactIntegritySettingKey(owner));
   return flag?.value === 'corrupt' ? 'corrupt' : 'ok';
 }
 
@@ -1735,7 +1740,8 @@ async function eagerMigrateIdentityStoresOnUnlock(): Promise<void> {
 }
 
 export async function searchContacts(ownerFingerprint: string, query: string): Promise<ContactRecord[]> {
-  const contacts = await getAllContacts(ownerFingerprint);
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const contacts = await getAllContacts(owner);
   const q = query.toLowerCase();
   return contacts.filter(c =>
     c.name?.toLowerCase().includes(q) ||
