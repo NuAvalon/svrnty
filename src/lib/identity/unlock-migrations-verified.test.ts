@@ -43,7 +43,11 @@ test('the contact heal and the manifest step are each gated', () => {
 
 for (const [fn, field] of [['loadKey', 'privateKey'], ['loadPQKeys', 'bundle'], ['loadVault', 'vault'], ['loadShards', 'shards_data']]) {
   test(`${fn}'s lazy heal needs a verified owner`, () => {
-    assert.ok(fnBody(`export async function ${fn}(`).includes(`if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.${field})`));
+    // the gate takes the RESOLVED owner key (the durable id), never the raw parameter: after an owner rotation the raw operational fingerprint is not a member
+    // of the verified set, which is built from the stored (durable) owner strings
+    const body = fnBody(`export async function ${fn}(`);
+    assert.ok(body.includes(`if (_sessionKey && _unlockVerifiedOwners.has(owner) && record.${field})`));
+    assert.ok(!body.includes('_unlockVerifiedOwners.has(fingerprint)'), 'the raw parameter must not reach the verified-owner gate');
   });
 }
 

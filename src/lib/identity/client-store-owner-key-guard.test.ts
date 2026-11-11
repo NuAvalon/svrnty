@@ -17,18 +17,20 @@ const WIRED = [
   'getSuppressionRecord', 'setSuppressionRecord', 'getHeldAffirmatives', 'setHeldAffirmatives',
   'readDeliveryDefault', 'writeDeliveryDefault', 'writeDeliveryDefaultIfAbsent', 'readDeliveryDefaultMigrating',
   'markDeliveryRestored', 'markDeliveryDefaultUnknown',
+  // G1, the plain store/load pairs (keyPath value, txGet key, _unlockVerifiedOwners all use the resolved key)
+  'storeIdentity', 'loadIdentity', 'storeKey', 'loadKey', 'storePQKeys', 'loadPQKeys', 'storeVault', 'loadVault', 'storeDeviceMailbox', 'loadDeviceMailbox', 'storeShards', 'loadShards', 'getMyDeviceMailbox', 'initDeviceMailboxAtGenesis',
 ];
 /** Still to wire (step B worklist, shared outbox step_b_client_store_worklist_v0.md): G1 stores, G3 contacts, G4 issued codes and gate arrivals, G5 the active pointer. */
 const PENDING = [
-  'storeIdentity', 'loadIdentity', 'storeKey', 'loadKey', 'verifyPassphrase', 'deviceHoldsOwner', 'sessionOpensOwner', 'assertRestoreKeepsOwnerDomain',
-  'storePQKeys', 'loadPQKeys', 'storeVault', 'loadVault', 'loadDeviceMailbox', 'initDeviceMailboxAtGenesis', 'storeShards', 'loadShards',
+  'verifyPassphrase', 'deviceHoldsOwner', 'sessionOpensOwner', 'assertRestoreKeepsOwnerDomain',
+  
   'hasEncryptedKeys', 'getKeyEnvelopeFingerprint', 'exportAll',
   'addContact', 'getContactByFingerprint', 'getAllContacts', 'getContactBookIntegrity', 'searchContacts',
   'isCodeOutstanding', 'codeUnderCap', 'alreadyAccepted', 'issuedCodeChannel', 'issuedCodeSpent', 'markAcceptedInMap', 'recordAcceptedJoiner',
   'isOutstandingIssuedCode', 'loadGateArrivals', 'getGateArrival', 'enqueueGateArrival', 'removeGateArrival',
   'setActiveFingerprint',
   // found by THIS guard after the worklist script missed them (multi-line signatures, or the owner parameter not first): step_b worklist v1
-  'getMyDeviceMailbox', 'storeDeviceMailbox', 'markShardGiven', 'recordIssuedGrowCode', 'importPlaintextContacts', 'importVaultContents', 'importVaultContentsReport',
+  'markShardGiven', 'recordIssuedGrowCode', 'importPlaintextContacts', 'importVaultContents', 'importVaultContentsReport',
 ];
 
 const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
@@ -66,7 +68,10 @@ test('G1 a WIRED function resolves the owner string and never uses the raw param
     const sig = body.slice(0, body.indexOf('{') + 1);
     let rest = body.slice(sig.length).replace(new RegExp('ownerKey(?:Async)?\\(\\s*' + param + '\\s*\\)', 'g'), '');
     rest = rest.replace(new RegExp('\\b(?:' + WIRED.join('|') + ')\\(\\s*' + param + '\\b', 'g'), '');
-    assert.ok(!new RegExp('\\b' + param + '\\b').test(rest), name + ' uses the raw owner parameter "' + param + '" outside the resolver');
+    rest = rest.replace(new RegExp('\\b' + param + '\\s*:\\s*owner\\b', 'g'), ''); // the keyPath property is NAMED like the parameter: `{ fingerprint: owner, ... }`
+    if (name === 'getMyDeviceMailbox') rest = rest.replace(/\(fingerprint \|\| \(await getActiveFingerprint\(\)\) \|\| ''\)/g, ''); // the one explicit raw read: resolved on the next line (documented exception)
+    // a property access (`data.identity?.fingerprint`) is not the parameter: only a bare identifier counts
+    assert.ok(!new RegExp('(?<![.\\w$])' + param + '\\b').test(rest), name + ' uses the raw owner parameter "' + param + '" outside the resolver');
   }
   for (const name of PENDING) assert.doesNotMatch(ex.get(name)!.body, /ownerKey(?:Async)?\(/, name + ' is listed PENDING but already resolves: move it to WIRED');
   assert.ok(wiredCalls.test('getSuppressionRecord('));

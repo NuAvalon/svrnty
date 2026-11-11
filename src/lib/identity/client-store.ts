@@ -600,15 +600,17 @@ async function txPutMany(ops: TxOp[]): Promise<void> {
 // ── Identity operations ──────────────────────────────────────────
 
 export async function storeIdentity(fingerprint: string, data: any): Promise<void> {
+  const owner = await ownerKeyAsync(fingerprint);
   await txPut('identities', {
-    fingerprint,
+    fingerprint: owner,
     data,
     created_at: data.created_at || new Date().toISOString(),
   });
 }
 
 export async function loadIdentity(fingerprint: string): Promise<any | null> {
-  const record = await txGet<IdentityRecord>('identities', fingerprint);
+  const owner = await ownerKeyAsync(fingerprint);
+  const record = await txGet<IdentityRecord>('identities', owner);
   const data = record?.data ?? null;
   // Guard against corrupt records missing required fields
   if (data && !data.identity?.fingerprint) return null;
@@ -802,12 +804,14 @@ export async function storeKey(fingerprint: string, privateKey: string, passphra
   if (!_sessionKey) {
     throw new Error('Session locked — refusing to store key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const owner = await ownerKeyAsync(fingerprint);
   const encrypted = await encryptKeyData({ privateKey, passphrase });
-  await txPut('keys', { fingerprint, ...encrypted });
+  await txPut('keys', { fingerprint: owner, ...encrypted });
 }
 
 export async function loadKey(fingerprint: string): Promise<{ privateKey: string; passphrase: string } | null> {
-  const record = await txGet<any>('keys', fingerprint);
+  const owner = await ownerKeyAsync(fingerprint);
+  const record = await txGet<any>('keys', owner);
   if (!record) return null;
 
   // Detect encrypted vs legacy unencrypted records
@@ -818,9 +822,9 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
 
   // Legacy unencrypted record — return as-is
   // Auto-migrate: re-encrypt if session key is available
-  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.privateKey) {
+  if (_sessionKey && _unlockVerifiedOwners.has(owner) && record.privateKey) {
     const encrypted = await encryptKeyData({ privateKey: record.privateKey, passphrase: record.passphrase });
-    await txPut('keys', { fingerprint, ...encrypted });
+    await txPut('keys', { fingerprint: owner, ...encrypted });
   }
 
   return { privateKey: record.privateKey, passphrase: record.passphrase };
@@ -903,12 +907,14 @@ export async function storePQKeys(fingerprint: string, bundle: any): Promise<voi
   if (!_sessionKey) {
     throw new Error('Session locked — refusing to store PQ key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const owner = await ownerKeyAsync(fingerprint);
   const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
-  await txPut('pq_keys', { fingerprint, ...encrypted });
+  await txPut('pq_keys', { fingerprint: owner, ...encrypted });
 }
 
 export async function loadPQKeys(fingerprint: string): Promise<any | null> {
-  const record = await txGet<any>('pq_keys', fingerprint);
+  const owner = await ownerKeyAsync(fingerprint);
+  const record = await txGet<any>('pq_keys', owner);
   if (!record) return null;
 
   if (record.enc_version === ENC_VERSION) {
@@ -917,9 +923,9 @@ export async function loadPQKeys(fingerprint: string): Promise<any | null> {
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.bundle) {
+  if (_sessionKey && _unlockVerifiedOwners.has(owner) && record.bundle) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.bundle), passphrase: '' });
-    await txPut('pq_keys', { fingerprint, ...encrypted });
+    await txPut('pq_keys', { fingerprint: owner, ...encrypted });
   }
 
   return record.bundle ?? null;
@@ -932,12 +938,14 @@ export async function storeVault(fingerprint: string, vault: any): Promise<void>
   if (!_sessionKey) {
     throw new Error('Session locked — refusing to store vault key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const owner = await ownerKeyAsync(fingerprint);
   const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
-  await txPut('vaults', { fingerprint, ...encrypted });
+  await txPut('vaults', { fingerprint: owner, ...encrypted });
 }
 
 export async function loadVault(fingerprint: string): Promise<any | null> {
-  const record = await txGet<any>('vaults', fingerprint);
+  const owner = await ownerKeyAsync(fingerprint);
+  const record = await txGet<any>('vaults', owner);
   if (!record) return null;
 
   if (record.enc_version === ENC_VERSION) {
@@ -946,9 +954,9 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.vault) {
+  if (_sessionKey && _unlockVerifiedOwners.has(owner) && record.vault) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.vault), passphrase: '' });
-    await txPut('vaults', { fingerprint, ...encrypted });
+    await txPut('vaults', { fingerprint: owner, ...encrypted });
   }
 
   return record.vault ?? null;
@@ -970,8 +978,9 @@ export async function storeDeviceMailbox(
   if (!_sessionKey) {
     throw new Error('Session locked — refusing to store device-mailbox key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const owner = await ownerKeyAsync(fingerprint);
   const encrypted = await encryptKeyData({ privateKey: JSON.stringify(serialized), passphrase: '' });
-  await txPut('device_mailbox', { fingerprint, ...encrypted });
+  await txPut('device_mailbox', { fingerprint: owner, ...encrypted });
 }
 
 /**
@@ -982,7 +991,8 @@ export async function storeDeviceMailbox(
  * material). Fail-closed: null ⇒ absent (safe to init); throw ⇒ present-but-unreadable (surface, don't overwrite).
  */
 export async function loadDeviceMailbox(fingerprint: string): Promise<MailboxKeypair | null> {
-  const record = await txGet<any>('device_mailbox', fingerprint);
+  const owner = await ownerKeyAsync(fingerprint);
+  const record = await txGet<any>('device_mailbox', owner);
   if (!record) return null; // genuinely absent
   if (record.enc_version !== ENC_VERSION) {
     // No legacy-plaintext form ever existed for this v4 store → a non-enc record is corrupt, not legacy.
@@ -1002,8 +1012,9 @@ export async function loadDeviceMailbox(fingerprint: string): Promise<MailboxKey
 export async function getMyDeviceMailbox(
   fingerprint?: string,
 ): Promise<{ secrets: MailboxSecretKeys; publicKeys: MailboxPublicKeys; fp: string } | null> {
-  const fp = (fingerprint || (await getActiveFingerprint()) || '').trim();
-  if (!fp) return null;
+  const raw = (fingerprint || (await getActiveFingerprint()) || '').trim();
+  if (!raw) return null;
+  const fp = await ownerKeyAsync(raw);
   const kp = await loadDeviceMailbox(fp);
   if (!kp) return null;
   return {
@@ -1022,7 +1033,8 @@ export async function getMyDeviceMailbox(
  */
 export async function initDeviceMailboxAtGenesis(fingerprint: string): Promise<DeviceMailboxPublic> {
   const kp = generateMailboxKeypair();
-  await storeDeviceMailbox(fingerprint, serializeMailboxKeypair(kp));
+  const owner = await ownerKeyAsync(fingerprint);
+  await storeDeviceMailbox(owner, serializeMailboxKeypair(kp));
   return mailboxPublicOf(toPublicKeys(kp));
 }
 
@@ -1081,12 +1093,14 @@ export async function storeShards(fingerprint: string, shardsData: ShardsData): 
   if (!_sessionKey) {
     throw new Error('Session locked — refusing to store shard key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const owner = await ownerKeyAsync(fingerprint);
   const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
-  await txPut('shards', { fingerprint, ...encrypted });
+  await txPut('shards', { fingerprint: owner, ...encrypted });
 }
 
 export async function loadShards(fingerprint: string): Promise<ShardsData | null> {
-  const record = await txGet<any>('shards', fingerprint);
+  const owner = await ownerKeyAsync(fingerprint);
+  const record = await txGet<any>('shards', owner);
   if (!record) return null;
 
   if (record.enc_version === ENC_VERSION) {
@@ -1095,9 +1109,9 @@ export async function loadShards(fingerprint: string): Promise<ShardsData | null
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.shards_data) {
+  if (_sessionKey && _unlockVerifiedOwners.has(owner) && record.shards_data) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.shards_data), passphrase: '' });
-    await txPut('shards', { fingerprint, ...encrypted });
+    await txPut('shards', { fingerprint: owner, ...encrypted });
   }
 
   return record.shards_data ?? null;
