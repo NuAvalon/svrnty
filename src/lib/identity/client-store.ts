@@ -171,6 +171,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // piece-2: lazily ensure every identity has a device mailbox (heals pre-v4 identities). Best-effort,
   // never throws into unlock; regenerates only on genuine absence, never on a decrypt-fail (see fn).
   await ensureDeviceMailboxesOnUnlock();
+  // contacts-at-rest (contract v0.1, A5): seal each verified owner's gate + codes bags before the first
+  // poll cycle while the sealed rows are absent. Old plaintext rows are left in place (A7).
+  await migrateAtRestStoresOnUnlock();
 }
 
 /**
@@ -2099,27 +2102,130 @@ export function markAcceptedInMap(map: IssuedCodeMap, ownerFp: string, code: str
   return map;
 }
 
-async function loadRawIssuedCodeMap(): Promise<IssuedCodeMap> {
-  const setting = await txGet<{ key: string; value: string }>('settings', ISSUED_GROW_CODES_KEY);
-  if (!setting?.value) return {};
-  try {
-    const parsed = JSON.parse(setting.value);
-    return parsed && typeof parsed === 'object' ? (parsed as IssuedCodeMap) : {};
-  } catch {
-    return {};
+// ── Contacts at rest (contract v0.1: "nothing readable about contacts on a locked phone") ────────
+// The three owner-local contact-adjacent stores (Grow codes, Gate arrivals, Trust-Map layout) live on
+// the SAME sealed-record path as the piece2 records above: written only through encryptContactRecord
+// under a per-store reserved AAD id, bound to the owner fingerprint — one sealed `settings` row per
+// (store, owner). Reserved ids can never collide with a contact id (contacts use random UUIDs — the
+// contacts-at-rest test pins that every contact id the store writes is UUID-shaped).
+//
+// A3/A4 semantics: a write while locked THROWS (never plaintext, never silently drops); a read throws
+// on anything but a genuinely absent record — locked (AtRestLockedError), tag/decrypt failure or wrong
+// shape (AtRestUnreadableError). Only absence returns empty. A5: while the sealed row is absent an old
+// plaintext row still answers (the pre-migration read path), and the first unlocked write seals it —
+// the old row is LEFT in place (A7: deleting local data is the owner's separate decision).
+export class AtRestLockedError extends Error {
+  constructor(store: string) {
+    super(`at-rest store "${store}" is locked`);
+    this.name = 'AtRestLockedError';
+  }
+}
+export class AtRestUnreadableError extends Error {
+  constructor(store: string) {
+    super(`at-rest store "${store}" is present but unreadable`);
+    this.name = 'AtRestUnreadableError';
   }
 }
 
-async function saveIssuedCodeMap(map: IssuedCodeMap): Promise<void> {
-  await txPut('settings', { key: ISSUED_GROW_CODES_KEY, value: JSON.stringify(map) });
+const ATREST_GATE_RECORD_ID = 'atrest:gate'; // reserved AAD id (contacts use random UUIDs — never this)
+const ATREST_CODES_RECORD_ID = 'atrest:codes'; // reserved AAD id
+const ATREST_LAYOUT_RECORD_ID = 'atrest:layout'; // reserved AAD id
+
+/** The two lines a person may ever see from an at-rest failure (A9) — internal detail never crosses. */
+export const ATREST_COPY = {
+  locked: 'Unlock svrnty to continue.',
+  unreadable: "Your invite records couldn't be read on this device. Nothing was changed.",
+  /** A list that couldn't be read while locked draws this — never an empty list. */
+  lockedList: 'Unlock to see your invites',
+} as const;
+
+/** A9: map an at-rest store failure to the person-facing line; unknown errors → null (caller keeps its own wording). */
+export function describeAtRestError(err: unknown): string | null {
+  if (err instanceof AtRestLockedError) return ATREST_COPY.locked;
+  if (err instanceof AtRestUnreadableError) return ATREST_COPY.unreadable;
+  return null;
+}
+
+function atRestSettingKey(recordId: string, ownerFingerprint: string): string {
+  return `${recordId}:${ownerFingerprint}`;
+}
+
+const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Read this owner's sealed at-rest bag. A4: THROWS on anything but a genuinely absent record —
+ * locked → AtRestLockedError; tag/decrypt failure or wrong shape → AtRestUnreadableError.
+ * Only a missing row returns null (the caller then tries the legacy plaintext row, A5).
+ */
+async function readAtRestRecord<T extends object>(
+  recordId: string,
+  ownerFingerprint: string,
+  isShape: (v: unknown) => v is T,
+): Promise<T | null> {
+  if (!_sessionKey) throw new AtRestLockedError(recordId);
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+    'settings', atRestSettingKey(recordId, ownerFingerprint),
+  );
+  if (!row?.value) return null; // genuinely absent
+  let dec: unknown;
+  try {
+    dec = await decryptContactRecord<unknown>(_sessionKey, recordId, ownerFingerprint, row.value);
+  } catch {
+    throw new AtRestUnreadableError(recordId);
+  }
+  if (!isShape(dec)) throw new AtRestUnreadableError(recordId);
+  return dec;
+}
+
+/** Write this owner's sealed at-rest bag. A3: locked THROWS — never plaintext, never a silent drop. */
+async function writeAtRestRecord(
+  recordId: string,
+  ownerFingerprint: string,
+  value: unknown,
+): Promise<void> {
+  if (!_sessionKey) throw new AtRestLockedError(recordId);
+  const payload = await encryptContactRecord(_sessionKey, recordId, ownerFingerprint, value);
+  await txPut('settings', { key: atRestSettingKey(recordId, ownerFingerprint), value: payload });
+}
+
+/**
+ * The old plaintext row (pre-seal). Returns null only when genuinely absent; a present-but-malformed
+ * row throws AtRestUnreadableError — it is not "empty" and must never be read as one (A5).
+ */
+async function loadLegacySettingMap(recordId: string, legacyKey: string): Promise<Record<string, unknown> | null> {
+  const setting = await txGet<{ key: string; value: string }>('settings', legacyKey);
+  if (!setting?.value) return null;
+  try {
+    const parsed = JSON.parse(setting.value);
+    if (isPlainRecord(parsed)) return parsed;
+  } catch { /* falls through to the throw */ }
+  throw new AtRestUnreadableError(recordId);
+}
+
+async function loadLegacyIssuedCodeMap(): Promise<IssuedCodeMap | null> {
+  return (await loadLegacySettingMap(ATREST_CODES_RECORD_ID, ISSUED_GROW_CODES_KEY)) as IssuedCodeMap | null;
+}
+
+/**
+ * This owner's issued-code bag, sealed-first: the sealed row answers when present (A4: any unreadable
+ * seal throws — never an empty map, or the poll would refuse every arriving joiner silently); while it
+ * is absent an old plaintext row answers for this owner (A5). Throws AtRestLockedError while locked.
+ * Returned in the whole-map shape ({ownerFp: entries}) so the pure accept-oracle helpers above keep working.
+ */
+async function loadIssuedCodeBag(ownerFp: string): Promise<IssuedCodeMap> {
+  const sealed = await readAtRestRecord(ATREST_CODES_RECORD_ID, ownerFp, isPlainRecord);
+  if (sealed) return { [ownerFp]: sealed as IssuedCodeMap[string] };
+  const legacy = await loadLegacyIssuedCodeMap();
+  return legacy?.[ownerFp] ? { [ownerFp]: legacy[ownerFp] } : {};
 }
 
 /**
  * Load the pruned issued-code map for building the SYNC accept-oracle in the consume
  * path. Load ONCE per poll, then pass the snapshot to the pure helpers above.
  */
-export async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
-  return pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+export async function loadIssuedCodeMap(ownerFp: string): Promise<IssuedCodeMap> {
+  return pruneIssuedCodes(await loadIssuedCodeBag(ownerFp), Date.now());
 }
 
 /** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window with a per-code
@@ -2132,7 +2238,9 @@ export async function recordIssuedGrowCode(
   channel?: GrowMintChannel,
 ): Promise<void> {
   if (!ownerFp || !code) return;
-  const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+  // A5: the read THROWS on a present-but-unreadable record — a failed read must stop the write
+  // (an empty read followed by a write would erase every other live code, in-person ones included).
+  const map = pruneIssuedCodes(await loadIssuedCodeBag(ownerFp), Date.now());
   if (!map[ownerFp]) map[ownerFp] = {};
   const prior = map[ownerFp][code];
   const nextChannel: GrowMintChannel =
@@ -2149,7 +2257,7 @@ export async function recordIssuedGrowCode(
     cap: nextChannel === 'in_person' ? 1 : clampCodeCap(cap),
     channel: nextChannel,
   };
-  await saveIssuedCodeMap(map);
+  await writeAtRestRecord(ATREST_CODES_RECORD_ID, ownerFp, map[ownerFp]);
 }
 
 /**
@@ -2158,9 +2266,9 @@ export async function recordIssuedGrowCode(
  */
 export async function recordAcceptedJoiner(ownerFp: string, code: string, verifiedJoinerFp: string): Promise<void> {
   if (!ownerFp || !code || !verifiedJoinerFp) return;
-  const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+  const map = pruneIssuedCodes(await loadIssuedCodeBag(ownerFp), Date.now());
   markAcceptedInMap(map, ownerFp, code, verifiedJoinerFp);
-  await saveIssuedCodeMap(map);
+  await writeAtRestRecord(ATREST_CODES_RECORD_ID, ownerFp, map[ownerFp]);
 }
 
 /**
@@ -2168,7 +2276,7 @@ export async function recordAcceptedJoiner(ownerFp: string, code: string, verifi
  * loadIssuedCodeMap + the sync helpers so the accept-oracle stays synchronous.
  */
 export async function isOutstandingIssuedCode(ownerFp: string, code: string): Promise<boolean> {
-  return isCodeOutstanding(await loadIssuedCodeMap(), ownerFp, code, Date.now());
+  return isCodeOutstanding(await loadIssuedCodeMap(ownerFp), ownerFp, code, Date.now());
 }
 
 // ── Grow Gate arrivals (glass) ───────────────────────────────────────────────
@@ -2228,19 +2336,20 @@ export function normalizeArrival(raw: unknown): GateArrival | null {
   return arrival;
 }
 
-async function loadRawGateMap(): Promise<GateArrivalMap> {
-  const setting = await txGet<{ key: string; value: string }>('settings', GROW_GATE_ARRIVALS_KEY);
-  if (!setting?.value) return {};
-  try {
-    const parsed = JSON.parse(setting.value);
-    return parsed && typeof parsed === 'object' ? (parsed as GateArrivalMap) : {};
-  } catch {
-    return {};
-  }
+async function loadLegacyGateMap(): Promise<GateArrivalMap | null> {
+  return (await loadLegacySettingMap(ATREST_GATE_RECORD_ID, GROW_GATE_ARRIVALS_KEY)) as GateArrivalMap | null;
 }
 
-async function saveGateMap(map: GateArrivalMap): Promise<void> {
-  await txPut('settings', { key: GROW_GATE_ARRIVALS_KEY, value: JSON.stringify(map) });
+/**
+ * This owner's gate bag, sealed-first (same A4/A5 semantics as loadIssuedCodeBag): a present-but-
+ * unreadable seal throws (never an empty list — the Gate panel must show the A9 line, not "no one
+ * waiting"); while the sealed row is absent an old plaintext row answers for this owner.
+ */
+async function loadGateBag(ownerFp: string): Promise<GateArrivalMap> {
+  const sealed = await readAtRestRecord(ATREST_GATE_RECORD_ID, ownerFp, isPlainRecord);
+  if (sealed) return { [ownerFp]: sealed as GateArrivalMap[string] };
+  const legacy = await loadLegacyGateMap();
+  return legacy?.[ownerFp] ? { [ownerFp]: legacy[ownerFp] } : {};
 }
 
 function normalizeGateMap(map: GateArrivalMap): GateArrivalMap {
@@ -2259,14 +2368,14 @@ function normalizeGateMap(map: GateArrivalMap): GateArrivalMap {
 /** Load Gate arrivals for one owner (not contacts — not on Galaxy). */
 export async function loadGateArrivals(ownerFp: string): Promise<GateArrival[]> {
   if (!ownerFp) return [];
-  const map = normalizeGateMap(await loadRawGateMap());
+  const map = normalizeGateMap(await loadGateBag(ownerFp));
   const bag = map[ownerFp] || {};
   return Object.values(bag).sort((a, b) => (a.arrivedAt < b.arrivedAt ? 1 : -1));
 }
 
 export async function getGateArrival(ownerFp: string, peerFp: string): Promise<GateArrival | null> {
   if (!ownerFp || !peerFp) return null;
-  const map = normalizeGateMap(await loadRawGateMap());
+  const map = normalizeGateMap(await loadGateBag(ownerFp));
   return map[ownerFp]?.[peerFp] ?? null;
 }
 
@@ -2275,17 +2384,76 @@ export async function enqueueGateArrival(ownerFp: string, arrival: GateArrival):
   if (!ownerFp) return;
   const normalized = normalizeArrival(arrival);
   if (!normalized) return;
-  const map = normalizeGateMap(await loadRawGateMap());
+  const map = normalizeGateMap(await loadGateBag(ownerFp));
   if (!map[ownerFp]) map[ownerFp] = {};
   map[ownerFp][normalized.fingerprint] = normalized;
-  await saveGateMap(map);
+  await writeAtRestRecord(ATREST_GATE_RECORD_ID, ownerFp, map[ownerFp]);
 }
 
 export async function removeGateArrival(ownerFp: string, peerFp: string): Promise<void> {
   if (!ownerFp || !peerFp) return;
-  const map = normalizeGateMap(await loadRawGateMap());
+  const map = normalizeGateMap(await loadGateBag(ownerFp));
   if (!map[ownerFp]?.[peerFp]) return;
   delete map[ownerFp][peerFp];
-  if (Object.keys(map[ownerFp]).length === 0) delete map[ownerFp];
-  await saveGateMap(map);
+  await writeAtRestRecord(ATREST_GATE_RECORD_ID, ownerFp, map[ownerFp]);
+}
+
+// ── Trust-Map layout memory (sealed row per owner; trust/layout-memory.ts owns the shape) ────────
+// A6: positions keyed by fingerprint plus ONE digest; the topology / glass strings are never stored —
+// the digest alone detects change inside the sealed record, so it needs no key.
+export interface AtRestLayoutRecord {
+  v: 1;
+  nodes: Array<{ id: string; x: number; y: number }>;
+  digest: string;
+}
+
+function isAtRestLayoutRecord(v: unknown): v is AtRestLayoutRecord {
+  if (!isPlainRecord(v)) return false;
+  const r = v as { v?: unknown; nodes?: unknown; digest?: unknown };
+  return (
+    r.v === 1 &&
+    Array.isArray(r.nodes) &&
+    r.nodes.every(
+      (n) =>
+        isPlainRecord(n) &&
+        typeof n.id === 'string' &&
+        Number.isFinite(n.x) &&
+        Number.isFinite(n.y),
+    ) &&
+    typeof r.digest === 'string'
+  );
+}
+
+/** Sealed layout read. A4: locked / tag-fail / wrong shape THROW — only genuine absence → null. */
+export async function readAtRestLayout(ownerFp: string): Promise<AtRestLayoutRecord | null> {
+  return readAtRestRecord(ATREST_LAYOUT_RECORD_ID, ownerFp, isAtRestLayoutRecord);
+}
+
+/** Sealed layout write. A3: locked THROWS — never plaintext, never a silent drop. */
+export async function writeAtRestLayout(ownerFp: string, rec: AtRestLayoutRecord): Promise<void> {
+  await writeAtRestRecord(ATREST_LAYOUT_RECORD_ID, ownerFp, rec);
+}
+
+/**
+ * A5 unlock migration: seal each VERIFIED owner's gate + codes bags before the first poll cycle, while
+ * the sealed row is still absent. Verified-owner-only like every unlock migration above — a mistyped
+ * passphrase derives a key that would seal under the wrong key and make the data unreadable forever.
+ * Best-effort per owner+store: a failure (incl. a corrupt sealed row, which is NEVER overwritten —
+ * repair is the owner's decision) leaves the work for the first unlocked write.
+ */
+async function migrateAtRestStoresOnUnlock(): Promise<void> {
+  for (const ownerFp of _unlockVerifiedOwners) {
+    try {
+      if (!(await readAtRestRecord(ATREST_CODES_RECORD_ID, ownerFp, isPlainRecord))) {
+        const bag = (await loadLegacyIssuedCodeMap())?.[ownerFp];
+        if (bag) await writeAtRestRecord(ATREST_CODES_RECORD_ID, ownerFp, bag);
+      }
+    } catch { /* a hiccup leaves work for the first unlocked write — never throw into unlock */ }
+    try {
+      if (!(await readAtRestRecord(ATREST_GATE_RECORD_ID, ownerFp, isPlainRecord))) {
+        const bag = (await loadLegacyGateMap())?.[ownerFp];
+        if (bag) await writeAtRestRecord(ATREST_GATE_RECORD_ID, ownerFp, bag);
+      }
+    } catch { /* same — the unlocked-write path migrates lazily (A7) */ }
+  }
 }

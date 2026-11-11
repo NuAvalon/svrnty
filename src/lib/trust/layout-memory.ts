@@ -4,22 +4,49 @@
  *
  * When witnessed mutual topology OR glass state (known → verified → trusted)
  * changes, blend softens so density / gravity can rearrange the lattice.
+ *
+ * Contacts-at-rest v0.1 (A6): the memory moved off localStorage plaintext into a
+ * sealed per-owner settings row (atrest:layout, client-store). Positions keyed by
+ * fingerprint stay inside the seal; the topology / glass signature strings are NOT
+ * stored — one digest detects change instead:
+ *   digest = first 16 bytes of SHA-256(TLV("svrnty-layout-digest-v1") ‖ TLV(topology) ‖ TLV(glass)), hex.
+ * `loadLayoutMemory` is async: locked → short-circuit empty without touching the
+ * store (the map re-reads every second); a corrupt seal THROWS and the caller
+ * draws a fresh layout — the map is never blocked.
  */
 
-const PREFIX = 'svrnty.trust-map.layout.v1:';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, concatBytes } from '@noble/hashes/utils.js';
+import { lpStr } from '../crypto/lp-tlv';
+import {
+  isSessionUnlocked,
+  readAtRestLayout,
+  writeAtRestLayout,
+} from '../identity/client-store';
+
+const PREFIX = 'svrnty.trust-map.layout.v1:'; // legacy localStorage row (left in place post-migration, A7)
+const LAYOUT_DIGEST_TAG = 'svrnty-layout-digest-v1';
 
 export type StoredNodePos = { id: string; x: number; y: number };
 
 export type LayoutMemoryPayload = {
   nodes: Map<string, StoredNodePos>;
-  /** Sorted mutual-bond fingerprint; empty if legacy / unknown. */
-  topology: string;
-  /** Known / verified / trusted per peer — owner-local glass, not a public badge. */
-  glass: string;
+  /** Sealed-record change digest (svrnty-layout-digest-v1); '' when legacy/unknown. */
+  digest: string;
 };
 
 function key(ownerFingerprint: string): string {
   return `${PREFIX}${ownerFingerprint.toLowerCase()}`;
+}
+
+/**
+ * The one stored change-detector (A6): first 16 bytes of
+ * SHA-256(LP(tag) ‖ LP(topology) ‖ LP(glass)), hex. Pure + synchronous so the
+ * render path can compare every frame without an await.
+ */
+export function layoutDigest(topology: string, glass: string): string {
+  const digest = sha256(concatBytes(lpStr(LAYOUT_DIGEST_TAG), lpStr(topology), lpStr(glass)));
+  return bytesToHex(digest.slice(0, 16));
 }
 
 /** Stable fingerprint of witnessed mutual chords (order-independent). */
@@ -55,51 +82,78 @@ export function glassStateSignature(
     .join(';');
 }
 
-export function loadLayoutMemory(ownerFingerprint: string): LayoutMemoryPayload {
-  const empty = { nodes: new Map<string, StoredNodePos>(), topology: '', glass: '' };
-  if (typeof localStorage === 'undefined' || !ownerFingerprint) {
-    return empty;
+const EMPTY = (): LayoutMemoryPayload => ({ nodes: new Map<string, StoredNodePos>(), digest: '' });
+
+function positionsFrom(list: unknown): Map<string, StoredNodePos> {
+  const nodes = new Map<string, StoredNodePos>();
+  if (!Array.isArray(list)) return nodes;
+  for (const p of list) {
+    if (p && typeof p.id === 'string' && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+      nodes.set(p.id, p as StoredNodePos);
+    }
   }
+  return nodes;
+}
+
+/** The old plaintext localStorage row (A5 read fallback; A7 leaves it in place). */
+function readLegacyLayout(ownerFingerprint: string): { nodes: Map<string, StoredNodePos>; topology: string; glass: string } | null {
+  if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(key(ownerFingerprint));
-    if (!raw) return empty;
+    if (!raw) return null;
     const parsed = JSON.parse(raw) as
       | StoredNodePos[]
       | { nodes?: StoredNodePos[]; topology?: string; glass?: string };
     const list = Array.isArray(parsed) ? parsed : parsed?.nodes;
     const topology =
-      !Array.isArray(parsed) && typeof parsed?.topology === 'string'
-        ? parsed.topology
-        : '';
+      !Array.isArray(parsed) && typeof parsed?.topology === 'string' ? parsed.topology : '';
     const glass =
       !Array.isArray(parsed) && typeof parsed?.glass === 'string' ? parsed.glass : '';
-    if (!Array.isArray(list)) return { nodes: empty.nodes, topology, glass };
-    const nodes = new Map<string, StoredNodePos>();
-    for (const p of list) {
-      if (p && typeof p.id === 'string' && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-        nodes.set(p.id, p);
-      }
-    }
-    return { nodes, topology, glass };
+    return { nodes: positionsFrom(list), topology, glass };
   } catch {
-    return empty;
+    return null;
   }
 }
 
-export function saveLayoutMemory(
+/**
+ * Load the remembered layout. Async + fail-loud-on-corrupt (A4/A6):
+ *  - locked → empty, WITHOUT touching the store (the map re-reads every second).
+ *  - sealed row present → its nodes + digest; a tag/decrypt/shape failure THROWS
+ *    (the caller draws a fresh layout — the map is never blocked on it).
+ *  - sealed row absent → the old localStorage row answers once (A5); its
+ *    topology+glass strings are folded into the digest, never re-stored.
+ */
+export async function loadLayoutMemory(ownerFingerprint: string): Promise<LayoutMemoryPayload> {
+  if (!ownerFingerprint) return EMPTY();
+  if (!isSessionUnlocked()) return EMPTY(); // locked: short-circuit, no decrypt attempt
+  const sealed = await readAtRestLayout(ownerFingerprint); // throws AtRestUnreadableError on corrupt
+  if (sealed) return { nodes: positionsFrom(sealed.nodes), digest: sealed.digest };
+  const legacy = readLegacyLayout(ownerFingerprint);
+  if (!legacy) return EMPTY();
+  return { nodes: legacy.nodes, digest: layoutDigest(legacy.topology, legacy.glass) };
+}
+
+/**
+ * Persist positions + the change digest, sealed per owner (A1/A6). Locked →
+ * throws AtRestLockedError (A3 — the caller treats a failed save as no memory
+ * written, never a plaintext fallback). First unlocked write seals whatever the
+ * legacy localStorage row carried (A7) and leaves that row in place.
+ */
+export async function saveLayoutMemory(
   ownerFingerprint: string,
   nodes: StoredNodePos[],
   topology = '',
   glass = '',
-): void {
-  if (typeof localStorage === 'undefined' || !ownerFingerprint) return;
+): Promise<void> {
+  if (!ownerFingerprint) return;
   const slim = nodes
     .filter((n) => n.id && Number.isFinite(n.x) && Number.isFinite(n.y))
     .map((n) => ({ id: n.id, x: n.x, y: n.y }));
-  localStorage.setItem(
-    key(ownerFingerprint),
-    JSON.stringify({ nodes: slim, topology, glass }),
-  );
+  await writeAtRestLayout(ownerFingerprint, {
+    v: 1,
+    nodes: slim,
+    digest: layoutDigest(topology, glass),
+  });
 }
 
 /**
