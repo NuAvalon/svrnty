@@ -12,6 +12,7 @@ import {
   type LatchPort,
   type PairConfirmedPort,
   type PairRecord,
+  type RowRecord,
 } from './beacon-client';
 
 const EPOCH_SECONDS = 604800;
@@ -789,7 +790,7 @@ test('D17 a closed-epoch row is released and deleted at renew; observedMatch sur
   await client.trustAtTap('pair-1');
   const rec = (await store.get('pair-1'))!;
   rec.rows[0].epoch = String(EPOCH - 5);                               // age the row past close
-  rec.observedMatch = true; rec.firstMatchEpoch = rec.rows[0].epoch;
+  rec.observedMatch = true; rec.firstMatchEpoch = { epoch: rec.rows[0].epoch, gen: rec.tap!.gen };
   await store.put(rec);
   f.setFallback(ok('none'));
   await client.renew('pair-1');
@@ -2694,9 +2695,9 @@ test('R7-T2 L15 moved branch: no latch restore when this tap cleared nothing', a
 
 test('R7-T3 L6d second pass queues a row merged in by the Remove commit', async () => {
   const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
-  const row1 = { rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' };
-  const row2 = { rowId: 'r2', epoch: String(EPOCH), H_e: '3', N: '4', state: 'unknown' };
-  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true },
+  const row1: RowRecord = { rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' };
+  const row2: RowRecord = { rowId: 'r2', epoch: String(EPOCH), H_e: '3', N: '4', state: 'unknown' };
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, observedMatch: false, tap: { gen: 1, trust: true },
     rows: [row1], pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
   let n = 0;
   const store = { ...base, data: base.data, get: async (p: string) => {
@@ -2715,7 +2716,7 @@ test('R7-T3 L6d second pass queues a row merged in by the Remove commit', async 
 
 test('R7-T4 L6d latch re-assert: a latch cleared after the Remove commit is re-asserted', async () => {
   const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
-  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true },
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, observedMatch: false, tap: { gen: 1, trust: true },
     rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' }],
     pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
   let n = 0;
@@ -2735,7 +2736,7 @@ test('R7-T4 L6d latch re-assert: a latch cleared after the Remove commit is re-a
 
 test('R7-T5 L6d pass guard: a newer tap owns the pair — its rows are never queued', async () => {
   const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
-  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true },
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, observedMatch: false, tap: { gen: 1, trust: true },
     rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' }],
     pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
   let n = 0;
@@ -2760,7 +2761,7 @@ test('R7-T5 L6d pass guard: a newer tap owns the pair — its rows are never que
 
 test('R7-T6 L1: the latch is durable before the Remove commit (park the commit, read the latch)', async () => {
   const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
-  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true }, rows: [],
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, observedMatch: false, tap: { gen: 1, trust: true }, rows: [],
     pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
   let n = 0, gate!: () => void;
   const g = new Promise<void>((r) => (gate = r));
@@ -2780,7 +2781,7 @@ test('R7-T6 L1: the latch is durable before the Remove commit (park the commit, 
 
 test('R7-T7 G11: commit() losing all 8 swaps throws and never falls back to put', async () => {
   const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
-  base.data.set('pair-1', { pairId: 'pair-1', version: 7, tap: { gen: 2, trust: true },
+  base.data.set('pair-1', { pairId: 'pair-1', version: 7, observedMatch: false, tap: { gen: 2, trust: true },
     rows: [{ rowId: 'rX', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' }],
     pendingWithdraws: [{ rowId: 'rX', attempts: 0, nextAt: MID - 1 }],
     spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
@@ -2802,7 +2803,7 @@ test('R7-T7 G11: commit() losing all 8 swaps throws and never falls back to put'
 
 test('R7-G6 a latch landing inside the write-ahead swap still stops the send (block kept)', async () => {
   const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
-  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true }, rows: [],
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, observedMatch: false, tap: { gen: 1, trust: true }, rows: [],
     pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
   let armed = true;
   const store = { ...base, data: base.data, cas: async (p: string, v: number, next: any) => {

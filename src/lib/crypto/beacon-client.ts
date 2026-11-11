@@ -841,7 +841,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       const touched = depositableEpochs(now());
       // R7: the tap's result starts NEUTRAL — 'deposited' needs a wire answer or a covering row;
       // a proof that outlives its epoch never reports 'covered' it didn't earn.
-      let saw: Answer | DepositOutcome = 'pending';
+      let saw: Answer | DepositOutcome | 'pending' = 'pending';
       for (const epoch of touched) {
         const a = await depositEpoch(rec, epoch);
         if (epoch === BigInt(epochAt(now()))) saw = a;
@@ -866,16 +866,16 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         if (saw === 'covered-unreachable' || saw === 'already-fresh') return { kind: 'unreachable' };
         if (saw === 'spent-epoch') return { kind: 'spent' };          // spent incl. L8d queued-withdraw epochs
         if (saw === 'latched') return { kind: 'latched' };            // Remove mid-proof — nothing sent
-        if (saw.kind === 'accepted' || saw.kind === 'already') return { kind: 'deposited' };
-        if (saw.kind === 'withdrawn') return { kind: 'spent' };
+        if (typeof saw === 'object' && (saw.kind === 'accepted' || saw.kind === 'already')) return { kind: 'deposited' };
+        if (typeof saw === 'object' && saw.kind === 'withdrawn') return { kind: 'spent' };
         if (liveRow) return { kind: 'pending' };                      // L13e-2: a fetch LEFT — pending even when the
         //                                                            // final commit failed after that fetch (delta7)
         if (saw === 'refused-epoch') return { kind: 'failed' };       // a final refusal stands for this epoch
         if (saw === 'unsent') return { kind: 'unsent' };              // proof threw / no secrets — nothing sent
         if (saw === 'unsaved') return { kind: 'busy' };               // write-ahead lost CAS — 'busy' ONLY if nothing left
         if (commitFailed) return { kind: 'busy' };                    // nothing reached the wire AND the save lost
-        if (saw.kind === 'refused' && (NO_RETRY.has(saw.reason) || saw.reason.startsWith('point:'))) return { kind: 'failed' };
-        if (saw.kind === 'busy' || saw.kind === 'unreadable') return { kind: 'pending' };  // the fetch LEFT (L13e-2)
+        if (typeof saw === 'object' && saw.kind === 'refused' && (NO_RETRY.has(saw.reason) || saw.reason.startsWith('point:'))) return { kind: 'failed' };
+        if (typeof saw === 'object' && (saw.kind === 'busy' || saw.kind === 'unreadable')) return { kind: 'pending' };  // the fetch LEFT (L13e-2)
         return { kind: 'pending' };                                   // unknown/transient: owed, retried pinned-K
       };
       const out = result();
