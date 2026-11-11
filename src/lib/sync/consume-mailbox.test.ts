@@ -446,21 +446,28 @@ test('R4-T1b end-to-end: a refused lens payload through consume records NO finge
   assert.equal('fp' in recorded[0], false, 'no fingerprint reaches the record — and not via the row gate alone');
 });
 
-test('R2a: a HELD lens payload is a benign terminal — acked, no record, nothing lost', async () => {
+test('R2b (v1.10): a HELD lens payload is NOT acknowledged — the relay keeps it and it applies on the next poll', async () => {
   const recorded: DeadLetterRow[] = [];
+  let calls = 0;
   const lens = {
     verify: async () => new Uint8Array([1, 2, 3]),
-    accept: async () => ({ held: true as const }),
+    // First poll: the book is unreadable → held. Second poll (healed): the same envelope applies.
+    accept: async () => (calls++ === 0 ? { held: true as const } : { applied: true as const, id: 'ev', fingerprint: 'f'.repeat(64), ignited: false }),
   };
   const ackLog: string[][] = [];
-  const summary = await consumeInboundContactUpdates(baseDeps({
+  const deps = (ack: string[][]) => baseDeps({
     lens,
     deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
-    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
-  }));
-  assert.deepEqual(ackLog, [['e1']], 'the envelope is consumed — the payload retries from the in-session hold');
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ack),
+  });
+  const first = await consumeInboundContactUpdates(deps(ackLog));
+  assert.deepEqual(ackLog, [], 'a receiver-side hold is NOT acked — an ack would lose the payload (must go red)');
   assert.equal(recorded.length, 0, 'a held payload is not a loss — no dead-letter row');
-  assert.equal(summary.deadLettered, 0);
+  assert.equal(first.deadLettered, 0);
+  const second = await consumeInboundContactUpdates(deps(ackLog));
+  assert.deepEqual(ackLog, [['e1']], 'the same envelope re-runs next poll and acks once it applies');
+  assert.equal(second.applied, 1, 'exactly one apply across the polls');
+  assert.equal(recorded.length, 0, 'still no dead-letter row — it applied');
 });
 
 test('R3-E1: each refused lens payload is recorded under its OWN reason — NO fingerprint, never a message', async () => {

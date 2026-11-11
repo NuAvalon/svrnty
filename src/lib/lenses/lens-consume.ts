@@ -72,9 +72,10 @@ export type LensAcceptResult =
   | { applied: true; id: string; fingerprint: string; ignited: boolean }
   | { hello: true }
   | { stale: true }
-  /** R2a: the grant book read UNREADABLE — the MAC-verified payload was NOT applied and NOT
-   *  dropped: it is HELD (bounded, in memory) and retried after the next good read. Terminal
-   *  for the envelope — the consume loop acks it as a benign consume ('lens-held'). */
+  /** R2a/R2b (v1.10): the grant book read UNREADABLE — a RECEIVER-side hold: the MAC-verified
+   *  payload is NOT applied and NOT dropped, and the consume loop does NOT acknowledge the
+   *  envelope — the relay keeps it and the next poll runs it again through the full route.
+   *  Nothing is written: no floor save, no dead-letter row, no repaint and no status. */
   | { held: true }
   /** R8a: terminal refusals on a MAC-VERIFIED payload, each with its own dead-letter reason —
    *  'method-cap' (lens_methods would grow past the cap; the contact gets the visible stopped
@@ -84,12 +85,6 @@ export type LensAcceptResult =
    *  and never reaches a stored dead-letter row (see lensTerminalClass). */
   | { refused: 'method-cap' | 'shared-slot'; fingerprint: string }
   | null; // dropped: unverified (bad MAC / malformed), or a stranger/blocked sender — silent
-
-/** R2b(b): the held-payload bound ACROSS contacts — at most this many senders' payloads wait in
- *  memory (each ≤ one uniform cell's payload, and one per contact — a contact cannot grow the
- *  hold by sending more). Past the cap a new sender's payload is dropped: bounded memory, never
- *  a plaintext write. */
-export const LENS_HELD_MAX_SENDERS = 64;
 
 export interface LensSeamDeps {
   /** The same contact store consume uses (lookup + persist). */
@@ -192,40 +187,13 @@ function stateOf(record: StoredContact) {
 
 /**
  * Compose the consume seam. The caller (live-book-poll / headless deps) wires it behind the flag.
- *
- * LIFETIME: keep ONE seam for the session (a poll loop's long-lived dep, not a per-envelope build):
- * the R2a held-payload table lives on the instance — a seam rebuilt between polls silently drops
- * what the unreadable-book window held. Memory-only by contract (never a plaintext persist), so a
- * restart still loses a held payload — bounded and documented, never a write.
+ * The seam is STATELESS (v1.10 R2b): a receiver-side hold is simply not acknowledged — the relay
+ * keeps the envelope and the next poll runs it again through this same route, so a seam rebuilt
+ * between polls loses nothing and no retry loop lives here.
  */
 export function makeLensSeam(deps: LensSeamDeps): LensSeam {
   const now = deps.now ?? (() => new Date().toISOString());
   const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
-
-  /**
-   * R2a/R2b — the HELD-PAYLOAD table. While the grant book reads unreadable, a MAC-VERIFIED
-   * payload is not applied (nothing may write the book: no floor save, no capability mark — the
-   * empty stand-in would be judged a floor of −1 and would then overwrite the real one). It is
-   * held here instead and retried after the next good read — a transient read error costs a
-   * delay, never a lost update and never a reset floor.
-   *
-   * Bounds (R2b): memory only (never a plaintext store), ONE entry per contact — the one with
-   * the highest seq — plus LENS_HELD_MAX_SENDERS across contacts; a contact cannot grow the
-   * hold by sending more. At apply time the held wire runs the FULL path again: a block,
-   * untrust or remove made after the hold discards it, and it is judged against the real floor.
-   */
-  const heldPayloads = new Map<string, { wire: LensWireBytes; seq: number }>();
-  let draining = false;
-
-  const holdPayload = (fp: string, wire: LensWireBytes, seq: number): void => {
-    const prev = heldPayloads.get(fp);
-    if (prev) {
-      if (seq > prev.seq) { prev.wire = wire; prev.seq = seq; } // one per contact: keep the highest seq
-      return;
-    }
-    if (heldPayloads.size >= LENS_HELD_MAX_SENDERS) return; // total cap — bounded drop, never grows
-    heldPayloads.set(fp, { wire, seq });
-  };
 
   const route = async (raw: LensWireBytes): Promise<LensAcceptResult> => {
     // Structural parse — only to learn the CLAIMED sender for the book lookup (still untrusted).
@@ -240,43 +208,11 @@ export function makeLensSeam(deps: LensSeamDeps): LensSeam {
     if (!opened.ok) return null; // bad MAC / malformed / self — silent drop (I-1/I-2)
     if (opened.kind !== LENS_KIND_HELLO && opened.kind !== LENS_KIND_METHODS) return null;
 
-    let book = await deps.loadGrants();
-    if (book.unreadable === true) {
-      holdPayload(claimed.fpSender, raw, opened.seq);
-      return { held: true };
-    }
-    // On the FIRST good read, held payloads retry — this sender's first, because they arrived
-    // before this wire: the floor must judge them first or the held one reads stale and an
-    // update that should have cost a delay is lost. `draining` stops a held wire from re-entering
-    // this block; each still does its own fresh book read above.
-    if (!draining && heldPayloads.size > 0) {
-      draining = true;
-      try {
-        const order = [...heldPayloads.keys()].sort((a, b) => (a === claimed.fpSender ? -1 : b === claimed.fpSender ? 1 : 0));
-        for (const fp of order) {
-          const h = heldPayloads.get(fp);
-          if (!h) continue;
-          heldPayloads.delete(fp);
-          try {
-            await route(h.wire); // the FULL path again — R2b(c) re-gates the contact as it is NOW
-          } catch (err) {
-            if (!heldPayloads.has(fp)) heldPayloads.set(fp, h); // a write failing mid-drain keeps it held
-            throw err; // store I/O is retryable — the CURRENT envelope stays for the next poll too
-          }
-        }
-      } finally {
-        draining = false;
-      }
-      // The drain may have moved this sender's floor — or healed nothing. Re-read the book and
-      // re-check custody before this wire is judged: its stored `before` could be stale.
-      book = await deps.loadGrants();
-      if (book.unreadable === true) {
-        holdPayload(claimed.fpSender, raw, opened.seq);
-        return { held: true };
-      }
-      contact = await deps.store.lookup(claimed.fpSender);
-      if (!contact || !admitContact(contact.current)) return null;
-    }
+    const book = await deps.loadGrants();
+    // R2a/R2b (v1.10): the book unreadable is a RECEIVER-side hold — the payload is NOT
+    // acknowledged, the relay keeps it, and the next poll runs it through this route again
+    // (re-gated as-it-is-then: custody, MAC and the real seq floor — never the stand-in's).
+    if (book.unreadable === true) return { held: true };
 
     if (opened.kind === LENS_KIND_HELLO) {
       const next = markPeerCapable(book, claimed.fpSender);

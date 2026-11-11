@@ -64,7 +64,11 @@ test('item 6: the grant book is SEALED at rest — never plaintext localStorage'
   assert.match(write, /if \(!_sessionKey\) throw new Error\(/, 'write must throw when locked');
   assert.match(write, /encryptContactRecord\(_sessionKey, LENS_BOOK_RECORD_ID/, 'must seal via the AAD-bound contact-crypto path');
   const readFn = clientStore.slice(clientStore.indexOf('export async function readLensGrantBook('), clientStore.indexOf('export async function writeLensGrantBook('));
-  assert.match(readFn, /if \(!_sessionKey\) return null;/, 'locked read is fail-closed null (empty book)');
+  // v1.10 B1/A4: only a GENUINELY ABSENT record may read as null — locked, decrypt/tag failure,
+  // a non-string payload and a store error all THROW so the book reads unreadable, never empty.
+  assert.match(readFn, /if \(!_sessionKey\) throw/, 'locked read must throw (unreadable), never read as empty');
+  assert.match(readFn, /if \(!row\?\.value\) return null;/, 'only an absent record reads null');
+  assert.equal(/catch \{\s*return null;?\s*\}/.test(readFn), false, 'no catch-and-null — a failure is unreadable, not absent');
   assert.match(clientStore, /txPut\('settings', \{ key: lensBookSettingKey/, 'the record lives in the settings store');
   // exportAll reads identity + contacts (+ explicit named records) — never the settings store wholesale,
   // and the lens record is not one it names: the book cannot ride a backup.
@@ -73,10 +77,11 @@ test('item 6: the grant book is SEALED at rest — never plaintext localStorage'
   assert.equal(exportAll.includes("txGetAll('settings')"), false, 'exportAll must not dump the settings store');
 });
 
-test('item 6: with NO injected store the default sealed path reads empty when locked and THROWS on write', async () => {
-  // Locked session (no _sessionKey): read ⇒ empty book (zero methods go); write ⇒ throws, retryable,
-  // and nothing is written anywhere — no plaintext fallback.
-  assert.deepEqual(await loadLensGrants(OWNER), { v: 1, grants: {}, inSeq: {} });
+test('item 6: with NO injected store the default sealed path reads UNREADABLE when locked and THROWS on write', async () => {
+  // Locked session (no _sessionKey): the read itself throws inside the seam — the book loads
+  // UNREADABLE (R2a read-only), never an empty stand-in a save could overwrite (v1.10 B1).
+  // The filter still fails closed: zero methods go, and the write still throws — never plaintext.
+  assert.deepEqual(await loadLensGrants(OWNER), { v: 1, grants: {}, inSeq: {}, unreadable: true });
   await assert.rejects(() => saveLensGrants(OWNER, emptyBook()), /Session locked|unencrypted/);
 });
 

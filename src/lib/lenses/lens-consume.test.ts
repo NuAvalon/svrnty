@@ -360,14 +360,13 @@ test('R3-E3: re-sending the SAME value keeps the earlier changed mark and its "W
   assert.equal(lm[key].was, 'A', 'the changed mark stands across a re-send of the new value');
 });
 
-// ---------- lenses v1.9 review-4: R2a (unreadable book = read-only) + R2b (held bounds) ----------
+// ---------- lenses v1.10 review-5: R2a (unreadable book = read-only) + R2b (held = unacked, relay-retained) ----------
 
-import { LENS_HELD_MAX_SENDERS } from './lens-consume';
 
 const S2 = 'd'.repeat(64);
 
 /** A seam whose grant-book reads and contact lookup the test controls (heal = flip the loader).
- *  persist writes back into the contact map and onSave mirrors a real book store — a drain's
+ *  persist writes back into the contact map and onSave mirrors a real book store — a
  *  floor save is visible to the next read, as in production. */
 function seamHarness(r: Awaited<ReturnType<typeof mintHybridRecipient>>, opts: {
   contacts?: Map<string, StoredContact>;
@@ -421,7 +420,7 @@ test('R2a: a received HELLO while unreadable is held too — no capability mark 
   assert.equal(savedBooks.length, 0, 'the markPeerCapable write must not land on the unreadable stand-in');
 });
 
-test('R2a contract case: one transient read error — held payloads retry on the next good read, replay judged vs the REAL floor', async () => {
+test('R2a contract case (v1.10): a transient read error — the envelope is NOT acked and re-runs on the next poll; replay is judged vs the REAL floor', async () => {
   const r = await mintHybridRecipient();
   // The REAL stored book: S2's floor is 50 (a replayed seq 10 must never read as fresh against it).
   let stored: LensGrantBook = { v: 1, grants: {}, inSeq: { [S2]: 50 } };
@@ -432,26 +431,30 @@ test('R2a contract case: one transient read error — held payloads retry on the
     loadGrants: () => (bad ? { v: 1, grants: {}, inSeq: {}, unreadable: true } : stored),
     onSave: (b) => { stored = b; },
   });
-  // Unreadable window: a replayed payload (seq 10 < real floor 50) and a fresh one (seq 60).
-  assert.deepEqual(await take(seam, methodsWire(r, S2, 10, '@old'), r), { held: true });
-  assert.deepEqual(await take(seam, methodsWire(r, SENDER, 60, '@new'), r), { held: true });
+  const replay = methodsWire(r, S2, 10, '@old');   // seq 10 < real floor 50
+  const fresh = methodsWire(r, SENDER, 60, '@new'); // seq 60 is fresh
+  assert.deepEqual(await take(seam, replay, r), { held: true });
+  assert.deepEqual(await take(seam, fresh, r), { held: true });
   assert.equal(savedBooks.length, 0, 'byte-identical: nothing was saved while the book was unreadable');
   assert.equal(persisted.length, 0);
-  // Heal + next good read (a hello from S2 triggers it): the held payloads drain first —
-  // seq 60 applies, the seq-10 replay is judged STALE against the real floor 50, never saved at 10.
+  // Heal. The relay re-delivers in order: the replay is judged STALE against the real floor,
+  // the fresh payload applies once. Three polls → one apply, and no dead-letter row.
   bad = false;
-  const poke = helloWire(r, S2);
-  assert.deepEqual(await take(seam, poke, r), { hello: true });
-  assert.equal(persisted.length, 1, 'the held fresh payload applied after the good read');
+  assert.deepEqual(await take(seam, replay, r), { stale: true });
+  const res = await take(seam, fresh, r);
+  assert.ok(res && 'applied' in res);
+  assert.equal(persisted.length, 1, 'exactly one apply');
   const lm = (persisted[0].changes.contact_info as Record<string, unknown>).lens_methods as Record<string, { value: string }>;
   assert.equal(lm[lensMethodKey({ kind: 'signal' })].value, '@new');
   const final = savedBooks.at(-1)!;
   assert.equal(final.inSeq![SENDER], 60, 'the held payload floored at its real seq');
   assert.equal(final.inSeq![S2], 50, 'the replayed seq never overwrote the real floor');
-  assert.equal(final.grants[S2]?.capable, true, 'the triggering hello marked S2 capable');
+  // A third poll of the same envelope is a benign stale — not a second apply.
+  assert.deepEqual(await take(seam, fresh, r), { stale: true });
+  assert.equal(persisted.length, 1);
 });
 
-test('R2a: a held HELLO drains before the same sender’s newer wire — floor order is kept', async () => {
+test('R2a (v1.10): a held HELLO re-delivered after the heal applies before the same sender’s newer wire — delivery order decides', async () => {
   const r = await mintHybridRecipient();
   let stored: LensGrantBook = { v: 1, grants: {}, inSeq: {} };
   let bad = true;
@@ -459,87 +462,60 @@ test('R2a: a held HELLO drains before the same sender’s newer wire — floor o
     loadGrants: () => (bad ? { v: 1, grants: {}, inSeq: {}, unreadable: true } : stored),
     onSave: (b) => { stored = b; },
   });
-  assert.deepEqual(await take(seam, helloWire(r, SENDER), r), { held: true });
+  const hello = helloWire(r, SENDER);
+  assert.deepEqual(await take(seam, hello, r), { held: true });
   bad = false;
-  // A newer wire from the same sender: its seq must floor AFTER the held hello applies.
+  assert.deepEqual(await take(seam, hello, r), { hello: true }, 'the held hello applies on re-delivery');
   const res = await take(seam, methodsWire(r, SENDER, NOW, '@x'), r);
   assert.ok(res && 'applied' in res);
   const final = savedBooks.at(-1)!;
-  assert.equal(final.grants[SENDER]?.capable, true, 'the held hello applied during the drain — the signal was not lost');
+  assert.equal(final.grants[SENDER]?.capable, true, 'the held hello marked capable — the signal was not lost');
   assert.equal(final.inSeq![SENDER], NOW);
   assert.equal(persisted.length, 1);
 });
 
-test('R2b(b): one held payload per contact — the HIGHEST seq is kept', async () => {
+test('R2b (v1.10): the seam is STATELESS — a fresh instance re-runs a held envelope and loses nothing (restart-proof)', async () => {
   const r = await mintHybridRecipient();
   let stored: LensGrantBook = { v: 1, grants: {}, inSeq: {} };
   let bad = true;
-  const contacts = new Map([[SENDER, contact()], [S2, contact({ id: 'c2', fingerprint: S2, name: 'Two' })]]);
-  const { seam, savedBooks, persisted } = seamHarness(r, {
-    contacts,
+  const opts: { loadGrants: () => LensGrantBook; onSave: (b: LensGrantBook) => void } = {
     loadGrants: () => (bad ? { v: 1, grants: {}, inSeq: {}, unreadable: true } : stored),
     onSave: (b) => { stored = b; },
-  });
-  // Unreadable window: seq 10, then a LOWER seq 5, then seq 15 — only seq 15 may survive the hold.
-  assert.deepEqual(await take(seam, methodsWire(r, SENDER, 10, 'A'), r), { held: true });
-  assert.deepEqual(await take(seam, methodsWire(r, SENDER, 5, 'B'), r), { held: true });
-  assert.deepEqual(await take(seam, methodsWire(r, SENDER, 15, 'C'), r), { held: true });
+  };
+  const wire = methodsWire(r, SENDER, NOW, '@x');
+  assert.deepEqual(await take(seamHarness(r, opts).seam, wire, r), { held: true });
   bad = false;
-  await take(seam, helloWire(r, S2), r); // any admitted wire triggers the drain on the good read
-  assert.equal(persisted.length, 1, 'exactly one payload applied for the contact — not three');
-  const lm = (persisted[0].changes.contact_info as Record<string, unknown>).lens_methods as Record<string, { value: string }>;
-  assert.equal(lm[lensMethodKey({ kind: 'signal' })].value, 'C', 'the highest seq wins the single held slot');
-  assert.equal(savedBooks.at(-1)!.inSeq![SENDER], 15);
+  // A rebuilt seam (restart between polls) has no table to lose — the relay copy is the hold.
+  const res = await take(seamHarness(r, opts).seam, wire, r);
+  assert.ok(res && 'applied' in res, 'the re-delivered envelope applies on a brand-new seam');
 });
 
-test('R2b(b): the hold is bounded ACROSS contacts — a sender cannot grow it past the cap', async () => {
+test('R2b (v1.10): an UNVERIFIED payload never reaches the hold — a bad MAC drops silent, the book is not even read', async () => {
   const r = await mintHybridRecipient();
-  let bad = true;
-  const contacts = new Map<string, StoredContact>();
-  const fps: string[] = [];
-  for (let i = 0; i < LENS_HELD_MAX_SENDERS + 1; i++) {
-    const fp = i.toString(16).padStart(64, '0');
-    fps.push(fp);
-    contacts.set(fp, contact({ id: `c${i}`, fingerprint: fp, name: `S${i}` }));
-  }
-  const { seam, persisted } = seamHarness(r, {
-    contacts,
-    loadGrants: () => (bad ? { v: 1, grants: {}, inSeq: {}, unreadable: true } : { v: 1, grants: {}, inSeq: {} }),
-  });
-  for (const fp of fps) {
-    assert.deepEqual(await take(seam, methodsWire(r, fp, 1, `@${fps.indexOf(fp)}`), r), { held: true });
-  }
-  bad = false;
-  await take(seam, methodsWire(r, fps[0], 2, '@poke'), r); // trigger the drain
-  const appliedIds = new Set(persisted.map((p) => p.id));
-  const overflow = `c${LENS_HELD_MAX_SENDERS}`; // the (cap+1)-th sender — dropped at the bound
-  assert.equal(appliedIds.has(overflow), false, 'the hold never grows past LENS_HELD_MAX_SENDERS');
-  assert.equal(appliedIds.size >= LENS_HELD_MAX_SENDERS, true, 'the bounded hold itself still drains');
+  let readCalls = 0;
+  const { seam } = seamHarness(r, { loadGrants: () => { readCalls++; return { v: 1, grants: {}, inSeq: {}, unreadable: true }; } });
+  const forged = buildLensCell({ kind: LENS_KIND_METHODS, fpSender: SENDER, fpReceiver: r.fingerprint, seq: NOW, body: encodeLensMethodsBody([{ kind: 'signal', value: '@forged' }]), sPair: randomBytes(32) }); // wrong pair key — MAC fails
+  assert.equal(await take(seam, forged, r), null);
+  assert.equal(readCalls, 0, 'the book is not consulted for an unverified wire');
 });
 
-test('R2a: a drain that fails mid-apply re-holds the payload — nothing is lost, the next good read retries', async () => {
+test('R2b (v1.10): a write failing mid-apply keeps the envelope for retry — the same wire applies on the next poll', async () => {
   const r = await mintHybridRecipient();
   let stored: LensGrantBook = { v: 1, grants: {}, inSeq: {} };
-  let bad = true;
   let failSave = true;
-  const { seam, savedBooks, persisted } = seamHarness(r, {
-    loadGrants: () => (bad ? { v: 1, grants: {}, inSeq: {}, unreadable: true } : stored),
+  const { seam, savedBooks } = seamHarness(r, {
+    loadGrants: () => stored,
     onSave: (b) => { if (failSave) throw new Error('sealed store I/O'); stored = b; },
   });
-  assert.deepEqual(await take(seam, methodsWire(r, SENDER, NOW, '@x'), r), { held: true });
-  bad = false;
-  // First good read: the drain reaches saveGrants and the store throws — retryable.
-  await assert.rejects(take(seam, helloWire(r, SENDER), r));
-  assert.equal(persisted.length >= 1, true, 'the apply may have persisted before the floor save threw');
-  // The envelope is left for retry by the consume loop; the NEXT take drains the re-held wire.
+  const wire = methodsWire(r, SENDER, NOW, '@x');
+  await assert.rejects(take(seam, wire, r), /sealed store I\/O/, 'the consume loop leaves a throwing envelope for retry');
   failSave = false;
-  assert.deepEqual(await take(seam, helloWire(r, SENDER), r), { hello: true });
-  const final = savedBooks.at(-1)!;
-  assert.equal(final.inSeq![SENDER], NOW, 'the held wire applied on the retry — judged against the real floor');
-  assert.equal(final.grants[SENDER]?.capable, true);
+  const res = await take(seam, wire, r);
+  assert.ok(res && 'applied' in res, 'nothing is lost — the retried envelope applies');
+  assert.equal(savedBooks.at(-1)!.inSeq![SENDER], NOW);
 });
 
-test('R2b(c): a contact blocked AFTER the hold discards the held payload at apply time', async () => {
+test('R2b(c) (v1.10): a contact blocked in the window gives the SAME outcome for the held wire and a live wire', async () => {
   const r = await mintHybridRecipient();
   let bad = true;
   const contacts = new Map([[SENDER, contact()], [S2, contact({ id: 'c2', fingerprint: S2, name: 'Two' })]]);
@@ -547,10 +523,11 @@ test('R2b(c): a contact blocked AFTER the hold discards the held payload at appl
     contacts,
     loadGrants: () => (bad ? { v: 1, grants: {}, inSeq: {}, unreadable: true } : { v: 1, grants: {}, inSeq: {} }),
   });
-  assert.deepEqual(await take(seam, methodsWire(r, SENDER, NOW, '@x'), r), { held: true });
-  contacts.set(SENDER, contact({ blocked: true } as Partial<StoredContact>)); // blocked after the hold
+  const held = methodsWire(r, SENDER, NOW, '@x');
+  assert.deepEqual(await take(seam, held, r), { held: true });
+  contacts.set(SENDER, contact({ blocked: true } as Partial<StoredContact>)); // blocked in the window
   bad = false;
-  await take(seam, methodsWire(r, S2, NOW, '@ok'), r); // an admitted wire triggers the drain
-  assert.equal(persisted.length, 1, 'only the admitted sender applied');
-  assert.equal(persisted[0].id, 'c2', 'the blocked contact’s held payload was discarded, not applied');
+  assert.equal(await take(seam, held, r), null, 'the held wire drops at re-delivery — custody re-gated as-now');
+  assert.equal(await take(seam, methodsWire(r, SENDER, NOW + 10, '@y'), r), null, 'a live wire gets the identical outcome');
+  assert.equal(persisted.length, 0, 'nothing from the blocked sender applies');
 });

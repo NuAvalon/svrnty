@@ -225,7 +225,7 @@ export interface LensResponseSeam {
     | { applied: true; id: string; fingerprint: string; ignited: boolean }
     | { hello: true }
     | { stale: true }
-    | { held: true } // R2a: book unreadable — MAC-verified payload HELD in-session, retried on the next good read
+    | { held: true } // R2b (v1.10): receiver-side hold — NOT acknowledged; the relay keeps the envelope and the next poll re-runs it
     | { refused: 'method-cap' | 'shared-slot'; fingerprint: string } // R8a: MAC-verified refusals, own reasons
     | null
   >;
@@ -1096,9 +1096,10 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         }
         if (res && 'hello' in res) return { kind: 'terminal', cls: { benign: 'lens-hello' } };
         if (res && 'stale' in res) return { kind: 'terminal', cls: { benign: 'lens-stale' } };
-        // R2a: a payload HELD while the grant book was unreadable is kept in-session and retried
-        // after the next good read — consumed without a loss (its own benign terminal).
-        if (res && 'held' in res) return { kind: 'terminal', cls: { benign: 'lens-held' } };
+        // R2b (v1.10): a receiver-side hold is NOT acknowledged and writes NOTHING — no dead-letter
+        // row, no repaint, no status. 'retryable' (not 'held', which would stage a row) leaves the
+        // envelope on the relay under its own bounds; the next poll re-runs it through this route.
+        if (res && 'held' in res) return { kind: 'retryable' };
         // R8a: a MAC-VERIFIED refusal is never 'unverified-frame' — each refusal carries its own
         // reason. NO fingerprint is stored: the lens pair-MAC is classical-only, so these reasons
         // are NOT in AUTHENTICATED_REASONS — the stopped state names the contact through the seam.
