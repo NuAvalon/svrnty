@@ -432,9 +432,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   }
 
   const NO_RETRY = new Set(['wire', 'vkey', 'proof', 'usage']);   // + every 'point:*' — the client produced a bad body
-  const transient = (a: Answer) =>
-    a.kind === 'busy' || a.kind === 'unreadable' ||
-    (a.kind === 'refused' && ['full', 'rate', 'internal', 'timeout', 'epoch'].includes(a.reason));
   const hexToBytes = (h: string) => Uint8Array.from(h.match(/../g)!.map((b) => parseInt(b, 16)));
   const bytesToHex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 
