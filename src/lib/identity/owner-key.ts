@@ -28,9 +28,11 @@ export class OwnerKeyError extends Error {
   }
 }
 
-// What a fingerprint looks like today: 40-hex (legacy OpenPGP) or 64-hex (canonical), either case. Used only to refuse a malformed ALIAS; an
-// argument that is not in an alias entry is returned untouched whatever it looks like.
-const SHAPE = /^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$/;
+// Shapes, used only to refuse a malformed ALIAS; an argument that is not in an alias entry is returned untouched whatever it looks like.
+// The durable id is the DID anchor: always 64 LOWERCASE hex. An alias KEY is an operational fingerprint, lowercase 40 or 64 hex: the same
+// fingerprint in two cases would otherwise be two different keys.
+const DURABLE_SHAPE = /^[0-9a-f]{64}$/;
+const ALIAS_KEY_SHAPE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 /**
  * The storage key for the owner whose active (operational) fingerprint is `fingerprint`.
@@ -40,7 +42,7 @@ export function ownerStoreKey(fingerprint: string, aliases?: OwnerAliases): stri
   if (typeof fingerprint !== 'string' || fingerprint.length === 0) throw new OwnerKeyError('bad-fingerprint');
   if (aliases === undefined || !aliases.has(fingerprint)) return fingerprint;
   const durable = aliases.get(fingerprint);
-  if (typeof durable !== 'string' || !SHAPE.test(durable) || durable === fingerprint) throw new OwnerKeyError('bad-alias');
+  if (typeof durable !== 'string' || !DURABLE_SHAPE.test(durable) || durable === fingerprint) throw new OwnerKeyError('bad-alias');
   if (aliases.has(durable)) throw new OwnerKeyError('alias-chain'); // a durable id is terminal
   return durable;
 }
@@ -50,7 +52,7 @@ export function ownerStoreKey(fingerprint: string, aliases?: OwnerAliases): stri
  * existing alias to a different durable id, aliasing a durable id, or using a fingerprint that is already some entry's durable id is refused.
  */
 export function withOwnerAlias(aliases: OwnerAliases | undefined, operationalFp: string, durableId: string): OwnerAliases {
-  if (typeof operationalFp !== 'string' || !SHAPE.test(operationalFp) || typeof durableId !== 'string' || !SHAPE.test(durableId) || operationalFp === durableId) {
+  if (typeof operationalFp !== 'string' || !ALIAS_KEY_SHAPE.test(operationalFp) || typeof durableId !== 'string' || !DURABLE_SHAPE.test(durableId) || operationalFp === durableId) {
     throw new OwnerKeyError('bad-alias');
   }
   const base = aliases ?? new Map<string, string>();

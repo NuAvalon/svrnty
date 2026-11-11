@@ -42,6 +42,16 @@ test('O3 malformed input and malformed maps are refused with a reason code, neve
   assert.equal(reason(() => ownerStoreKey(f1, new Map([[f1, d], [d, hex64()]]))), 'alias-chain', 'a durable id is terminal: never followed twice');
   assert.equal(reason(() => ownerStoreKey('__proto__', new Map())), 'no-throw', 'a prototype name is just a string');
   assert.equal(ownerStoreKey('__proto__', new Map()), '__proto__');
+  // Flint #7356: the durable id is 64 LOWERCASE hex; alias keys are lowercase 40 or 64 hex
+  assert.equal(reason(() => withOwnerAlias(undefined, f1, d.toUpperCase())), 'bad-alias', 'an upper-case durable id');
+  assert.equal(reason(() => withOwnerAlias(undefined, f1, hex40())), 'bad-alias', 'a 40-hex durable id');
+  assert.equal(reason(() => withOwnerAlias(undefined, f1, d.slice(0, 63))), 'bad-alias', 'a 63-hex durable id');
+  assert.equal(reason(() => withOwnerAlias(undefined, f1.toUpperCase(), d)), 'bad-alias', 'an upper-case alias key');
+  assert.equal(reason(() => withOwnerAlias(undefined, f1.slice(0, 50), d)), 'bad-alias', 'an alias key that is neither 40 nor 64 hex');
+  assert.equal(reason(() => ownerStoreKey(f1, new Map([[f1, d.toUpperCase()]]))), 'bad-alias', 'a hand-built map with an upper-case durable value');
+  assert.equal(reason(() => ownerStoreKey(f1, new Map([[f1, hex40()]]))), 'bad-alias', 'a hand-built map with a 40-hex durable value');
+  const k40 = hex40();
+  assert.equal(ownerStoreKey(k40, withOwnerAlias(undefined, k40, d)), d, 'a lowercase 40-hex operational fingerprint is a valid alias key');
   // building a map
   assert.equal(reason(() => withOwnerAlias(undefined, f1, f1)), 'bad-alias');
   assert.equal(reason(() => withOwnerAlias(undefined, 'zz', d)), 'bad-alias');
