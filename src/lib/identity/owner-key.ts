@@ -19,7 +19,7 @@
 /** operational fingerprint -> durable id. A Map, so no key can reach a prototype. */
 export type OwnerAliases = ReadonlyMap<string, string>;
 
-export type OwnerKeyReason = 'bad-fingerprint' | 'bad-alias' | 'alias-chain' | 'alias-conflict';
+export type OwnerKeyReason = 'bad-fingerprint' | 'bad-alias' | 'alias-chain' | 'alias-conflict' | 'not-loaded';
 
 export class OwnerKeyError extends Error {
   constructor(public readonly reason: OwnerKeyReason) {

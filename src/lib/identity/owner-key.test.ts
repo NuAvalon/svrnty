@@ -127,7 +127,7 @@ test('O7 pure: no imports, no clock, no randomness, no storage, no network', () 
   for (const bad of ['Date.now', 'new Date', 'Math.random', 'getRandomValues', 'randomBytes', 'fetch(', 'indexedDB', 'localStorage', 'process.', 'setTimeout', 'require(', 'import(']) assert.ok(!src.includes(bad), 'must not use ' + bad);
 });
 
-test('O8 dark: nothing outside tests imports owner-key yet', () => {
+test('O8 dark: nothing outside tests imports owner-key yet, except the session module (by exact path)', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const hits: string[] = [];
   const walk = (d: string) => {
@@ -135,7 +135,7 @@ test('O8 dark: nothing outside tests imports owner-key yet', () => {
       if (n === 'node_modules' || n === '.next' || n === '.git') continue;
       const p = join(d, n); const st = statSync(p);
       if (st.isDirectory()) { walk(p); continue; }
-      if (!/\.(ts|tsx|mjs|js)$/.test(n) || /\.test\.|\.spec\./.test(n) || p.endsWith('/src/lib/identity/owner-key.ts')) continue;
+      if (!/\.(ts|tsx|mjs|js)$/.test(n) || /\.test\.|\.spec\./.test(n) || p.endsWith('/src/lib/identity/owner-key.ts') || p.endsWith('/src/lib/identity/owner-key-session.ts')) continue; // the session module is the one consumer, itself guarded dark by its own test
       if (/from ['"][^'"]*owner-key['"]/.test(readFileSync(p, 'utf8'))) hits.push(p);
     }
   };
