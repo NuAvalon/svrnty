@@ -574,7 +574,14 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         // L6b: the durable queue entry commits BEFORE the withdraw fetch leaves.
         queueWithdraw(rec, row.rowId, 0);
         await commit(rec);
-        if ((await withdrawRow(rec, row)) === 'done') unqueueWithdraw(rec, row.rowId, row.epoch);
+        if ((await withdrawRow(rec, row)) === 'done') {
+          unqueueWithdraw(rec, row.rowId, row.epoch);
+          // review-10: withdrawRow's 'done' mutations (row state, spentEpochs, observedMatch and
+          // firstMatchEpoch on a match) and the released seed need their own commit — renew only
+          // commits when closeEpochs reports a change, so without this the store keeps the row
+          // standing with a queued withdraw for a seed that no longer exists.
+          await commit(rec);
+        }
         return 'latched';
       }
       await commit(rec);

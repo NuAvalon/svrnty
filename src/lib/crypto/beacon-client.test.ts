@@ -2326,11 +2326,13 @@ test('L15c: the latch restore is decided from the SAME stored read — a newer T
     return f1.fetch(url, init);
   };
   const h1 = harness({ store: w1, latch: sharedLatch, fetch: f1x as any });
-  let armed = false, interleaved = false;
+  let armed = false, interleaved = false, post = 0;
   const origCas = shared.cas;
   w1.cas = async (p, v, n) => {
     const done = await origCas(p, v, n);
-    if (done && f1.calls.length >= 3) armed = true;         // the post-withdraw commit is the last write
+    // two post-withdraw commits write AFTER the last fetch — depositEpoch's withdraw-done
+    // commit (review-10) then trustAtTap's own; the decision read is the first get after the 2nd.
+    if (done && f1.calls.length >= 3 && ++post === 2) armed = true;
     return done;
   };
   w1.get = async (p: string) => {
@@ -2971,4 +2973,48 @@ test("R9-B a stop-path re-queue whose own copy diverges from stored: queueWithdr
   const w = (await s.get('pair-1'))!.pendingWithdraws[0];
   assert.equal(w.attempts, 2, 'the copy kept its attempts: max(2, 0), never reset by the re-queue');
   assert.equal(w.nextAt, MID - 1, 'the copy kept its due time: min(MID-1, MID+5_000), never postponed');
+});
+
+// ---------- review-10: the stopped-deposit withdraw's mutations must reach the store ----------
+
+test('R10: a Remove commits while a renew deposit is in flight; accepted + match -> the STORED record carries the withdraw-done state', async () => {
+  const s = memStore();
+  const l = memLatch();
+  const f2 = makeFetch();
+  let armed = false, injected = false;
+  const { client } = harness({
+    store: s, latch: l,
+    fetch: ((url: string, init: any) => {
+      // A concurrent Remove's commit lands while THIS deposit answer is in flight.
+      if (armed && !injected && url.endsWith('/deposit')) {
+        injected = true;
+        l.remote.set('pair-1', 'removed');                       // the latch leg arrives with it
+        const d = s.data.get('pair-1')!;                          // removeCommitBody's write: un-trust the tap…
+        d.tap = { gen: (d.tap?.gen ?? 0) + 1, trust: false };
+        d.firstMatchEpoch = null;                                 // …tombstone the match clock…
+        d.pendingWithdraws.push({ rowId: 'row-1', attempts: 0, nextAt: MID });  // …queue a withdraw for the live row…
+        d.version = (d.version ?? 0) + 1;                         // …commit
+      }
+      return f2.fetch(url, init);
+    }) as any,
+  });
+  f2.queue.push({ throw: true });                                 // answer lost -> 'unknown' row, seed pinned
+  await client.trustAtTap('pair-1');
+  assert.equal((await s.get('pair-1'))!.rows[0].rowId, 'row-1');
+  // a prior renew must run first: closeEpochs watermarks closedFloor on its first pass, and that
+  // commit would carry the in-memory withdraw-done state — the defect only shows once renew's
+  // own closeEpochs reports no change (Athena's scenario).
+  f2.queue.push({ throw: true });                                 // the retry's answer lost again -> still 'unknown'
+  await client.renew('pair-1');
+  assert.equal((await s.get('pair-1'))!.closedFloor, '2998');
+  armed = true;
+  f2.queue.push(ok('accepted'), nonceOk(NONCE_A), ok('match'));   // the renew's deposit; the withdraw's nonce+match
+  await client.renew('pair-1');
+  const rec = (await s.get('pair-1'))!;                            // the STORED record, not the in-memory one
+  assert.equal(rec.observedMatch, true);
+  assert.equal(rec.rows.find((rw) => rw.rowId === 'row-1')!.state, 'matched');
+  assert.equal(rec.pendingWithdraws.some((w) => w.rowId === 'row-1'), false, 'the queue entry is gone');
+  // 'match' does not spend the epoch — only 'withdrawn' pushes spentEpochs (beacon-client.ts:626);
+  // the epoch stays covered by the 'matched' row, which is the stored state the commit must carry.
+  assert.equal(rec.rows.filter((rw) => rw.epoch === String(EPOCH)).every((rw) => rw.state === 'matched'), true);
 });
