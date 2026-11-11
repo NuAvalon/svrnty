@@ -2612,3 +2612,208 @@ test('L6b: on the stopped path the durable queue entry lands BEFORE the withdraw
   assert.deepEqual(out, { kind: 'latched' });
   assert.equal(queuedBeforeSend, true, 'the queue entry must be durable before the withdraw fetch leaves');
 });
+
+// ---------- review 7: rule K + the seven blocking mutants + the G6 window ----------
+
+test("R7-K1 a deposit's stop-path queue never moves a Remove's due entry later (K)", async () => {
+  const f = makeFetch(), store = memStore(), latch = memLatch(), secrets = memSecrets(), prover = makeProver();
+  const mk = (fx: any) => createBeaconClient({ fetch: fx, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover,
+    now: () => MID, requestTimeoutMs: 200, backoffMs: () => 1000 });
+  f.queue.push({ status: 200, body: '{"status":"accepted"}', delayMs: 80 });
+  f.queue.push(nonceOk(NONCE_A), ok('none'));
+  const depositing = mk(f.fetch).trustAtTap('pair-1');              // write-ahead lands 'unknown', fetch parked
+  await new Promise((r) => setTimeout(r, 30));
+  f.queue.push(nonceOk(NONCE_A), ok('none'));
+  await mk(f.fetch).removeAtTap('pair-1');                          // queues the withdraw due-NOW, attempts 0
+  const queued = (await store.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(queued.attempts, 0); assert.equal(queued.nextAt, MID);
+  await depositing;                                                 // the answer reaches the stop path
+  const after = (await store.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(after.nextAt, queued.nextAt, 'the answer must not push the due entry back (K)');
+  assert.equal(after.attempts, queued.attempts, 'the answer must not reset attempts (K)');
+});
+
+test('R7-K2 a stop-path merge never lowers an entry with attempts > 0 (K)', async () => {
+  const f = makeFetch(), store = memStore(), latch = memLatch(), secrets = memSecrets(), prover = makeProver();
+  const mk = (fx: any) => createBeaconClient({ fetch: fx, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover,
+    now: () => MID, requestTimeoutMs: 200, backoffMs: () => 1000 });
+  f.queue.push({ status: 200, body: '{"status":"accepted"}', delayMs: 80 });
+  f.queue.push(nonceOk(NONCE_A), ok('none'));
+  const depositing = mk(f.fetch).trustAtTap('pair-1');
+  await new Promise((r) => setTimeout(r, 30));
+  f.queue.push(nonceOk(NONCE_A), ok('none'));
+  await mk(f.fetch).removeAtTap('pair-1');
+  store.data.get('pair-1')!.pendingWithdraws[0].attempts = 3;        // the queue entry is mid-retry
+  await depositing;                                                 // the answer reaches the stop path + merge
+  const w = (await store.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(w.attempts, 3, 'a stop must not reset attempts to 0 (K)');
+  assert.equal(w.nextAt, MID, 'a stop must not move the due time (K)');
+});
+
+test('R7-T1 L15c moved branch decides from the commitIntent read only — no second store read', async () => {
+  const base = memStore(), latch = memLatch();
+  latch.local.set('pair-1', 'removed');                             // the tap clears it -> clearedLocal true
+  const recs = [
+    { pairId: 'pair-1', version: 1, tap: { gen: 0, trust: false }, rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+    { pairId: 'pair-1', version: 2, tap: { gen: 0, trust: false }, rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+    { pairId: 'pair-1', version: 3, tap: { gen: 5, trust: false }, rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+    { pairId: 'pair-1', version: 4, tap: { gen: 6, trust: true },  rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+  ];
+  let n = 0;
+  const store = { ...base, data: base.data,
+    get: async (p: string) => JSON.parse(JSON.stringify(recs[Math.min(n++, recs.length - 1)])) } as any;
+  const client = createBeaconClient({ fetch: makeFetch().fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets: memSecrets(), prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  const out = await client.trustAtTap('pair-1');
+  assert.equal(out.kind, 'latched', 'the decision must come from the moved read (trust false there), not a second get');
+  assert.equal(latch.local.get('pair-1'), 'removed', 'our own cleared latch is restored on yield');
+});
+
+test('R7-T2 L15 moved branch: no latch restore when this tap cleared nothing', async () => {
+  const base = memStore(), latch = memLatch();                      // no 'removed' latch -> clearedLocal false
+  const recs = [
+    { pairId: 'pair-1', version: 1, tap: { gen: 0, trust: false }, rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+    { pairId: 'pair-1', version: 2, tap: { gen: 0, trust: false }, rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+    { pairId: 'pair-1', version: 3, tap: { gen: 5, trust: false }, rows: [], pendingWithdraws: [], spentEpochs: [], firstMatchEpoch: null },
+  ];
+  let n = 0;
+  const store = { ...base, data: base.data,
+    get: async (p: string) => JSON.parse(JSON.stringify(recs[Math.min(n++, recs.length - 1)])) } as any;
+  const client = createBeaconClient({ fetch: makeFetch().fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets: memSecrets(), prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  const out = await client.trustAtTap('pair-1');
+  assert.equal(out.kind, 'latched');
+  assert.equal(latch.local.has('pair-1'), false, 'a latch set by another writer must not be (re)asserted by us');
+});
+
+test('R7-T3 L6d second pass queues a row merged in by the Remove commit', async () => {
+  const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
+  const row1 = { rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' };
+  const row2 = { rowId: 'r2', epoch: String(EPOCH), H_e: '3', N: '4', state: 'unknown' };
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true },
+    rows: [row1], pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
+  let n = 0;
+  const store = { ...base, data: base.data, get: async (p: string) => {
+    n++;
+    if (n === 2) base.data.get(p)!.rows.push(row2);                 // lands between getRec and the intent CAS
+    return base.get(p);
+  } } as any;
+  f.setFallback({ throw: true });                                   // withdraws stay queued (unreadable)
+  const client = createBeaconClient({ fetch: f.fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  await client.removeAtTap('pair-1');
+  const q = (await store.get('pair-1'))!.pendingWithdraws;
+  assert.ok(q.some((w: any) => w.rowId === 'r2'), 'the merged-in row must be queued by the L6d pass');
+});
+
+test('R7-T4 L6d latch re-assert: a latch cleared after the Remove commit is re-asserted', async () => {
+  const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true },
+    rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' }],
+    pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
+  let n = 0;
+  const store = { ...base, data: base.data, get: async (p: string) => {
+    n++;
+    const r = await base.get(p);
+    if (n === 3) latch.local.delete('pair-1');                      // cleared between commit and return
+    return r;
+  } } as any;
+  f.setFallback({ throw: true });
+  const client = createBeaconClient({ fetch: f.fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  await client.removeAtTap('pair-1');
+  assert.equal(latch.local.get('pair-1'), 'removed', 'the L6d re-assert must leave the pair visibly removed');
+});
+
+test('R7-T5 L6d pass guard: a newer tap owns the pair — its rows are never queued', async () => {
+  const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true },
+    rows: [{ rowId: 'r1', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' }],
+    pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
+  let n = 0;
+  const store = { ...base, data: base.data, get: async (p: string) => {
+    n++;
+    if (n === 2) base.data.get(p)!.rows.push({ rowId: 'r2', epoch: String(EPOCH), H_e: '3', N: '4', state: 'standing' });
+    if (n === 4) {                                                  // a Trust wins between pass commits: gen5 true + r3
+      const d = base.data.get(p)!;
+      d.tap = { gen: 5, trust: true };
+      d.rows.push({ rowId: 'r3', epoch: String(EPOCH), H_e: '5', N: '6', state: 'unknown' });
+    }
+    return base.get(p);
+  } } as any;
+  f.setFallback({ throw: true });
+  const client = createBeaconClient({ fetch: f.fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  await client.removeAtTap('pair-1');
+  const q = (await store.get('pair-1'))!.pendingWithdraws;
+  assert.ok(!q.some((w: any) => w.rowId === 'r3'), "a newer tap's row must never be queued by the L6d pass");
+});
+
+test('R7-T6 L1: the latch is durable before the Remove commit (park the commit, read the latch)', async () => {
+  const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true }, rows: [],
+    pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
+  let n = 0, gate!: () => void;
+  const g = new Promise<void>((r) => (gate = r));
+  const store = { ...base, data: base.data, get: async (p: string) => {
+    n++; if (n === 2) await g;                                      // park inside the commit's first read
+    return base.get(p);
+  } } as any;
+  f.setFallback({ throw: true });
+  const client = createBeaconClient({ fetch: f.fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  const removing = client.removeAtTap('pair-1');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(latch.local.get('pair-1'), 'removed', 'L1: latch is durable before any commit/network');
+  gate(); await removing;
+});
+
+test('R7-T7 G11: commit() losing all 8 swaps throws and never falls back to put', async () => {
+  const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
+  base.data.set('pair-1', { pairId: 'pair-1', version: 7, tap: { gen: 2, trust: true },
+    rows: [{ rowId: 'rX', epoch: String(EPOCH), H_e: '1', N: '2', state: 'standing' }],
+    pendingWithdraws: [{ rowId: 'rX', attempts: 0, nextAt: MID - 1 }],
+    spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
+  secrets.rows.set('rX', { epoch: String(EPOCH), pk: new Uint8Array(32).fill(4), seed: new Uint8Array(32).fill(7) });
+  const store = { ...base, data: base.data, get: async (p: string) => {
+    const r = await base.get(p);
+    if (r) r.version = (r.version ?? 0) + 1;                        // every CAS loses: expected never matches stored
+    return r;
+  } } as any;
+  f.queue.push(nonceOk(NONCE_A), ok('done'));
+  const client = createBeaconClient({ fetch: f.fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  await assert.rejects(client.drainPendingWithdraws(), /CAS lost 8/);
+  const stored = base.data.get('pair-1')!;
+  assert.equal(stored.version, 7, 'no put may persist the merged record on a lost commit');
+  assert.equal(stored.pendingWithdraws.length, 1, 'the queue entry must not be retired by a failed commit');
+});
+
+test('R7-G6 a latch landing inside the write-ahead swap still stops the send (block kept)', async () => {
+  const base = memStore(), latch = memLatch(), secrets = memSecrets(), f = makeFetch();
+  base.data.set('pair-1', { pairId: 'pair-1', version: 1, tap: { gen: 1, trust: true }, rows: [],
+    pendingWithdraws: [], spentEpochs: [], refusedEpochs: [], deletedRows: [], deletedWithdraws: [], firstMatchEpoch: null });
+  let armed = true;
+  const store = { ...base, data: base.data, cas: async (p: string, v: number, next: any) => {
+    const r = await base.cas(p, v, next);
+    if (armed) { armed = false; latch.local.set('pair-1', 'removed'); }   // latch lands inside the swap
+    return r;
+  } } as any;
+  const client = createBeaconClient({ fetch: f.fetch as any, baseUrl: '/api/trust', latch,
+    confirmed: { isConfirmed: async () => true }, store, secrets, prover: makeProver(),
+    now: () => MID, requestTimeoutMs: 50, backoffMs: () => 0 });
+  const out = await client.trustAtTap('pair-1');
+  assert.equal(out.kind, 'latched');
+  assert.equal(f.calls.length, 0, 'the deposit fetch must never leave once the latch lands in the swap');
+  assert.equal(secrets.released.length, 1, 'the fresh minted seed is released on the G6 stop');
+  assert.equal((await store.get('pair-1'))!.rows.length, 0, 'the fresh mint is dropped, never queued');
+});

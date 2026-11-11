@@ -260,7 +260,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     }
     const delW = new Set([...(cur.deletedWithdraws ?? []), ...(ours.deletedWithdraws ?? [])].map((t) => t.id));
     const wds = new Map(cur.pendingWithdraws.filter((w) => !delW.has(w.rowId)).map((w) => [w.rowId, w]));
-    for (const w of ours.pendingWithdraws.filter((w) => !delW.has(w.rowId))) wds.set(w.rowId, w);
+    for (const w of ours.pendingWithdraws.filter((w) => !delW.has(w.rowId))) {
+      // K at merge: an entry only ever gets more urgent / more retried — whichever copy holds the
+      // earlier due time or the higher attempts wins the row.
+      const ex = wds.get(w.rowId);
+      wds.set(w.rowId, ex ? { rowId: w.rowId, attempts: Math.max(ex.attempts, w.attempts), nextAt: Math.min(ex.nextAt, w.nextAt) } : w);
+    }
     const { tap, clock } = mergeTap(ours, cur);
     const dedup = (a: RowTombstone[] = [], b: RowTombstone[] = []) =>
       [...new Map([...a, ...b].map((t) => [t.id, t])).values()];
@@ -650,10 +655,15 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     return dirty;
   }
 
+  /** K: an existing entry only ever gets MORE urgent / more retried — a competing queue-write
+   * (depositEpoch's stop paths) never postpones a due entry and never resets its attempts. The
+   * drain's own retry reschedule (drainPendingWithdraws) writes nextAt/attempts directly — it is
+   * the queue's scheduler, not a competing writer. */
   const queueWithdraw = (rec: PairRecord, rowId: string, attempts: number) => {
     const due = now() + backoff(attempts);
     const ex = rec.pendingWithdraws.find((w) => w.rowId === rowId);
-    if (ex) { ex.attempts = attempts; ex.nextAt = due; } else rec.pendingWithdraws.push({ rowId, attempts, nextAt: due });
+    if (ex) { ex.attempts = Math.max(ex.attempts, attempts); ex.nextAt = Math.min(ex.nextAt, due); }
+    else rec.pendingWithdraws.push({ rowId, attempts, nextAt: due });
   };
   /** L6e: the withdraws a Remove queues are due NOW — backoff applies from the first RETRY, never
    * the first attempt. Queues made by a deposit path after a send keep their backoff. */
@@ -1002,7 +1012,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
           const before = rec.observedMatch;
           const out = await withdrawRow(rec, row);
           dirty = dirty || out === 'done' || rec.observedMatch !== before;
-          if (out === 'queued') queueWithdraw(rec, w.rowId, w.attempts + 1);
+          if (out === 'queued') { w.attempts += 1; w.nextAt = now() + backoff(w.attempts); }   // the drain's own reschedule
           else unqueueWithdraw(rec, w.rowId, row.epoch);
         }
         if (await closeEpochs(rec)) dirty = true;
