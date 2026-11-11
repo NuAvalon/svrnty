@@ -531,3 +531,18 @@ test('R2b(c) (v1.10): a contact blocked in the window gives the SAME outcome for
   assert.equal(await take(seam, methodsWire(r, SENDER, NOW + 10, '@y'), r), null, 'a live wire gets the identical outcome');
   assert.equal(persisted.length, 0, 'nothing from the blocked sender applies');
 });
+
+test('R2b-T1 (v1.10): an UNREADABLE book changes nothing for a blocked sender or a stranger — null, and the book is never read', async () => {
+  const r = await mintHybridRecipient();
+  let readCalls = 0;
+  const contacts = new Map([[SENDER, contact({ blocked: true } as Partial<StoredContact>)]]);
+  const { seam } = seamHarness(r, {
+    contacts,
+    loadGrants: () => { readCalls++; return { v: 1, grants: {}, inSeq: {}, unreadable: true }; },
+  });
+  // kills the mutant `if (!admitContact(c)) return (await loadGrants()).unreadable ? {held:true} : null`
+  assert.equal(await take(seam, methodsWire(r, SENDER, NOW, '@x'), r), null, 'a blocked sender drops at custody — before the book is read');
+  contacts.delete(SENDER);                                    // a stranger: the lookup finds nothing
+  assert.equal(await take(seam, methodsWire(r, SENDER, NOW, '@x'), r), null, 'a stranger drops at lookup — before the book is read');
+  assert.equal(readCalls, 0, 'neither custody drop may consult the book');
+});

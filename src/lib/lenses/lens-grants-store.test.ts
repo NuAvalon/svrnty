@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   initSessionKey, lockSession, readLensGrantBook, writeLensGrantBook,
 } from '../identity/client-store';
+import { encryptContactRecord } from '../identity/contact-crypto';
 import { loadLensGrants, saveLensGrants, type LensGrantBook } from './lens-grants';
 
 const OWNER = 'c'.repeat(64);
@@ -150,4 +151,23 @@ test('B1: a STORE ERROR reads UNREADABLE — transient faults can never stand in
   failOpens = true;
   assert.equal((await loadLensGrants(OWNER)).unreadable, true);
   await assert.rejects(() => readLensGrantBook(OWNER));
+});
+
+test('B1/T2: a sealed NON-STRING payload reads UNREADABLE — and a refused save leaves the bytes identical', async () => {
+  await initSessionKey('pw');
+  // Seal an OBJECT under the book's AAD id — a well-formed row whose decrypted payload is not a
+  // book string at all. Kills the mutant `if (typeof rec !== 'string') return null` (absent→empty).
+  const saltRow = [...stores.get('settings')!.rows.values()].find((v) => (v as { key: string }).key === 'key_encryption_salt') as { value: string };
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode('pw'), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: Buffer.from(saltRow.value, 'base64'), iterations: 600_000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
+  );
+  const payload = await encryptContactRecord(key, 'lenses:grant-book', OWNER, { not: 'a book string' });
+  stores.get('settings')!.rows.set(`lens_book:${OWNER}`, { key: `lens_book:${OWNER}`, value: payload });
+  const before = JSON.stringify(rawRow()!.value);
+  assert.equal((await loadLensGrants(OWNER)).unreadable, true, 'a non-string decrypted payload is unreadable, not absent');
+  await assert.rejects(() => readLensGrantBook(OWNER), /not a book/);
+  await saveLensGrants(OWNER, { v: 1, grants: {}, inSeq: {}, unreadable: true });
+  assert.equal(JSON.stringify(rawRow()!.value), before, 'the sealed bytes are untouched — the refused save stands');
 });

@@ -28,8 +28,9 @@
  * crypto path — it throws when the session is locked and never writes plaintext). An unlocked
  * phone shows all of it; that bound is stated plainly. The `LensGrantStorage` seam stays
  * injectable so the module is pure + unit-testable (node:test). A store that throws or returns
- * junk READS as EMPTY (R2: corrupt or unreadable records behave exactly like no record — zero
- * methods go, the update holds). A store that is LOCKED still throws on WRITE — never plaintext.
+ * a present-but-unreadable record marks the book `unreadable` — READ-ONLY, never an empty
+ * stand-in a later save could overwrite (zero methods go, the update holds). A genuinely ABSENT
+ * record is the only empty book. A store that is LOCKED still throws on WRITE — never plaintext.
  */
 
 export interface LensGrant {
@@ -59,8 +60,9 @@ export interface LensGrantBook {
    *  or a throwing store). The send filter still fails closed (zero methods, held, no seq bump)
    *  but reports 'book-unreadable' instead of 'no-record' so the sender can see the difference.
    *  R2a: while this marker stands the book is READ-ONLY — saveLensGrants refuses it outright, and
-   *  the receive seam holds verified payloads in memory instead of applying them (a replayed seq
-   *  must be judged against the floor as it really is, never against this empty stand-in). */
+   *  the receive seam reports verified payloads as held: the relay envelope stays unacknowledged
+   *  and the whole route re-runs on a later poll (a replayed seq must be judged against the floor
+   *  as it really is, never against this empty stand-in). */
   unreadable?: boolean;
 }
 
@@ -105,9 +107,12 @@ function normalize(fp: unknown): string {
 }
 
 /**
- * Read the whole grant book. NEVER throws on a hostile/absent store: corrupt or unreadable JSON
+ * Read the whole grant book. NEVER throws on a hostile/absent store: a genuinely ABSENT record
  * reads as an empty book (R2 — the send filter then sends ZERO methods to every recipient, which
- * is exactly the "no record" rule applied uniformly).
+ * is exactly the "no record" rule applied uniformly). A record that is PRESENT but unreadable —
+ * throwing store, corrupt JSON, or a parsed shape that is not a v1 book — reads as `unreadable`:
+ * the same zero-methods outcome, but the book is marked read-only so it can never be overwritten
+ * by an empty stand-in.
  */
 export async function loadLensGrants(ownerFingerprint: string, storage?: LensGrantStorage | null): Promise<LensGrantBook> {
   const store = storage === undefined ? sealedBookStorage(ownerFingerprint) : storage;
