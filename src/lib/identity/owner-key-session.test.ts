@@ -34,7 +34,7 @@ test('SS3 LOADED with aliases: an operational fingerprint resolves to the durabl
   assert.equal(ownerKey(other), other);
 });
 
-test('SS4 lock: clearing the copy makes every read throw again', () => {
+test('SS4 clearing the copy (tests, a failed refresh; NOT lock: ruling A) makes every read throw again', () => {
   const d = hex64(), f1 = hex64();
   loadOwnerAliases([[f1, d]]);
   assert.equal(ownerKey(f1), d);
@@ -96,7 +96,7 @@ test('SS7 the module exposes no way to read the map or set one entry', async () 
 });
 
 // ---------- the load path is the unlock path only ----------
-const ALLOWED_LOADERS: string[] = []; // the unlock module is added here, by exact path, when the wiring lands
+const ALLOWED_LOADERS: string[] = ['/src/lib/identity/client-store.ts']; // ruling A: client-store's DB-open path loads the copy; nothing else may
 function walkSources(f: (p: string, text: string) => void) {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const walk = (d: string) => {
@@ -111,7 +111,7 @@ function walkSources(f: (p: string, text: string) => void) {
   for (const d of ['src', 'app', 'scripts']) { try { walk(join(root, d)); } catch { /* absent */ } }
 }
 
-test('SS8 only the unlock path may import loadOwnerAliases or clearOwnerAliases (by exact path); nothing imports the module yet', () => {
+test('SS8 only client-store may import the session module (by exact path)', () => {
   const loaders: string[] = [], importers: string[] = [];
   walkSources((p, text) => {
     if (p.endsWith('/src/lib/identity/owner-key-session.ts')) return;
@@ -119,7 +119,7 @@ test('SS8 only the unlock path may import loadOwnerAliases or clearOwnerAliases 
     if (/import\s*\{[^}]*\b(loadOwnerAliases|clearOwnerAliases)\b[^}]*\}\s*from\s*['"][^'"]*owner-key-session['"]/.test(text)) loaders.push(p);
   });
   assert.deepEqual(loaders.filter((p) => !ALLOWED_LOADERS.some((a) => p.endsWith(a))), [], 'a file that is not the unlock path imports the loader');
-  assert.deepEqual(importers.filter((p) => !ALLOWED_LOADERS.some((a) => p.endsWith(a))), [], 'dark: nothing imports the session module yet');
+  assert.deepEqual(importers.filter((p) => !ALLOWED_LOADERS.some((a) => p.endsWith(a))), [], 'nothing but client-store imports the session module (the other readers are wired in later steps and named here by exact path)');
 });
 
 test('SS9 pure of effects: no I/O, clock, randomness or network in the session module', () => {

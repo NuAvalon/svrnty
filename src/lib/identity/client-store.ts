@@ -5,6 +5,7 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+import { ownerKey, isOwnerKeyLoaded, loadOwnerAliases } from './owner-key-session';
 import { canonicalAuthorityPin } from './authority-pin';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
@@ -378,7 +379,7 @@ interface HeldShardRecord {
   received_at: string;
 }
 
-function openDB(): Promise<IDBDatabase> {
+function openDBRaw(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -437,6 +438,50 @@ function openDB(): Promise<IDBDatabase> {
     // Settling the promise lets the caller degrade gracefully instead.
     request.onblocked = () => reject(new Error('svrnty database is upgrading — close other svrnty tabs and reload'));
   });
+}
+
+/**
+ * The persisted owner-alias map (operational fingerprint -> durable id), one plaintext settings row, device-wide: it holds only THIS device's
+ * OWN fingerprints, already plaintext as object-store keyPaths. No row = no owner on this device has ever rotated (today, everyone).
+ * Value: JSON [[operationalFp, durableId], ...]. Written only by the rotation persist (RotSign R5, not built), in the SAME transaction as the
+ * identity-row update.
+ */
+const OWNER_ALIASES_KEY = 'owner_aliases';
+
+/** Load the alias copy from the committed row. A missing row is an empty map; a malformed row THROWS (surfaced, never repaired). */
+async function readOwnerAliasRow(db: IDBDatabase): Promise<ReadonlyArray<readonly [string, string]>> {
+  const row = await new Promise<{ key: string; value: string } | undefined>((resolve, reject) => {
+    const req = db.transaction('settings', 'readonly').objectStore('settings').get(OWNER_ALIASES_KEY);
+    req.onsuccess = () => resolve(req.result as { key: string; value: string } | undefined);
+    req.onerror = () => reject(req.error);
+  });
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.value);
+    return Array.isArray(parsed) ? parsed : (null as never);
+  } catch {
+    return null as never; // loadOwnerAliases refuses it with a reason code
+  }
+}
+
+let _ownerAliasLoad: Promise<void> | null = null;
+
+/**
+ * THE ONE DB-OPEN PATH (ruling A, Flint #7376). The first open on a page loads the alias copy from the committed row, before any caller can
+ * read an owner-keyed value; concurrent opens share the one load. Before that, owner-keyed reads THROW ('not-loaded'): nothing ever silently
+ * uses the operational fingerprint. Not cleared on lock (the row is plaintext and the picker flow reopens without a reload).
+ */
+async function openDB(): Promise<IDBDatabase> {
+  const db = await openDBRaw();
+  if (isOwnerKeyLoaded()) return db;
+  try {
+    _ownerAliasLoad ??= readOwnerAliasRow(db).then((entries) => loadOwnerAliases(entries)).finally(() => { _ownerAliasLoad = null; });
+    await _ownerAliasLoad;
+    return db;
+  } catch (e) {
+    db.close();
+    throw e;
+  }
 }
 
 async function txGet<T>(storeName: string, key: string): Promise<T | null> {
