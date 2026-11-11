@@ -2911,3 +2911,64 @@ test('R8-K a stop-path re-queue into a merged-in entry keeps K: a due entry is n
   assert.equal(w.attempts, 1, 're-queue never resets attempts');
   assert.equal(w.nextAt, MID - 1, 're-queue never postpones a due entry');
 });
+
+// ---------- review-9 (note_7d08a694): attempts-only writer + queueWithdraw's own K ----------
+
+test("R9-A a writer that moves only the attempts mid-drain: its attempts stand, the drain's due time is not applied", async () => {
+  const t = MID; const s = memStore(); let armed = false, hit = 0;
+  const wrapped = { ...s, cas: async (p: string, v: number, next: PairRecord) => {
+    if (armed && hit === 0 && next.pendingWithdraws[0]?.attempts === 1) {
+      hit++;                                                           // another writer raises attempts, leaves the due time
+      const d = s.data.get(p)!; d.pendingWithdraws[0].attempts = 5; d.version = (d.version ?? 0) + 1;
+    }
+    return s.cas(p, v, next);
+  } };
+  const { client, f } = harness({ store: wrapped as any, now: () => t, backoffMs: (a: number) => (a === 0 ? 0 : 60_000) });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.setFallback({ throw: true });
+  await client.removeAtTap('pair-1');
+  armed = true;
+  await client.drainPendingWithdraws();
+  const w = (await s.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(hit, 1);
+  assert.equal(w.attempts, 5, 'attempts never drop below what another writer stored');
+  assert.equal(w.nextAt, MID, "the other writer's due time stands");
+});
+
+test("R9-B a stop-path re-queue whose own copy diverges from stored: queueWithdraw's K decides, not the merge's", async () => {
+  // Reaches the two queueWithdraw mutants ("resets attempts", "moves due later"): the stop path's
+  // copy must hold the entry before it re-queues, and DIFFER from the stored one — otherwise the
+  // final merge's K re-applies the same rule and hides the branch. Armed cas#0 merges a {2, MID-1}
+  // entry into the write-ahead record (the copy queueWithdraw sees); armed cas#2 moves the stored
+  // entry to {1, MID+60_000} so merge-K cannot mask a wrong queueWithdraw result.
+  const s = memStore(); const latch = memLatch(); let armed = false, calls = 0;
+  const wrapped = { ...s, cas: async (p: string, v: number, next: PairRecord) => {
+    const n = armed && p === 'pair-1' ? calls++ : -1;
+    if (n === 0) {                                                     // inside the write-ahead swap:
+      const d = s.data.get(p)!;                                        // a Remove's entry merges into the
+      d.pendingWithdraws = [{ rowId: 'row-1', attempts: 2, nextAt: MID - 1 }];  // retried record's copy
+      d.version = (d.version ?? 0) + 1;
+      latch.local.set('pair-1', 'removed');                            // the latch stands by the G6 check
+      return false;
+    }
+    if (n === 2) {                                                     // inside the stop-path commit swap:
+      const d = s.data.get(p)!;                                        // stored entry now differs in BOTH
+      d.pendingWithdraws = [{ rowId: 'row-1', attempts: 1, nextAt: MID + 60_000 }];  // fields from the copy
+      d.version = (d.version ?? 0) + 1;
+      return false;
+    }
+    return s.cas(p, v, next);
+  } };
+  const { client, f } = harness({ store: wrapped as any, latch, now: () => MID, backoffMs: () => 5_000 });
+  f.queue.push({ throw: true });                                       // answer lost -> stored 'unknown', K pinned
+  await client.trustAtTap('pair-1');
+  assert.equal((await s.get('pair-1'))!.rows[0].state, 'unknown');
+  armed = true;
+  const r = await client.trustAtTap('pair-1');
+  assert.equal(r.kind, 'latched');
+  assert.equal(calls >= 4, true, 'both injected writers landed inside their swaps');
+  const w = (await s.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(w.attempts, 2, 'the copy kept its attempts: max(2, 0), never reset by the re-queue');
+  assert.equal(w.nextAt, MID - 1, 'the copy kept its due time: min(MID-1, MID+5_000), never postponed');
+});
