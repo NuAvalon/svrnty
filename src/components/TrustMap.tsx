@@ -38,9 +38,11 @@ import { offsetSpokePair } from '@/components/trust/trust-spoke-paint';
 import {
   applyLayoutMemory,
   glassStateSignature,
+  layoutDigest,
   loadLayoutMemory,
   mutualTopologySignature,
   saveLayoutMemory,
+  type LayoutMemoryPayload,
 } from '@/lib/trust/layout-memory';
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -401,6 +403,24 @@ export function TrustMap({
 
   const world = useMemo(() => worldSizeForCount(visibleContacts.length), [visibleContacts.length]);
 
+  // Contacts-at-rest (A6): layout memory is a sealed per-owner record — the load is async and a
+  // corrupt/unreadable seal lands here as a throw → empty memory → fresh layout, never a blocked map.
+  const [layoutMemory, setLayoutMemory] = useState<LayoutMemoryPayload>({ nodes: new Map(), digest: '' });
+  useEffect(() => {
+    if (!ownerFingerprint) return;
+    let cancelled = false;
+    loadLayoutMemory(ownerFingerprint)
+      .then((m) => {
+        if (!cancelled) setLayoutMemory(m);
+      })
+      .catch(() => {
+        if (!cancelled) setLayoutMemory({ nodes: new Map(), digest: '' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ownerFingerprint]);
+
   const layout = useMemo(() => {
     const raw = computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
       width: world,
@@ -418,17 +438,13 @@ export function TrustMap({
         verified: ownerHasVerified(c),
       })),
     );
-    const {
-      nodes: memory,
-      topology: rememberedTopo,
-      glass: rememberedGlass,
-    } = loadLayoutMemory(ownerFingerprint);
-    const topologyChanged = topo !== rememberedTopo;
-    const stateChanged = glass !== rememberedGlass;
-    const blended = applyLayoutMemory(raw.nodes, memory, 0.55, topologyChanged, stateChanged);
+    // A6: one sealed digest detects either change class — a mismatch takes the stronger
+    // (stateChanged) softening so density/gravity fully re-pack the hive.
+    const digestChanged = layoutDigest(topo, glass) !== layoutMemory.digest;
+    const blended = applyLayoutMemory(raw.nodes, layoutMemory.nodes, 0.55, false, digestChanged);
     const n = blended.length;
     const density = Math.sqrt(Math.max(n, 1));
-    const rearrange = topologyChanged || stateChanged;
+    const rearrange = digestChanged;
     const nodes = relaxGraphNodes(blended, {
       width: raw.width,
       height: raw.height,
@@ -451,17 +467,18 @@ export function TrustMap({
       margin: 22,
     });
     return { ...raw, nodes, topology: topo, glass };
-  }, [ownerFingerprint, ownerName, visibleContacts, world]);
+  }, [ownerFingerprint, ownerName, visibleContacts, world, layoutMemory]);
 
   useEffect(() => {
     if (!ownerFingerprint || layout.nodes.length === 0) return;
     const t = window.setTimeout(() => {
-      saveLayoutMemory(
+      // A3: a locked/unwritable save throws — treated as no memory written this tick, never plaintext.
+      void saveLayoutMemory(
         ownerFingerprint,
         layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
         layout.topology,
         layout.glass,
-      );
+      ).catch(() => {});
     }, 400);
     return () => window.clearTimeout(t);
   }, [ownerFingerprint, layout.nodes, layout.topology, layout.glass]);

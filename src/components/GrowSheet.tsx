@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createRelay } from '@/lib/sync/relay';
 import {
+  describeAtRestError,
   issuedCodeSpent,
   loadIssuedCodeMap,
   loadKey,
@@ -84,8 +85,9 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
       setRelay({ url: result.url, code: result.code });
       try {
         await recordIssuedGrowCode(fp, result.code, cap, ch);
-      } catch {
-        /* non-fatal */
+      } catch (e) {
+        // A3/A9: an at-rest write failure must surface — a code not recorded is one every joiner is refused on.
+        setError(describeAtRestError(e) || 'Could not record the invite on this device.');
       }
     } catch (e: any) {
       setError(e?.message || 'Could not prepare the invite.');
@@ -130,7 +132,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
     let cancelled = false;
     const tick = async () => {
       try {
-        const map = await loadIssuedCodeMap();
+        const map = await loadIssuedCodeMap(fp);
         if (!cancelled && issuedCodeSpent(map, fp, relay.code)) setSpent(true);
       } catch {
         /* non-fatal */

@@ -44,6 +44,7 @@ import {
   enqueueGateArrival,
   getGateArrival,
   getAllContacts,
+  describeAtRestError,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { blockedInBook } from '@/lib/sync/contact-update-gate';
@@ -313,7 +314,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       void depositJoinerResponse(ownerFp, peer, code);
       setPhase('done');
     } catch (err: any) {
-      setError(err?.message || 'Could not add them to your Gate.');
+      // A9: an at-rest store failure surfaces as one of the two safe lines — never internal text.
+      setError(describeAtRestError(err) || err?.message || 'Could not add them to your Gate.');
     } finally {
       setAdding(false);
     }

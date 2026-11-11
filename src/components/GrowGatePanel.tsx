@@ -16,7 +16,13 @@ import {
   parseTagList,
 } from '@/lib/trust/grow-gate';
 import { formatFingerprintForVerify, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { loadGateArrivals, type GateArrival } from '@/lib/identity/client-store';
+import {
+  ATREST_COPY,
+  AtRestLockedError,
+  describeAtRestError,
+  loadGateArrivals,
+  type GateArrival,
+} from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 
 type Props = {
@@ -64,10 +70,12 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
       const list = await loadGateArrivals(ownerFp);
+      setLoadError(null);
       const ids = list.map((a) => a.fingerprint);
       if (bootedRef.current) {
         const fresh = ids.filter((id) => !seenRef.current.has(id));
@@ -79,8 +87,12 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       bootedRef.current = true;
       seenRef.current = new Set(ids);
       setArrivals(list);
-    } catch {
-      /* non-fatal */
+    } catch (e) {
+      // A9: a list that can't be read never draws as empty — locked shows the unlock line,
+      // unreadable the invite-records line; other failures keep the last good list.
+      setLoadError(
+        e instanceof AtRestLockedError ? ATREST_COPY.lockedList : describeAtRestError(e),
+      );
     }
   };
 
@@ -121,7 +133,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       onAdmitted?.(fp);
       onClose?.();
     } catch (e: any) {
-      setError(e?.message || 'Could not admit them.');
+      setError(describeAtRestError(e) || e?.message || 'Could not admit them.');
     } finally {
       setBusy(false);
     }
@@ -135,7 +147,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       setFocus(null);
       await refresh();
     } catch (e: any) {
-      setError(e?.message || 'Could not dismiss.');
+      setError(describeAtRestError(e) || e?.message || 'Could not dismiss.');
     } finally {
       setBusy(false);
     }
@@ -260,7 +272,9 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
           style={{ ...fieldStyle, marginTop: 10 }}
         />
       )}
-      {arrivals.length === 0 ? (
+      {loadError ? (
+        <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, lineHeight: 1.5 }}>{loadError}</p>
+      ) : arrivals.length === 0 ? (
         <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, lineHeight: 1.5 }}>{GATE_COPY.empty}</p>
       ) : visible.length === 0 ? (
         <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim }}>No matches.</p>

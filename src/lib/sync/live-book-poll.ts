@@ -546,7 +546,7 @@ export async function buildConsumeDeps(
   // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects
   // codes minted since the last poll. loadIssuedCodeMap prunes expired entries.
   // If this throws, the poll never receives deps and so never runs its cycle.drop(): end the cycle here (R1).
-  const codes: IssuedCodeMap = await dropCycleOnThrow(cycle, () => loadIssuedCodeMap());
+  const codes: IssuedCodeMap = await dropCycleOnThrow(cycle, () => loadIssuedCodeMap(fingerprint));
   // Unlock the notes store so received over-wire notes PERSIST on arrival (not just once /msg is open).
   // Same unlock passphrase the vault uses (store.ts initNotesStore, separate salt); the poll only runs
   // for an UNLOCKED identity, so the credential is already in memory — no new trust boundary crossed.
