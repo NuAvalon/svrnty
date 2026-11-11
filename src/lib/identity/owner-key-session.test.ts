@@ -49,6 +49,9 @@ test('SS5 a malformed row is surfaced and leaves the state NOT LOADED, even when
   const bad: Array<[string, unknown]> = [
     ['an alias to a non-fingerprint', [[f1, 'zz']]],
     ['an upper-case durable id', [[f1, d.toUpperCase()]]],
+    ['an UPPER-CASE alias key (Flint #7363: stored data can be edited)', [[f1.toUpperCase(), d]]],
+    ['an alias key that is neither 40 nor 64 hex', [[f1.slice(0, 50), d]]],
+    ['one good pair then one bad pair: the WHOLE map is refused, not the bad entry skipped', [[f1, d], [hex64().toUpperCase(), d]]],
     ['an alias of itself', [[d, d]]],
     ['a conflicting re-point', [[f1, d], [f1, hex64()]]],
     ['a chain', [[f1, d], [d, hex64()]]],
