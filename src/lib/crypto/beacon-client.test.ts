@@ -2817,3 +2817,97 @@ test('R7-G6 a latch landing inside the write-ahead swap still stops the send (bl
   assert.equal(secrets.released.length, 1, 'the fresh minted seed is released on the G6 stop');
   assert.equal((await store.get('pair-1'))!.rows.length, 0, 'the fresh mint is dropped, never queued');
 });
+
+// ---------- review-8 (note_02a2489b): B1 drain backoff reaches the store; Flint CAS rulings ----------
+
+test('R8-B1 the drain retry backoff reaches the store; no retry inside the window', async () => {
+  let t = MID;
+  const { client, f, store } = harness({ now: () => t, backoffMs: (a: number) => (a === 0 ? 0 : 60_000) });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.setFallback({ throw: true });
+  await client.removeAtTap('pair-1');
+  await client.drainPendingWithdraws();                                // due now: tried once, failed
+  const w = (await store.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(w.attempts, 1);
+  assert.equal(w.nextAt, MID + 60_000, "the drain's reschedule must reach the store");
+  t = MID + 1_000; f.calls.length = 0;
+  await client.drainPendingWithdraws();
+  assert.equal(f.calls.length, 0, 'no retry inside the backoff window');
+});
+
+test("R8-F3 a writer landing between the drain's read and its write keeps its due time; attempts never drop", async () => {
+  const t = MID; const s = memStore(); let armed = false, hit = 0;
+  const wrapped = { ...s, cas: async (p: string, v: number, next: PairRecord) => {
+    if (armed && hit === 0 && next.pendingWithdraws[0]?.attempts === 1) {
+      hit++;                                                           // another writer lands first: a Remove re-queue, due at MID + 1 s
+      const d = s.data.get(p)!; d.pendingWithdraws[0].nextAt = MID + 1_000; d.pendingWithdraws[0].attempts = 0; d.version = (d.version ?? 0) + 1;
+    }
+    return s.cas(p, v, next);
+  } };
+  const { client, f } = harness({ store: wrapped as any, now: () => t, backoffMs: (a: number) => (a === 0 ? 0 : 60_000) });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.setFallback({ throw: true });
+  await client.removeAtTap('pair-1');
+  armed = true;
+  await client.drainPendingWithdraws();
+  const w = (await s.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(hit, 1, 'the other writer landed mid-drain');
+  assert.equal(w.nextAt, MID + 1_000, "the other writer's due time stands, never the drain's later one");
+  assert.equal(w.attempts, 1, 'the attempt the drain made still counts');
+});
+
+test('R8-F4 a redundant re-queue landing mid-drain asks for nothing new: the drain backoff stands, one attempt in the window', async () => {
+  let t = MID; const s = memStore(); let armed = false, hit = 0;
+  const wrapped = { ...s, cas: async (p: string, v: number, next: PairRecord) => {
+    if (armed && hit === 0 && next.pendingWithdraws[0]?.attempts === 1) {
+      hit++;                                                           // a Remove re-queues a row that is already due: the entry is unchanged
+      const d = s.data.get(p)!; d.pendingWithdraws[0].nextAt = MID; d.pendingWithdraws[0].attempts = 0; d.version = (d.version ?? 0) + 1;
+    }
+    return s.cas(p, v, next);
+  } };
+  const { client, f } = harness({ store: wrapped as any, now: () => t, backoffMs: (a: number) => (a === 0 ? 0 : 60_000) });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  f.setFallback({ throw: true });
+  await client.removeAtTap('pair-1');
+  armed = true; f.calls.length = 0;
+  await client.drainPendingWithdraws();
+  const first = f.calls.length;
+  const w = (await s.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(hit, 1, 'the redundant write landed mid-drain');
+  assert.equal(w.nextAt, MID + 60_000, "an unchanged entry means the drain's backoff stands");
+  assert.equal(w.attempts, 1);
+  t = MID + 1_000; f.calls.length = 0;
+  await client.drainPendingWithdraws();
+  assert.ok(first > 0, 'the drain made its attempt');
+  assert.equal(f.calls.length, 0, 'no second attempt inside the window');
+});
+
+test('R8-K a stop-path re-queue into a merged-in entry keeps K: a due entry is never postponed, attempts never reset', async () => {
+  const s = memStore(); const latch = memLatch(); let armed = false, hit = 0;
+  const wrapped = { ...s, cas: async (p: string, v: number, next: PairRecord) => {
+    if (armed && hit === 0 && p === 'pair-1' && next.pendingWithdraws.length === 0
+        && next.rows.some((r) => r.rowId === 'row-1' && r.state === 'unknown')) {
+      hit++;                                                           // a concurrent Remove committed mid-flight:
+      const d = s.data.get(p)!;                                        // its queue entry merges into the retried read,
+      d.pendingWithdraws = [{ rowId: 'row-1', attempts: 1, nextAt: MID - 1 }];  // then this deposit's stop-path re-queues it
+      d.version = (d.version ?? 0) + 1;
+      latch.local.set('pair-1', 'removed');                            // the latch stands by the G6 check
+      return false;
+    }
+    return s.cas(p, v, next);
+  } };
+  const { client, f } = harness({ store: wrapped as any, latch, now: () => MID, backoffMs: () => 5_000 });
+  f.queue.push({ throw: true });                                       // answer lost -> stored 'unknown', K pinned
+  await client.trustAtTap('pair-1');
+  assert.equal((await s.get('pair-1'))!.rows[0].state, 'unknown');
+  armed = true;
+  const r = await client.trustAtTap('pair-1');                         // retry hits the merged-in entry at the stop path
+  assert.equal(r.kind, 'latched');
+  assert.equal(hit, 1, 'the other writer landed inside the write-ahead window');
+  const w = (await s.get('pair-1'))!.pendingWithdraws[0];
+  assert.equal(w.attempts, 1, 're-queue never resets attempts');
+  assert.equal(w.nextAt, MID - 1, 're-queue never postpones a due entry');
+});

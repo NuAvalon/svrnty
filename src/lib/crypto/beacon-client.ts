@@ -249,7 +249,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       return { tap: ot, clock: validClock(ours.firstMatchEpoch, ot) ?? validClock(cur.firstMatchEpoch, ct) };
     return { tap: { gen: ot.gen, trust: false }, clock: null };                                 // tie: false wins
   };
-  const mergeRec = (cur: PairRecord | undefined, ours: PairRecord): PairRecord => {
+  /** `resched`: rows the drain rescheduled after its own failed attempt, with the entry it READ.
+   * Unchanged since that read -> the drain's entry (its backoff stands). Changed by another writer
+   * (a Remove re-queue, a stop path) -> that writer's due time stands and attempts never drop. */
+  const mergeRec = (cur: PairRecord | undefined, ours: PairRecord,
+    resched?: Map<string, { attempts: number; nextAt: number }>): PairRecord => {
     if (!cur) return ours;
     // L14c(a): a row/withdraw id in EITHER side's tombstones is dropped from BOTH sides' lists.
     const del = new Set([...(cur.deletedRows ?? []), ...(ours.deletedRows ?? [])].map((t) => t.id));
@@ -264,7 +268,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       // K at merge: an entry only ever gets more urgent / more retried — whichever copy holds the
       // earlier due time or the higher attempts wins the row.
       const ex = wds.get(w.rowId);
-      wds.set(w.rowId, ex ? { rowId: w.rowId, attempts: Math.max(ex.attempts, w.attempts), nextAt: Math.min(ex.nextAt, w.nextAt) } : w);
+      const seen = resched?.get(w.rowId);
+      if (!ex) wds.set(w.rowId, w);
+      else if (seen) wds.set(w.rowId, ex.attempts === seen.attempts && ex.nextAt === seen.nextAt
+        ? w : { rowId: w.rowId, attempts: Math.max(ex.attempts, w.attempts), nextAt: ex.nextAt });
+      else wds.set(w.rowId, { rowId: w.rowId, attempts: Math.max(ex.attempts, w.attempts), nextAt: Math.min(ex.nextAt, w.nextAt) });
     }
     const { tap, clock } = mergeTap(ours, cur);
     const dedup = (a: RowTombstone[] = [], b: RowTombstone[] = []) =>
@@ -295,11 +303,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   /** G11: the store port requires `cas` — commit either wins a compare-and-swap or fails loudly;
    * never a plain-put fallback, and after 8 lost swaps it throws. A save that failed BEFORE a
    * deposit leaves means nothing is sent (callers map it to 'busy' with 0 requests). */
-  const commit = async (rec: PairRecord): Promise<void> => {
+  const commit = async (rec: PairRecord, resched?: Map<string, { attempts: number; nextAt: number }>): Promise<void> => {
     for (let i = 0; i < 8; i++) {
       const cur = await deps.store.get(rec.pairId);
       const base = cur?.version ?? 0;
-      const next = mergeRec(cur, rec);
+      const next = mergeRec(cur, rec, resched);
       next.version = base + 1;
       if (await deps.store.cas(rec.pairId, base, next)) {
         Object.assign(rec, next);
@@ -990,6 +998,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         if (await repairHalfDoneRemove(stored.pairId)) { /* committed inside repair; rec reload below */ }
         const rec = (await deps.store.get(stored.pairId)) ?? stored;      // refresh after a repair
         let dirty = false;
+        const resched = new Map<string, { attempts: number; nextAt: number }>();
         // G2/G7: a 'removed' latch observed on a WRITE path tombstones the match clock —
         // covers latches set outside removeAtTap (remote un-trust notes). Reads never do it.
         // L14b: clearing the clock bumps the generation (trust unchanged) so a stale copy
@@ -1012,11 +1021,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
           const before = rec.observedMatch;
           const out = await withdrawRow(rec, row);
           dirty = dirty || out === 'done' || rec.observedMatch !== before;
-          if (out === 'queued') { w.attempts += 1; w.nextAt = now() + backoff(w.attempts); }   // the drain's own reschedule
+          if (out === 'queued') { resched.set(w.rowId, { attempts: w.attempts, nextAt: w.nextAt }); w.attempts += 1; w.nextAt = now() + backoff(w.attempts); }   // the drain's own reschedule
           else unqueueWithdraw(rec, w.rowId, row.epoch);
         }
         if (await closeEpochs(rec)) dirty = true;
-        if (dirty) await commit(rec);
+        if (dirty) await commit(rec, resched);
       }
     },
   };
