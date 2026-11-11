@@ -484,6 +484,16 @@ async function openDB(): Promise<IDBDatabase> {
   }
 }
 
+/**
+ * The owner's STORAGE KEY (the durable id; the argument unchanged for an owner who never rotated). The alias copy loads lazily at the first
+ * database open, so an async caller awaits that first: otherwise its first call on a page would throw 'not-loaded' before any open happened.
+ * Idempotent: a durable id is never an alias key, so resolving an already-resolved key returns it unchanged.
+ */
+async function ownerKeyAsync(fingerprint: string): Promise<string> {
+  if (!isOwnerKeyLoaded()) (await openDB()).close();
+  return ownerKey(fingerprint);
+}
+
 async function txGet<T>(storeName: string, key: string): Promise<T | null> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -639,11 +649,12 @@ function suppressionSettingKey(ownerFingerprint: string): string {
 export async function getSuppressionRecord(ownerFingerprint: string): Promise<SuppressionRecord | null> {
   if (!_sessionKey) return null; // locked ⇒ fail-closed
   try {
+    const owner = await ownerKeyAsync(ownerFingerprint);
     const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
-      'settings', suppressionSettingKey(ownerFingerprint),
+      'settings', suppressionSettingKey(owner),
     );
     if (!row?.value) return null; // absent ⇒ fail-closed (the store can't tell never-had from lost)
-    const rec = await decryptContactRecord<unknown>(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, row.value);
+    const rec = await decryptContactRecord<unknown>(_sessionKey, SUPPRESSION_RECORD_ID, owner, row.value);
     return isSuppressionRecord(rec) ? rec : null; // malformed ⇒ fail-closed
   } catch {
     return null; // decrypt/tag failure ⇒ fail-closed
@@ -653,8 +664,9 @@ export async function getSuppressionRecord(ownerFingerprint: string): Promise<Su
 /** Persist F's suppression record, encrypted at rest (fail-closed: throws if locked — never write plaintext). */
 export async function setSuppressionRecord(ownerFingerprint: string, rec: SuppressionRecord): Promise<void> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store suppression record unencrypted (§C/enc-b fail-closed)');
-  const payload = await encryptContactRecord(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, rec);
-  await txPut('settings', { key: suppressionSettingKey(ownerFingerprint), value: payload });
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const payload = await encryptContactRecord(_sessionKey, SUPPRESSION_RECORD_ID, owner, rec);
+  await txPut('settings', { key: suppressionSettingKey(owner), value: payload });
 }
 
 // ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
@@ -677,11 +689,12 @@ function heldAffirmsSettingKey(ownerFingerprint: string): string {
 export async function getHeldAffirmatives(ownerFingerprint: string): Promise<HeldAffirmatives | null> {
   if (!_sessionKey) return null;
   try {
+    const owner = await ownerKeyAsync(ownerFingerprint);
     const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
-      'settings', heldAffirmsSettingKey(ownerFingerprint),
+      'settings', heldAffirmsSettingKey(owner),
     );
     if (!row?.value) return null;
-    const map = await decryptContactRecord<unknown>(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, row.value);
+    const map = await decryptContactRecord<unknown>(_sessionKey, HELD_AFFIRMS_RECORD_ID, owner, row.value);
     return isHeldAffirmatives(map) ? map : null;
   } catch {
     return null;
@@ -691,8 +704,9 @@ export async function getHeldAffirmatives(ownerFingerprint: string): Promise<Hel
 /** Persist Anna's held-affirmatives map, encrypted at rest (fail-closed: throws if locked). Receive-path only. */
 export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAffirmatives): Promise<void> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
-  const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
-  await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, owner, map);
+  await txPut('settings', { key: heldAffirmsSettingKey(owner), value: payload });
 }
 
 // ── Delivery-receipt setting (task #714 R2a): the GLOBAL default, a sealed per-owner record ───────────────────────
@@ -708,9 +722,10 @@ function deliverySettingKey(ownerFingerprint: string): string {
 export async function readDeliveryDefault(ownerFingerprint: string): Promise<DeliveryDefaultRead> {
   if (!_sessionKey) return { state: 'unreadable' };
   try {
-    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', deliverySettingKey(ownerFingerprint));
+    const owner = await ownerKeyAsync(ownerFingerprint);
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', deliverySettingKey(owner));
     if (!row?.value) return { state: 'absent' };
-    return parseDeliveryDefault(await decryptContactRecord<unknown>(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, row.value));
+    return parseDeliveryDefault(await decryptContactRecord<unknown>(_sessionKey, DELIVERY_RECORD_ID, owner, row.value));
   } catch {
     return { state: 'unreadable' };
   }
@@ -719,8 +734,9 @@ export async function readDeliveryDefault(ownerFingerprint: string): Promise<Del
 /** Replace the record (the owner's own choice, or answering the one-time question). Throws when locked: never stored unencrypted. */
 export async function writeDeliveryDefault(ownerFingerprint: string, rec: DeliveryDefault): Promise<void> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store the delivery-receipt setting unencrypted (fail-closed)');
-  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, rec);
-  await txPut('settings', { key: deliverySettingKey(ownerFingerprint), value: payload });
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, owner, rec);
+  await txPut('settings', { key: deliverySettingKey(owner), value: payload });
 }
 
 /**
@@ -729,8 +745,9 @@ export async function writeDeliveryDefault(ownerFingerprint: string, rec: Delive
  */
 export async function writeDeliveryDefaultIfAbsent(ownerFingerprint: string, rec: DeliveryDefault): Promise<boolean> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store the delivery-receipt setting unencrypted (fail-closed)');
-  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, rec);
-  return txPutIfAbsent('settings', deliverySettingKey(ownerFingerprint), { key: deliverySettingKey(ownerFingerprint), value: payload });
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, owner, rec);
+  return txPutIfAbsent('settings', deliverySettingKey(owner), { key: deliverySettingKey(owner), value: payload });
 }
 
 /**
@@ -743,9 +760,10 @@ export async function readDeliveryDefaultMigrating(ownerFingerprint: string): Pr
   if (first.state !== 'absent') return first;
   try {
     // A restore path that could not seal a marker (no session yet) left the plaintext flag: that identity was restored here, so its choice is unknown.
-    const restored = await txGet<{ key: string; value: string }>('settings', deliveryRestoredFlagKey(ownerFingerprint));
-    await writeDeliveryDefaultIfAbsent(ownerFingerprint, restored ? { v: 1, value: 'unknown' } : { v: 1, value: 'on', notice_pending: true });
-    if (restored) await txDelete('settings', deliveryRestoredFlagKey(ownerFingerprint)).catch(() => {});
+    const owner = await ownerKeyAsync(ownerFingerprint);
+    const restored = await txGet<{ key: string; value: string }>('settings', deliveryRestoredFlagKey(owner));
+    await writeDeliveryDefaultIfAbsent(owner, restored ? { v: 1, value: 'unknown' } : { v: 1, value: 'on', notice_pending: true });
+    if (restored) await txDelete('settings', deliveryRestoredFlagKey(owner)).catch(() => {});
   } catch {
     return { state: 'unreadable' };
   }
@@ -761,12 +779,13 @@ function deliveryRestoredFlagKey(ownerFingerprint: string): string {
  * secret in it). The first send's migration reads it and records 'unknown' instead of 'on'. Never throws on a locked session.
  */
 export async function markDeliveryRestored(ownerFingerprint: string): Promise<void> {
-  await txPut('settings', { key: deliveryRestoredFlagKey(ownerFingerprint), value: '1' });
+  const owner = await ownerKeyAsync(ownerFingerprint);
+  await txPut('settings', { key: deliveryRestoredFlagKey(owner), value: '1' });
 }
 
 /** A restore's marker: the choice is not known on this device, so the owner is asked once and nothing is sent until they answer. */
 export async function markDeliveryDefaultUnknown(ownerFingerprint: string): Promise<void> {
-  await writeDeliveryDefaultIfAbsent(ownerFingerprint, { v: 1, value: 'unknown' });
+  await writeDeliveryDefaultIfAbsent(await ownerKeyAsync(ownerFingerprint), { v: 1, value: 'unknown' });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
