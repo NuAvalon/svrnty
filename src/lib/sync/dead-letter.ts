@@ -10,7 +10,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** Why a blob did not become a message (F6: "can't open" and "failed to verify" are different classes). */
-export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset', 'expired'] as const;
+export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset', 'expired', 'lens-method-cap', 'lens-shared-slot'] as const;
 export type DeadLetterReason =
   | 'unknown-format' // not a shape this build can open
   | 'decrypt-failed' // right shape, would not open
@@ -22,7 +22,9 @@ export type DeadLetterReason =
   | 'ratchet-local' // same frame, but something on THIS DEVICE stopped it (own key missing, session row unreadable, unknown cause): HELD, then recorded past the bound
   | 'ratchet-desync' // same frame, the sessions no longer agree (a receive failure on an authenticated contact's frame): HELD with backoff, then recorded (T2)
   | 'session-reset' // a held ratchet frame released because the session with that contact was replaced: by the USER's own reset (T3, Flint reset semantics R2) or by adopting THEIR new session (R5, live-book-poll.ts), where the user did nothing
-  | 'expired'; // arrived after its time limit
+  | 'expired' // arrived after its time limit
+  | 'lens-method-cap' // a MAC-VERIFIED lens payload refused whole: it would grow the contact's lens_methods past the cap (lenses R8a — never 'unverified-frame', the MAC verified)
+  | 'lens-shared-slot'; // a MAC-VERIFIED lens payload refused whole: two values in one kind+label slot (lenses R8a — never 'unverified-frame', the MAC verified)
 
 /**
  * Only these reasons come AFTER the sender was authenticated, so only they may carry a fingerprint (F3: the sender fields of an
@@ -34,14 +36,14 @@ export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<Dead
  * Terminal outcomes that CONSUME a blob without losing a message: the content is already stored, or it was never a message.
  * Listed explicitly so "benign" cannot silently grow; a test pins this exact list. Anything terminal that is not here must write a row.
  */
-export const BENIGN_TERMINALS = ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'contact-update-blocked', 'note-blocked-sender'] as const;
+export const BENIGN_TERMINALS = ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'contact-update-blocked', 'note-blocked-sender', 'lens-hello', 'lens-stale'] as const;
 export type BenignTerminal = (typeof BENIGN_TERMINALS)[number];
 
 /**
  * Reasons whose rows are NOT about a message (Flint ruling a, Hypatia #2001): a stranger's contact-update, joiner or receipt frame.
  * A row of one of these may exist, but it must never feed any "N messages ..." count in the UI.
  */
-export const NON_MESSAGE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['unverified-frame']);
+export const NON_MESSAGE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['unverified-frame', 'lens-method-cap', 'lens-shared-slot']);
 export function isMessageReason(reason: DeadLetterReason): boolean {
   return !NON_MESSAGE_REASONS.has(reason);
 }

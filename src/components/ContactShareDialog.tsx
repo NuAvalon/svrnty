@@ -21,6 +21,8 @@ import {
   preferredMethod,
   type OwnerCardBag,
 } from '@/components/identity/owner-card';
+import { isLensDeliveryLive } from '@/lib/claim-gates';
+import { EXTRA_METHODS_LENS_LINE, EXTRA_METHODS_LOCAL_LINE } from '@/lib/lenses/lens-copy';
 
 interface ContactShareDialogProps {
   open: boolean;
@@ -240,7 +242,7 @@ export function ContactShareDialog({
                   {pref
                     ? `Preferred: ${methodKindLabel(pref.kind)}${pref.value ? ` · ${pref.value}` : ''}. `
                     : ''}
-                  Extra methods stay on this device until the living card schema carries them.
+                  {isLensDeliveryLive() ? EXTRA_METHODS_LENS_LINE : EXTRA_METHODS_LOCAL_LINE}
                 </p>
               );
             })()}

@@ -89,8 +89,9 @@ test('D5 a row cannot be built from an unsafe id or an unreadable time (the call
   assert.equal(makeDeadLetterRow({ envelopeId: 'e', firstSeen: '', reason: 'decrypt-failed', blob: 'x' }), null);
 });
 
-test('D6 the BENIGN terminal list is exactly these five (a new entry must be a deliberate edit of this test)', () => {
-  assert.deepEqual([...BENIGN_TERMINALS], ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'contact-update-blocked', 'note-blocked-sender']);
+test('D6 the BENIGN terminal list is exactly these seven (a new entry must be a deliberate edit of this test)', () => {
+  // 'lens-held' is gone (v1.10): a receiver-side hold is NOT terminal — the envelope is left unacked.
+  assert.deepEqual([...BENIGN_TERMINALS], ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'contact-update-blocked', 'note-blocked-sender', 'lens-hello', 'lens-stale']);
 });
 
 const NOW = Date.parse('2026-10-30T12:00:00.000Z');

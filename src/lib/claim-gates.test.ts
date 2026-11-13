@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive } from './claim-gates';
+import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive, isLensDeliveryLive } from './claim-gates';
 
 /** Runs fn with the build domain (NEXT_PUBLIC_SVRNTY_DOMAIN) set to `value`, or unset when undefined. */
 function withPsiEnv(value: string | undefined, fn: () => void): void {
@@ -76,6 +76,10 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
 
   it('isMutualTrustWireLive is FALSE until the FE deposit-hook + the two-seat e2e land (crypto built both sides, consume wired, but no FE deposit path yet — flip WITH the e2e-green proof)', () => {
     assert.equal(isMutualTrustWireLive(), false);
+  });
+
+  it('isLensDeliveryLive is FALSE until the lenses-v1.3 wiring + two-identity browser run land (flag-off draft)', () => {
+    assert.equal(isLensDeliveryLive(), false);
   });
 
   it('isRelayMigrateLive is FALSE until migrateRelay + config override + card re-sign are wired', () => {

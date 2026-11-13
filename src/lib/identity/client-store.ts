@@ -724,6 +724,42 @@ export async function markDeliveryDefaultUnknown(ownerFingerprint: string): Prom
   await writeDeliveryDefaultIfAbsent(ownerFingerprint, { v: 1, value: 'unknown' });
 }
 
+// ── Lenses v1.3: the SEALED recipient→lens grant book (contract review-1 item 6) ────────────────
+// The grant book is the owner's contact fingerprints + which face each person gets + what each was
+// sent — a ranking of their relationships. It must be sealed at rest: the same AAD-bound
+// contact-crypto path, a reserved domain id, the `settings` store (which exportAll never reads).
+// Owner-local, NEVER on the wire. Stated bound: an unlocked phone shows all of it.
+const LENS_BOOK_RECORD_ID = 'lenses:grant-book'; // reserved AAD id (contacts use random UUIDs, never this)
+function lensBookSettingKey(ownerFingerprint: string): string {
+  return `lens_book:${ownerFingerprint}`;
+}
+
+/**
+ * Read the serialized grant book. ABSENT vs UNREADABLE are different verdicts (lenses R2a / at-rest
+ * A4): only a genuinely ABSENT record reads as null (the caller treats that as an empty book —
+ * zero methods go, updates hold — which is exactly the "no record" rule). A locked session, a
+ * decrypt/tag failure (a wrong passphrase reads as one), a non-string payload and a store error
+ * all THROW — the caller marks the book unreadable and read-only, so a transient fault can never
+ * stand in as an empty book that a later save would overwrite.
+ */
+export async function readLensGrantBook(ownerFingerprint: string): Promise<string | null> {
+  if (!_sessionKey) throw new Error('lens grant book unreadable: session locked');
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+    'settings', lensBookSettingKey(ownerFingerprint),
+  );
+  if (!row?.value) return null;
+  const rec = await decryptContactRecord<unknown>(_sessionKey, LENS_BOOK_RECORD_ID, ownerFingerprint, row.value);
+  if (typeof rec !== 'string') throw new Error('lens grant book unreadable: decrypted payload is not a book');
+  return rec;
+}
+
+/** Persist the serialized grant book, encrypted at rest (fail-closed: throws if locked — never plaintext). */
+export async function writeLensGrantBook(ownerFingerprint: string, raw: string): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the lens grant book unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, LENS_BOOK_RECORD_ID, ownerFingerprint, raw);
+  await txPut('settings', { key: lensBookSettingKey(ownerFingerprint), value: payload });
+}
+
 export async function listIdentities(): Promise<IdentityRecord[]> {
   return txGetAll('identities');
 }
