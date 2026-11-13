@@ -22,7 +22,7 @@ import { encodeApprove, approveBody, approveSigningInput } from './approve-wire'
 import { pointerClaimDigest } from './claim-digest';
 import { parsePointerV2 } from './pointer-v2-wire';
 import { encodePointerV2, pointerV2Prefix, pointerV2SigningInput, type HybridSig, type PointerV2Fields } from './pointer-v2-wire';
-import { receive, pointerAllowance, POINTER_CEILING_STEP, PENDING_MAX_KEYS, SUCCESSOR_CONFLICT_MAX_DIGESTS, WEEK_MS, type HeldIdentity, type PendingEntry, type Decision } from './rotation-receive';
+import { receive, pointerAllowance, POINTER_CEILING_STEP, PENDING_MAX_KEYS, SUCCESSOR_CONFLICT_MAX_DIGESTS, SUCCESSOR_WINDOW_MS, WEEK_MS, type HeldIdentity, type PendingEntry, type Decision } from './rotation-receive';
 
 // ---------- helpers ----------
 const deepFreeze = <T,>(o: T): T => {
@@ -79,6 +79,14 @@ async function chain() {
 let CH: Awaited<ReturnType<typeof chain>>;
 const ch = async () => (CH ??= await chain());
 const succ = (s: RotationSuccessorInput) => ({ kind: 'successor' as const, bytes: encodeKeyRotate(s) });
+/** A successor takes effect only through the HOLD (Flint #7546): arrival pends, the same claim again once the window has passed adopts. */
+const adopted = async (held: HeldIdentity, s: RotationSuccessorInput, now = NOW): Promise<HeldIdentity> => {
+  const p = await receive(held, succ(s), now);
+  assert.equal(act(p), 'pend', 'arrival only holds the claim');
+  const d = await receive(deepFreeze({ ...nextOf(p) }), succ(s), now + SUCCESSOR_WINDOW_MS);
+  assert.equal(act(d), 'adopt', 'the same claim after the window adopts');
+  return nextOf(d);
+};
 
 // ---------- pointer fixtures: synthetic held keys we can sign with ----------
 function ptrWorld() {
@@ -144,9 +152,19 @@ test('Q0b dark: nothing outside tests imports rotation-receive', () => {
 });
 
 // ---------- 1. successors ----------
-test('S1 adopt: the next successor verifies and the new state is complete; the held state is untouched', async () => {
+test('S1 hold, then adopt: arrival only RECORDS a verified successor (a phrase alone must not rotate anyone); the same claim after the window adopts, and the new state is complete', async () => {
   const c = await ch();
-  const d = await receive(c.held, succ(c.s1), NOW);
+  const first = await receive(c.held, succ(c.s1), NOW);
+  assert.equal(act(first), 'pend', 'arrival holds');
+  assert.equal((first as { windowEndsAtMs: number }).windowEndsAtMs, NOW + SUCCESSOR_WINDOW_MS);
+  assert.equal(SUCCESSOR_WINDOW_MS, 72 * 3600 * 1000, 'the agreed window: 72 h (Flint #7646)');
+  const h1 = nextOf(first);
+  assert.equal(h1.identityEpoch, 0, 'nothing adopted on arrival');
+  assert.equal(h1.operationalFingerprint, c.g.fingerprint);
+  assert.equal(h1.rotationPin, c.held.rotationPin);
+  assert.deepEqual(h1.pending.map((e) => [e.kind, e.identityEpoch, e.epoch, e.digests.length, e.firstSeenAtMs]), [['successor', 1, 1, 1, NOW]]);
+  assert.equal(c.held.pending.length, 0, 'the input is not modified');
+  const d = await receive(deepFreeze({ ...h1 }), succ(c.s1), NOW + SUCCESSOR_WINDOW_MS);
   assert.equal(d.action, 'adopt');
   const n = nextOf(d);
   assert.equal(n.identityEpoch, 1);
@@ -155,8 +173,8 @@ test('S1 adopt: the next successor verifies and the new state is complete; the h
   assert.equal(n.rotationPin, deriveNextAuthorityCommitment(c.master, 2));
   assert.equal(n.pointerEpoch, null);
   assert.equal(n.rekeyPending, true);
-  assert.equal(n.lastAcceptedAtMs, NOW);
-  assert.deepEqual(n.pending, []);
+  assert.equal(n.lastAcceptedAtMs, NOW + SUCCESSOR_WINDOW_MS);
+  assert.deepEqual(n.pending, [], 'the held entry is gone once adopted');
   assert.equal(n.lastAdopted?.epoch, 1);
   assert.equal(n.lastAdopted?.priorPin, c.held.rotationPin);
   assert.equal(n.relay, c.held.relay, 'a plain rotation does not move the relay');
@@ -171,7 +189,11 @@ test('S1 adopt: the next successor verifies and the new state is complete; the h
 test('S1b adopt resets what belonged to the old keys: the held pointer, its digest, the pending list', async () => {
   const c = await ch();
   const stale = deepFreeze({ ...c.held, pointerEpoch: 7, heldPointerDigest: 'aa'.repeat(32), pending: [{ kind: 'pointer' as const, identityEpoch: 0, epoch: 9, digests: ['bb'.repeat(32)], firstSeenAtMs: NOW }] });
-  const n = nextOf(await receive(stale, succ(c.s1), NOW));
+  const p = await receive(stale, succ(c.s1), NOW);
+  assert.equal(act(p), 'pend');
+  assert.deepEqual(nextOf(p).pending.map((e) => e.kind), ['pointer', 'successor'], 'while held, the pointer entry for the old keys is untouched');
+  assert.equal(nextOf(p).pointerEpoch, 7, 'and so is the held pointer');
+  const n = await adopted(stale, c.s1);
   assert.equal(n.pointerEpoch, null);
   assert.equal(n.heldPointerDigest, undefined);
   assert.deepEqual(n.pending, []);
@@ -179,11 +201,9 @@ test('S1b adopt resets what belonged to the old keys: the held pointer, its dige
 
 test('S2 R7.3: the SECOND rotation of a contact verifies, because the durable id (not the operational fingerprint) is what the verifier compares', async () => {
   const c = await ch();
-  const h1 = nextOf(await receive(c.held, succ(c.s1), NOW));
+  const h1 = await adopted(c.held, c.s1);
   assert.notEqual(h1.operationalFingerprint, h1.durableId);
-  const d2 = await receive(deepFreeze({ ...h1 }), succ(c.s2), NOW + 1000);
-  assert.equal(act(d2), 'adopt');
-  const h2 = nextOf(d2);
+  const h2 = await adopted(deepFreeze({ ...h1 }), c.s2, NOW + 2 * SUCCESSOR_WINDOW_MS);
   assert.equal(h2.identityEpoch, 2);
   assert.equal(h2.durableId, c.g.fingerprint);
   assert.equal(h2.operationalFingerprint, c.o2.fingerprint);
@@ -191,7 +211,7 @@ test('S2 R7.3: the SECOND rotation of a contact verifies, because the durable id
 
 test('S3 stale and duplicate: epoch at or below the held one changes nothing; a re-signed identical claim is a duplicate, not a conflict', async () => {
   const c = await ch();
-  const h1 = deepFreeze({ ...nextOf(await receive(c.held, succ(c.s1), NOW)) });
+  const h1 = deepFreeze({ ...(await adopted(c.held, c.s1)) });
   assert.equal(act(await receive(h1, succ(c.s1), NOW)), 'stale:stale-successor', 'byte-identical re-delivery');
   const resigned = successorFor(c.master, c.g.fingerprint, 1, c.o1); // same claim, fresh randomized ML-DSA signature
   assert.notDeepEqual(Array.from(encodeKeyRotate(resigned)), Array.from(encodeKeyRotate(c.s1)), 'the bytes really differ');
@@ -203,7 +223,7 @@ test('S3 stale and duplicate: epoch at or below the held one changes nothing; a 
 
 test('S4 CONFLICT (Flint #7291): a different VALID successor for the epoch just adopted is recorded, both digests, WITHOUT un-adopting; nothing freezes', async () => {
   const c = await ch();
-  const h1 = deepFreeze({ ...nextOf(await receive(c.held, succ(c.s1), NOW)) });
+  const h1 = deepFreeze({ ...(await adopted(c.held, c.s1)) });
   const d = await receive(h1, succ(c.s1b), NOW + 5);
   assert.equal(d.action, 'conflict');
   const n = nextOf(d);
@@ -215,16 +235,15 @@ test('S4 CONFLICT (Flint #7291): a different VALID successor for the epoch just 
   assert.equal(n.conflicts[0].digests[0], h1.lastAdopted?.digest);
   assert.notEqual(n.conflicts[0].digests[0], n.conflicts[0].digests[1]);
   // it is detection only: the owner's next rotation still lands, and the record stays
-  const d2 = await receive(deepFreeze({ ...n }), succ(c.s2), NOW + 9);
-  assert.equal(act(d2), 'adopt');
-  assert.equal(nextOf(d2).conflicts.length, 1, 'the successor conflict stays recorded after the next adopt');
+  const h2 = await adopted(deepFreeze({ ...n }), c.s2, NOW + 3 * SUCCESSOR_WINDOW_MS);
+  assert.equal(h2.conflicts.length, 1, 'the successor conflict stays recorded after the next adopt');
   // delivering the same second claim again is not a new conflict
   assert.equal(act(await receive(deepFreeze({ ...n }), succ(c.s1b), NOW + 6)), 'stale:stale-successor');
 });
 
 test('S4b (Flint #7317 a) a third, fourth, fifth different valid successor APPENDS to the conflict (the second digest is kept), up to a cap', async () => {
   const c = await ch();
-  let h: HeldIdentity = deepFreeze({ ...nextOf(await receive(c.held, succ(c.s1), NOW)) });
+  let h: HeldIdentity = deepFreeze({ ...(await adopted(c.held, c.s1)) });
   const seen: string[] = [h.lastAdopted!.digest];
   for (const [i, s] of [c.s1b, c.s1c, c.s1d].entries()) {
     const d = await receive(h, succ(s), NOW + i);
@@ -260,6 +279,100 @@ test('S6 refusals: wrong pin, empty pin, wrong durable id, tampered fingerprint,
   const sig = c.s1.auth as { sig_by_authority: string };
   const flipped = sig.sig_by_authority.slice(0, 10) + (sig.sig_by_authority[10] === 'a' ? 'b' : 'a') + sig.sig_by_authority.slice(11);
   assert.equal(await r(c.held, { ...c.s1, auth: { ...c.s1.auth, sig_by_authority: flipped } as RotationSuccessorInput['auth'] }), 'refuse:rotation-bad-authority-sig');
+});
+
+// ---------- 1b. the HOLD (Flint #7546, Archie #7548): a successor proves the authority only, so it waits ----------
+test('H1 window: a redelivery inside the window writes nothing and keeps the ORIGINAL end; at exactly the window the same claim adopts (even re-signed); a clock that goes backward cannot shorten it', async () => {
+  const c = await ch();
+  const h1 = deepFreeze({ ...nextOf(await receive(c.held, succ(c.s1), NOW)) });
+  const end = NOW + SUCCESSOR_WINDOW_MS;
+  const early = await receive(h1, succ(c.s1), end - 1);
+  assert.equal(act(early), 'pend');
+  assert.ok(!('next' in early), 'a redelivery inside the window writes nothing');
+  assert.equal((early as { windowEndsAtMs: number }).windowEndsAtMs, end, 'the end is measured from the FIRST sight and never moved by a later arrival');
+  const back = await receive(h1, succ(c.s1), NOW - 1000);
+  assert.equal(act(back), 'pend', 'a clock that moved backward does not adopt');
+  assert.equal((back as { windowEndsAtMs: number }).windowEndsAtMs, end);
+  assert.equal(act(await receive(h1, succ(c.s1), end)), 'adopt', 'exactly at the window');
+  const resigned = successorFor(c.master, c.g.fingerprint, 1, c.o1); // same claim, fresh randomized signature: the digest is of the CLAIM
+  assert.equal(act(await receive(h1, succ(resigned), end)), 'adopt', 'a re-signed copy of the same claim counts as the same claim');
+});
+
+test('H2 contested: a different valid claim for the epoch makes it a contest; neither adopts however long it waits, until the receiver names one', async () => {
+  const c = await ch();
+  const a = await receive(c.held, succ(c.s1), NOW);
+  const b = await receive(deepFreeze({ ...nextOf(a) }), succ(c.s1b), NOW + 5);
+  assert.equal(b.action, 'conflict');
+  const h2 = deepFreeze({ ...nextOf(b) });
+  const entry = h2.pending.find((e) => e.kind === 'successor')!;
+  assert.equal(entry.digests.length, 2);
+  assert.equal(entry.firstSeenAtMs, NOW, 'the contest does not restart the clock');
+  assert.equal(h2.identityEpoch, 0, 'nothing adopted');
+  const late = NOW + 10 * SUCCESSOR_WINDOW_MS;
+  assert.equal(act(await receive(h2, succ(c.s1), late)), 'refuse:conflict-open', 'waiting does not settle it');
+  assert.equal(act(await receive(h2, succ(c.s1b), late)), 'refuse:conflict-open');
+  assert.equal(act(await receive(h2, succ(c.s1), late, { settleDigest: 'cc'.repeat(32) })), 'refuse:conflict-open', 'a digest that is not in the contest settles nothing');
+  const s = await receive(h2, succ(c.s1), NOW + 6, { settleDigest: entry.digests[0] });
+  assert.equal(act(s), 'adopt', 'the receiver\'s own choice adopts at once, before the window');
+  const n = nextOf(s);
+  assert.equal(n.operationalFingerprint, c.o1.fingerprint);
+  assert.equal(n.conflicts.length, 1);
+  assert.equal(n.conflicts[0].kind, 'successor');
+  assert.equal(n.conflicts[0].digests.length, 2, 'the losing claim stays as evidence of a second master holder');
+  assert.equal(n.conflicts[0].digests[0], entry.digests[0], 'the chosen claim first');
+  assert.deepEqual(n.pending, []);
+  const other = await receive(h2, succ(c.s1b), NOW + 6, { settleDigest: entry.digests[1] });
+  assert.equal(act(other), 'adopt', 'naming the other claim picks the other key');
+  assert.equal(nextOf(other).operationalFingerprint, c.o1b.fingerprint);
+});
+
+test('H3 a contest keeps up to SUCCESSOR_CONFLICT_MAX_DIGESTS different claims; after that nothing more is added', async () => {
+  const c = await ch();
+  let h: HeldIdentity = deepFreeze({ ...nextOf(await receive(c.held, succ(c.s1), NOW)) });
+  for (const [i, s] of [c.s1b, c.s1c, c.s1d].entries()) {
+    const d = await receive(h, succ(s), NOW + 1 + i);
+    assert.equal(d.action, 'conflict', 'claim ' + (i + 2));
+    h = deepFreeze({ ...nextOf(d) });
+  }
+  assert.equal(h.pending.find((e) => e.kind === 'successor')!.digests.length, SUCCESSOR_CONFLICT_MAX_DIGESTS);
+  const over = await receive(h, succ(c.s1e), NOW + 9);
+  assert.equal(act(over), 'stale:stale-successor');
+  assert.ok(!('next' in over));
+});
+
+test('H4 the successor entry is keyed by KIND: a pointer entry at the same numbers is left alone and is not mistaken for the successor', async () => {
+  const c = await ch();
+  const ptr: PendingEntry = { kind: 'pointer', identityEpoch: 1, epoch: 1, digests: ['dd'.repeat(32)], firstSeenAtMs: NOW - 5 };
+  const d = await receive(deepFreeze({ ...c.held, pending: [ptr] }), succ(c.s1), NOW);
+  assert.equal(act(d), 'pend');
+  assert.deepEqual(nextOf(d).pending.map((e) => [e.kind, e.firstSeenAtMs]), [['pointer', NOW - 5], ['successor', NOW]]);
+});
+
+test('H5 only a VERIFIED claim is recorded, and the entry holds digests and a time, never the object', async () => {
+  const c = await ch();
+  const bad = await receive(c.held, succ({ ...c.s1, new_fingerprint: c.o1b.fingerprint }), NOW);
+  assert.equal(act(bad), 'refuse:rotation-bad-authority-sig');
+  assert.ok(!('next' in bad), 'a refused claim writes nothing');
+  const e = nextOf(await receive(c.held, succ(c.s1), NOW)).pending[0];
+  assert.deepEqual(Object.keys(e).sort(), ['digests', 'epoch', 'firstSeenAtMs', 'identityEpoch', 'kind']);
+  assert.ok(JSON.stringify(e).length < 400, 'a small record, not the 6 KB object');
+});
+
+test('H6 (Flint #532 C5) the receiver floor: after adopting epoch 2, successors at epochs 1 and 0 are stale and write nothing', async () => {
+  const c = await ch();
+  const h1 = await adopted(c.held, c.s1);
+  const h2 = deepFreeze({ ...(await adopted(deepFreeze({ ...h1 }), c.s2, NOW + 2 * SUCCESSOR_WINDOW_MS)) });
+  assert.equal(h2.identityEpoch, 2);
+  const cases: Array<[string, RotationSuccessorInput]> = [
+    ['epoch 1, a different claim', c.s1b],
+    ['epoch 1, the one that was adopted', c.s1],
+    ['epoch 0', { ...c.s1, successor_epoch: 0, prior_epoch: 0 } as RotationSuccessorInput],
+  ];
+  for (const [label, s] of cases) {
+    const d = await receive(h2, succ(s), NOW + 9 * SUCCESSOR_WINDOW_MS);
+    assert.equal(act(d), 'stale:stale-successor', label);
+    assert.ok(!('next' in d), label + ' writes nothing');
+  }
 });
 
 // ---------- 2. pointers ----------
@@ -317,11 +430,14 @@ test('P4 epoch order at one identity epoch: lower stale; same claim idempotent; 
 test('P4c a POINTER conflict never blocks a successor (the owner\'s escape), and the adopt clears it because it was about the old keys', async () => {
   const c = await ch();
   const open = deepFreeze({ ...c.held, conflicts: [{ kind: 'pointer' as const, identityEpoch: 0, epoch: 5, digests: ['aa'.repeat(32), 'bb'.repeat(32)] }] });
-  const d = await receive(open, succ(c.s1), NOW);
+  const held1 = await receive(open, succ(c.s1), NOW);
+  assert.equal(act(held1), 'pend', 'an open pointer conflict does not refuse the successor: it is held like any other');
+  assert.equal(nextOf(held1).conflicts.length, 1, 'the pointer conflict still stands while the successor waits');
+  const d = await receive(deepFreeze({ ...nextOf(held1) }), succ(c.s1), NOW + SUCCESSOR_WINDOW_MS);
   assert.equal(act(d), 'adopt');
   assert.deepEqual(nextOf(d).conflicts, []);
   const both = deepFreeze({ ...c.held, conflicts: [{ kind: 'pointer' as const, identityEpoch: 0, epoch: 5, digests: ['aa'.repeat(32), 'bb'.repeat(32)] }, { kind: 'successor' as const, identityEpoch: 0, epoch: 0, digests: ['cc'.repeat(32), 'dd'.repeat(32)] }] });
-  assert.deepEqual(nextOf(await receive(both, succ(c.s1), NOW)).conflicts.map((x) => x.kind), ['successor'], 'a successor conflict is kept as the record it is');
+  assert.deepEqual((await adopted(both, c.s1)).conflicts.map((x) => x.kind), ['successor'], 'a successor conflict is kept as the record it is');
 });
 
 test('P4b settle: only the receiver\'s own named choice passes, and only a digest that is in the conflict', async () => {
@@ -438,8 +554,12 @@ test('P7 pending is bounded and never evicts; the owner\'s escape (a successor, 
   const c = await ch();
   const fullReal = deepFreeze({ ...c.held, pending: full });
   const a = await receive(fullReal, succ(c.s1), NOW);
-  assert.equal(act(a), 'adopt', 'a successor adopts with pending full');
-  assert.deepEqual(nextOf(a).pending, [], 'and clears it: pending belongs to the old keys');
+  assert.equal(act(a), 'pend', 'a successor is HELD with pending full, never refused: the owner\'s escape is not lockable');
+  assert.equal(nextOf(a).pending.length, PENDING_MAX_KEYS + 1, 'its entry sits outside the bound (one successor entry at most, by construction)');
+  assert.equal(full.length, PENDING_MAX_KEYS, 'the input list is not modified');
+  const done = await receive(deepFreeze({ ...nextOf(a) }), succ(c.s1), NOW + SUCCESSOR_WINDOW_MS);
+  assert.equal(act(done), 'adopt', 'and it adopts after the window');
+  assert.deepEqual(nextOf(done).pending, [], 'clearing pending: it belongs to the old keys');
 });
 
 test('P8 (Flint #7317 R2) only an AUTHORITY-signed accept clears pending entries at or below its epoch; an identity-only accept leaves a pending authority move alone', async () => {

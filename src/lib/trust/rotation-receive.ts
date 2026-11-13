@@ -8,8 +8,10 @@
  *
  * Rules (RotSign contract R6/R7, relay-move v1.4 R1-R3 and the contested-change rule, #721 design v3.2 D3a):
  *  - Everything is VERIFIED FIRST. Pointers verify against the identity keys the receiver HOLDS, never keys read from the pointer.
- *  - A successor at the held epoch + 1 is ADOPTED at once (R6.4); at or below the held epoch it is STALE (closed, benign); above +1 it is
- *    HELD (the wiring leaves it unacked for retry; nothing is stored). An epoch is never skipped.
+ *  - A successor at the held epoch + 1 is verified, then HELD as PENDING for SUCCESSOR_WINDOW_MS (72 h, the contact's own clock) and adopted
+ *    only when the same claim is delivered again after the window (it proves the authority alone, so it is never adopted on arrival: Flint #7546).
+ *    A different valid claim for the epoch = CONTESTED: neither adopts until the receiver names one (`settleDigest`). At or below the held epoch
+ *    a successor is STALE (closed, benign); above +1 it is HELD (the wiring leaves it unacked for retry; nothing is stored). An epoch is never skipped.
  *  - The existing successor verifier is given the DURABLE id as `fingerprint` (it compares successor.durable_id with it), never the
  *    operational fingerprint: otherwise the second rotation of a contact fails (R7.3).
  *  - A pointer at a lower identity epoch is stale; at the held epoch the pointer epoch decides: lower = stale, equal and same claim =
@@ -41,6 +43,12 @@ export { digestOfPointer, digestOfSuccessor };
 export const POINTER_CEILING_STEP = 16;
 export const POINTER_ALLOWANCE_WEEKS_MAX = 64;
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * How long a verified AUTHORITY-ONLY successor waits before it may be adopted: 72 h (Peter's R1 answer, as Flint #7646 relays it; Flint's own lean
+ * was 72 h over 7 days). Measured on the CONTACT's own clock from the first time the claim was seen. The rule's other half (one objection takes it
+ * to 144 h, a guardian quorum Stop) has NO wire form yet and is NOT implemented here.
+ */
+export const SUCCESSOR_WINDOW_MS = 72 * 60 * 60 * 1000;
 /** Bound of `pending` (a bound, not a protocol constant). A key holds ONE digest: a second different valid one is a conflict, not a second entry. */
 export const PENDING_MAX_KEYS = 8;
 /** Most digests kept in one SUCCESSOR conflict (the adopted claim plus later different ones): evidence is appended, never replaced. */
@@ -113,6 +121,7 @@ export type Decision =
   | { readonly action: 'adopt'; readonly kind: 'successor'; readonly digest: string; readonly adopted: AdoptedRotationIdentity; readonly next: HeldIdentity }
   | { readonly action: 'accept'; readonly kind: 'pointer'; readonly digest: string; readonly pointer: VerifiedPointerV2; readonly idempotent: boolean; readonly next?: HeldIdentity }
   | { readonly action: 'pend'; readonly kind: 'pointer'; readonly digest: string; readonly pointer: VerifiedPointerV2; readonly windowRequired: true; readonly relayChange: { readonly from: string; readonly to: string }; readonly next?: HeldIdentity }
+  | { readonly action: 'pend'; readonly kind: 'successor'; readonly digest: string; readonly windowRequired: true; readonly windowEndsAtMs: number; readonly next?: HeldIdentity }
   | { readonly action: 'approved'; readonly kind: 'pointer'; readonly digest: string; readonly pointer: VerifiedPointerV2; readonly idempotent: boolean; readonly relayChange?: { readonly from: string; readonly to: string }; readonly next?: HeldIdentity }
   | { readonly action: 'hold'; readonly reason: 'successor-ahead' | 'approve-ahead' }
   | { readonly action: 'stale'; readonly reason: 'stale-successor' | 'stale-identity-epoch' | 'stale-pointer' }
@@ -214,6 +223,31 @@ async function receiveSuccessor(held: HeldIdentity, bytes: Uint8Array, nowMs: nu
   const digest = digestOfSuccessor(v.successor, held.rotationPin);
   const gate = conflictGate(held, 'successor', digest, opts);
   if (gate) return gate;
+  // HOLD (Flint #7546, Archie #7548): a successor proves the AUTHORITY only (the wire carries no identity-key signature), so a found phrase must not
+  // rotate anyone at once. A verified claim is RECORDED and waits SUCCESSOR_WINDOW_MS on the contact's own clock; the same claim delivered again
+  // once the window has passed is adopted. A DIFFERENT valid claim for the epoch makes it CONTESTED: neither is adopted until the receiver names one
+  // (`settleDigest`, the in-person decision). The fast path (an owner APPROVE of a key rotation, approve kind 4; kind 3 is master rotation)
+  // has no wire form yet: Flint specs it.
+  const at = claimed;
+  const entry = held.pending.find((e) => e.kind === 'successor' && e.identityEpoch === at && e.epoch === at);
+  let others: readonly string[] = [];
+  if (!entry) {
+    // Outside the PENDING_MAX_KEYS bound on purpose: the owner's escape must not be lockable by a full list. It stays bounded by construction: only
+    // epoch held + 1 reaches this line and an adopt clears `pending`, so at most ONE successor entry exists (its digests are capped below).
+    const added = Object.freeze({ kind: 'successor' as const, identityEpoch: at, epoch: at, digests: Object.freeze([digest]), firstSeenAtMs: nowMs });
+    return Object.freeze({ action: 'pend', kind: 'successor', digest, windowRequired: true as const, windowEndsAtMs: nowMs + SUCCESSOR_WINDOW_MS, next: without(held, { pending: Object.freeze([...held.pending, added]) }) });
+  }
+  if (opts.settleDigest === digest && entry.digests.includes(digest)) {
+    others = entry.digests.filter((x) => x !== digest); // the receiver chose: the window is waived, the losing claims stay as evidence
+  } else if (entry.digests.length > 1 || !entry.digests.includes(digest)) {
+    if (entry.digests.includes(digest)) return refuse('conflict-open');
+    const digests = [...entry.digests, digest];
+    if (digests.length > SUCCESSOR_CONFLICT_MAX_DIGESTS) return Object.freeze({ action: 'stale', reason: 'stale-successor' });
+    const pending = held.pending.map((e) => (e === entry ? Object.freeze({ ...e, digests: Object.freeze(digests) }) : e));
+    return Object.freeze({ action: 'conflict', next: without(held, { pending: Object.freeze(pending) }) });
+  } else if (nowMs - entry.firstSeenAtMs < SUCCESSOR_WINDOW_MS) {
+    return Object.freeze({ action: 'pend', kind: 'successor', digest, windowRequired: true as const, windowEndsAtMs: entry.firstSeenAtMs + SUCCESSOR_WINDOW_MS });
+  }
   const pubs = await canonicalPubsFromArmoredPublicKey(v.successor.new_public_key, v.successor.new_pq_kem_public_key, v.successor.new_pq_sig_public_key);
   const next = Object.freeze({
     ...held,
@@ -226,7 +260,9 @@ async function receiveSuccessor(held: HeldIdentity, bytes: Uint8Array, nowMs: nu
     heldPointerDigest: undefined,
     lastAcceptedAtMs: nowMs,
     pending: Object.freeze([]),
-    conflicts: Object.freeze(held.conflicts.filter((x) => x.kind === 'successor')), // a pointer conflict was about the old keys
+    conflicts: Object.freeze(others.length > 0 // a pointer conflict was about the old keys; a settled CONTEST keeps the losing claims as evidence of a second master holder
+      ? withConflict(held.conflicts.filter((x) => x.kind === 'successor'), Object.freeze({ kind: 'successor' as const, identityEpoch: claimed, epoch: claimed, digests: Object.freeze([digest, ...others]) }))
+      : held.conflicts.filter((x) => x.kind === 'successor')),
     lastAdopted: Object.freeze({ epoch: v.adopted.epoch, digest, priorPin: held.rotationPin }),
     rekeyPending: true,
   }) as HeldIdentity;
