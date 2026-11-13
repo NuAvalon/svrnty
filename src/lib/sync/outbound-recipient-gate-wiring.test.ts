@@ -28,7 +28,7 @@ test('Joiner: the ceremony reads the book before depositing and passes the check
 });
 
 test('devin-comm join passes a blocked check taken from its own book', () => {
-  const body = between(src('scripts/devin-comm.ts'), "if (cmd === 'join')", 'admit: (contact) => store.upsertContact(contact)');
+  const body = between(src('scripts/devin-comm.ts'), "if (cmd === 'join')", 'admit: (contact) => withAdmitLog(');
   assert.match(body, /isBlocked:\s*blockedInBook\(store\.listContacts\(\)\)/);
 });
 
