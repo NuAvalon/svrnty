@@ -26,6 +26,8 @@ import { sendNoteFromHeadless, buildHeadlessConsumeDeps, pollHeadlessAllRelays, 
 import { parseRelayList, relayBudgetShare, unconfirmedReason } from '../src/lib/sync/relay-tiers';
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
+import { blockedInBook, recipientGateFromBook } from '../src/lib/sync/contact-update-gate';
+import { canonicalAuthorityPin } from '../src/lib/identity/authority-pin';
 import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -372,9 +374,10 @@ async function main() {
             passphrase: owner.passphrase,
             kemPublicKeyB64: myId.pq_kem_public_key,
             sigPublicKeyB64: myId.pq_sig_public_key,
+            ...(canonicalAuthorityPin(myId.next_authority_commitment) ? { nextAuthorityCommitment: canonicalAuthorityPin(myId.next_authority_commitment)! } : {}), // our own pin rides the signed response
           },
           target,
-          { relayBase: RELAY },
+          { isBlocked: blockedInBook(store.listContacts()), relayBase: RELAY },
         ),
       admit: (contact) => store.upsertContact(contact),
     });
@@ -439,6 +442,10 @@ async function main() {
       const arrival = g[owner.fingerprint]?.[fp];
       if (!arrival) throw new Error(`no gate arrival ${fp}`);
       const rec = buildAdmitRecord(arrival, {});
+      // First write wins: a pin the row already holds is kept; upsertContact replaces the row, so say so here instead of letting the arrival's pin win.
+      const heldPin = canonicalAuthorityPin(store.getContactByFingerprint(arrival.fingerprint)?.next_authority_commitment);
+      if (heldPin && rec.next_authority_commitment && heldPin !== rec.next_authority_commitment) console.error(`kept the pin already held for ${arrival.fingerprint.slice(0, 8)}; the arrival carried a different one`);
+      const pinToStore = heldPin ?? rec.next_authority_commitment;
       store.upsertContact({                       // re-entrant: same lock, one unit with the gate removal
         id: arrival.fingerprint,
         fingerprint: arrival.fingerprint,
@@ -448,6 +455,7 @@ async function main() {
         trust_level: rec.trust_level,
         pq_sig_public_key: rec.pq_sig_public_key,
         pq_kem_public_key: rec.pq_kem_public_key,
+        ...(pinToStore ? { next_authority_commitment: pinToStore } : {}), // the held pin if there is one, else the pin the verified joiner response carried (canonical-checked at the arrival)
       });
       delete g[owner.fingerprint][fp];
       if (!Object.keys(g[owner.fingerprint]).length) delete g[owner.fingerprint];
@@ -463,6 +471,7 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    if (!recipientGateFromBook(store.listContacts())(fp)) { console.error(formatNotSent(fp, 'this contact is blocked')); process.exitCode = 1; return; }
     // The outer hybrid seal needs the peer's ML-KEM key, taken from the ADMITTED record and re-checked
     // against its fingerprint (#456). Resolve it BEFORE the ratchet chain is advanced + persisted: a refusal
     // must leave ratchet-sessions.json untouched, not burn an index for a message that was never sent.
@@ -499,6 +508,7 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    if (!recipientGateFromBook(store.listContacts())(fp)) { console.error(formatNotSent(fp, 'this contact is blocked')); process.exitCode = 1; return; }
     const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
     if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;

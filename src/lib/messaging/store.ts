@@ -321,6 +321,31 @@ export async function putNote(note: NoteRecord): Promise<void> {
   } satisfies NoteRow);
 }
 
+/**
+ * putNote that also says whether THIS write created the row. The existence check and the put are ONE readwrite transaction (no await between them,
+ * and IndexedDB serialises readwrite transactions on a store), so two tabs delivering the same blob get exactly one `true`. The write itself is the
+ * same put as putNote (an existing row is overwritten, as before); only the answer is new. Encrypt BEFORE the transaction: WebCrypto cannot run inside
+ * one without it auto-committing. A row that exists but cannot be decrypted counts as existing (so no receipt for it), the safe side.
+ */
+export async function putNoteReportingCreated(note: NoteRecord): Promise<boolean> {
+  const enc = await encryptJson(note);
+  const value = { note_id: note.note_id, thread_id: note.thread_id, enc } satisfies NoteRow;
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('notes', 'readwrite');
+    const os = tx.objectStore('notes');
+    let created = false;
+    const existing = os.get(note.note_id);
+    existing.onsuccess = () => {
+      created = existing.result === undefined;
+      os.put(value);
+    };
+    tx.oncomplete = () => resolve(created);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 /** Fetch one stored note by id (any thread), or null if absent/corrupt. Used by the delivery-receipt
  *  consume seam to recover the OUTBOUND note's expected nonce + recipient before verifying a receipt. */
 export async function getNote(noteId: string): Promise<NoteRecord | null> {

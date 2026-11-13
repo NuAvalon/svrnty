@@ -59,6 +59,14 @@ export interface MailboxConfig {
    * Default false = door-open lazy-create-on-deposit (demo/family profile).
    */
   inviteRequired: boolean;
+  /** L4: refuse NEW deposits (429) once the relay's data filesystem is at least this % used. Polls/acks never refused. */
+  diskWatermarkPct: number;
+  /** Bytes one mailbox may hold, alongside the message count. Same 429 as the count cap. */
+  mailboxBytesCap: number;
+  /** Most deposit addresses tracked at once. Past it, expired ones are swept, then new ones share one overflow bucket. */
+  rateLimitIpCap: number;
+  /** Accepted deposit bytes per rate-limit window, across every address and mailbox. 0 = derive it from this disk (deposit-budget.ts). */
+  globalDepositBytesPerWindow: number;
 }
 
 export function mailboxConfig(): MailboxConfig {
@@ -75,5 +83,9 @@ export function mailboxConfig(): MailboxConfig {
     replayCacheMax: intEnv('RELAY_REPLAY_CACHE_MAX', 100_000),
     ownerV2Enabled: boolEnv('RELAY_OWNER_V2_ENABLED', false),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
+    diskWatermarkPct: Math.min(intEnv('RELAY_DISK_WATERMARK_PCT', 80), 100),
+    mailboxBytesCap: intEnv('RELAY_MAILBOX_BYTES_CAP', 16 * 1024 * 1024),
+    rateLimitIpCap: intEnv('RELAY_RATE_LIMIT_IP_CAP', 50_000),
+    globalDepositBytesPerWindow: intEnv('RELAY_GLOBAL_DEPOSIT_BYTES_PER_WINDOW', 0),
   };
 }

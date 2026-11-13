@@ -11,9 +11,10 @@ process.env.RELAY_DB_PATH = ':memory:'; // in-memory SQLite (the runner sets no 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { pollMailbox, resetMailboxStore } from './mailbox-store';
+import { deriveMailboxId } from './mailbox-auth';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const MBX = 'mbx_tripwire_envelope_id';
+const MBX = deriveMailboxId('F'.repeat(64));
 
 beforeEach(() => {
   resetMailboxStore();

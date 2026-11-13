@@ -26,6 +26,7 @@ import {
 } from '@/lib/crypto/recovery';
 import {
   storeIdentity,
+  markDeliveryRestored,
   loadIdentity,
   storeKey,
   loadKey,
@@ -303,6 +304,7 @@ export class BrowserIdentity {
     const fingerprint = identity.identity.fingerprint;
 
     await storeIdentity(fingerprint, identity);
+    await markDeliveryRestored(fingerprint); // task #714 R2a: a restore: the Delivery-receipt choice is unknown here (asked once, none until answered)
 
     if (importData.private_key && importData.passphrase) {
       await storeKey(fingerprint, importData.private_key, importData.passphrase);

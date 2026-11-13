@@ -117,6 +117,7 @@ If you don't schedule it, old messages stay on the server.
   survive restarts and rebuilds. It's one file for one `app` container: do **not** run
   multiple `app` replicas behind a load balancer; they would each have their own mailbox.
 - **Updating:** `git pull && docker compose up -d --build`.
+- **Keep the `Caddyfile` current when you update.** The app sets its own script policy (`Content-Security-Policy`) on every page. A `Content-Security-Policy` line in an older or hand-edited `Caddyfile` replaces that header, which turns the protection off with no warning. `scripts/selfhost_smoke.sh` fails if that happens.
 - **Backups:** see [Backups](#backups) below.
 - **Logs:** `docker compose logs -f app` (or `registration`, `caddy`).
 
@@ -127,9 +128,23 @@ If you don't schedule it, old messages stay on the server.
 - **Run behind Caddy as shipped.** The image already runs as a non-root `nextjs` user on an
   internal port; only Caddy publishes 80/443. Don't expose the app's port 3000 publicly —
   the TLS + header discipline lives at the Caddy edge.
-- **If you replace Caddy with your own proxy,** it must replace any `X-Forwarded-For` header a
-  client sends; otherwise clients can choose their own rate-limit bucket. (Caddy as shipped
-  already does this.)
+- **If you replace Caddy with your own proxy,** it must set the `X-Svrnty-Client-IP` header to
+  the real client address on every request to the app, overwriting anything the client sent. The
+  app's per-client rate limits read that header and nothing else. If your proxy doesn't set it,
+  nothing visibly fails: every user shares one bucket, so the whole instance gets 10 deposits and
+  300 owner requests a minute (`RELAY_RATE_LIMIT_MAX`, `RELAY_OWNER_RATE_LIMIT_MAX`). If your proxy
+  passes through a value the client sent, clients can choose their own bucket. (Caddy as shipped
+  sets this header from the address connected to it.) This setup hasn't been tested end to end.
+- **Deposit limits.** A deposit body is capped at 64 KiB, a mailbox at 1000 messages and 16 MiB, and all deposits together at a byte budget per minute. By default the budget comes from your own disk: the room left before the disk guard, divided by the minutes in one retention period, between 64 KiB and 24 MiB. The derived number is what protects a small disk; the 24 MiB ceiling is only a setting. Set `RELAY_GLOBAL_DEPOSIT_BYTES_PER_WINDOW` or `RELAY_MAILBOX_BYTES_CAP` to change them. Under a sustained flood the budget runs out early in each minute, so honest deposits are refused for as long as the flood lasts. It ends when the flood ends, instead of lasting until stored messages expire. If you replace Caddy, cap `/api/relay/*` request bodies at your proxy too.
+- **If you put a CDN or load balancer in front of Caddy,** the address connected to Caddy is the
+  CDN's, not your user's. Users behind the same edge then share a bucket, and one sender gets a
+  fresh budget on every edge. To fix it, list only your CDN's published address ranges under
+  Caddy's `trusted_proxies`, set `client_ip_headers` to your CDN's own single-value client address
+  header (on Cloudflare, `Cf-Connecting-IP`), and change `{remote_host}` to `{client_ip}` on the
+  `X-Svrnty-Client-IP` line in `Caddyfile`. Don't use `X-Forwarded-For` for this if you can avoid
+  it: Caddy reads it from the left, and a client can supply the left-most entry. If you must, also
+  set `trusted_proxies_strict`. Never trust any of these headers without `trusted_proxies`, or
+  anyone can forge them. This setup hasn't been tested end to end either.
 - **Secrets stay server-side.** Any operator secret must never
   be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
   secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
@@ -168,6 +183,8 @@ If you don't schedule it, old messages stay on the server.
 ---
 
 ## Migrating a mailbox to another relay
+
+> **Not wired in the app yet.** This section describes the protocol. The code for it exists, but nothing in the running app calls it, so you can't move relays this way today, and people on different instances can't yet reach each other.
 
 Your mailbox (where peers deposit envelopes for you) is **advertised, not glued**: peers
 find it via a signed *mailbox pointer* you publish — changing relays means publishing a

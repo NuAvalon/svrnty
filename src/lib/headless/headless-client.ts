@@ -20,6 +20,7 @@ import {
   type ReceiptResponseSeam,
 } from '@/lib/sync/consume-mailbox';
 import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/contact-update-envelope';
+import { mayEmitReceipt } from '@/lib/trust/delivery-receipt-setting';
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
@@ -27,6 +28,7 @@ import { depositWithFailover, mergeRelaySummaries, type DepositOutcome, type Rel
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { nextLastActivity } from '@/lib/messaging/thread-activity';
 import { admitContact } from '@/lib/trust/admit-contact';
+import { recipientGateFromBook } from '@/lib/sync/contact-update-gate';
 import { headlessDeadLetterSink } from './headless-dead-letter';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { parseReceiptWireV1, type ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
@@ -180,10 +182,10 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
       recordHop(trail, DECRYPTED_HOP, { note_id: wire.note_id }, trailPeer(store, wire.from_fingerprint, rec.participant_kind)); // decrypted on this host
       const r = store.acceptInboundNote(rec, threadFor, admitContact);
       if (r === 'not-admitted') return { dropped: 'not-in-book', fp: wire.from_fingerprint };
-      // Layer 1 R1: a NEW note, or a byte-identical redelivery (C2: our first receipt may have been lost while the sender's key is unspent),
-      // is a receipt CANDIDATE. Never a FWW refusal ('kept'). Nothing is sent here: the note is durable only at its chunk commit, and the
-      // emit must never hold the writer lock (C1). sendHeadlessReceipts() sends after the pass, for what the store then actually holds.
-      if (r === 'stored') receipts?.set(`${wire.from_fingerprint}:${wire.note_id}`, wire);
+      // Layer 1 R1 (#714: created-only): only a NEW row is a receipt CANDIDATE. A byte-identical redelivery ('stored') is not (Flint withdrew C2:
+      // a stored-and-acked note is not redelivered by an honest relay), and neither is a FWW refusal ('kept'). Nothing is sent here: the note is durable
+      // only at its chunk commit, and the emit must never hold the writer lock (C1). sendHeadlessReceipts() sends after the pass, for what the store then actually holds.
+      if (r === 'created') receipts?.set(`${wire.from_fingerprint}:${wire.note_id}`, wire);
       if (r === 'kept') {
         // FIRST WRITE WINS: a same-sender note that reuses a stored id with different content is refused; the stored note is what we acknowledge.
         noteRewriteRefused();
@@ -258,7 +260,9 @@ export async function sendHeadlessReceipts(store: HeadlessStore, candidates: Rec
       persistedSeen.add(wire.note_id);
       recordHop(opts.hopTrailDir, 'persisted', { note_id: wire.note_id }, peer);
     }
-    if (!durable || !admitContact(store.getContactByFingerprint(wire.from_fingerprint))) {
+    const contactNow = store.getContactByFingerprint(wire.from_fingerprint);
+    // G2 + G3 (#714): still admitted AND the Delivery setting (the contact's choice over the book's default) allows it, both read NOW.
+    if (!durable || !mayEmitReceipt({ admitted: admitContact(contactNow), perContact: contactNow?.delivery_receipts, global: store.getDeliveryDefault() })) {
       out.skipped++;
       continue;
     }
@@ -493,6 +497,10 @@ export async function sendNoteFromHeadless(args: {
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** which relay carried it (index in relayBases), null if none */ tier?: number | null; /** a failed attempt may still hold the note: never claim 'not sent' */ unconfirmed?: boolean; /** the HTTP status of the last relay that answered; absent if none answered (nothing posted, or every request threw) */ status?: number; /** which relays left it unconfirmed (host + status), for the status line */ unconfirmedBy?: UnconfirmedAttempt[] }> {
+  // First, before anything is signed or written: only someone this agent's book admits. Throws, so a refused note leaves no outbound row.
+  if (!recipientGateFromBook(args.store.listContacts())(args.peerFingerprint)) {
+    throw new Error('recipient is blocked or not in the address book; nothing was sent');
+  }
   const fetchImpl = args.fetchImpl ?? fetch;
   const relays = args.relayBases && args.relayBases.length > 0 ? args.relayBases : [args.relayBase ?? '/api/relay'];
   const now = () => new Date().toISOString();

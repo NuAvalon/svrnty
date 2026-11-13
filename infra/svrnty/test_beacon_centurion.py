@@ -4,6 +4,9 @@ The verifier subprocess is replaced by a test seam returning canonical tuples, e
 process tree to prove the whole group dies. Responses are compared as BYTES: a lone deposit must look the same no matter what
 else is stored, and the deposit that completes a bond must look like any other accepted deposit (the poll delivers the match).
 """
+from contextlib import closing
+import shutil
+import inspect
 import json
 import os
 import sqlite3
@@ -182,6 +185,7 @@ def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
     (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}\n{"ok":true}\n', 0),            # two lines
     (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3","x":1}\n', 0),                   # extra key
     (b'{"ok":true,"e":"2900","H_e":"1","N":"007","K":"3"}\n', 0),                       # non-canonical N
+    (b'{"ok":true,"e":"2900","H_e":"1\\n","N":"2","K":"3"}\n', 0),                      # a trailing newline inside a field
     (b'{"ok":"yes","e":"2900","H_e":"1","N":"2","K":"3"}\n', 0),                        # ok not exactly true
     (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}\n', 2),                         # right line, wrong exit code
 ])
@@ -220,8 +224,112 @@ def test_python_epoch_constants_equal_the_shared_js_module():
     """Python can't import the JS module, so it keeps its own copy; this pins the copy to beacon-wire.mjs (the one the
     prover and verify.mjs import). A drift here = every deposit lands in an epoch the other side never matches."""
     import subprocess
-    wire = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "lib", "crypto", "beacon-wire.mjs")
+    wire = os.path.join(os.path.dirname(os.path.abspath(__file__)), "beacon-verifier", "beacon-wire.mjs")  # the copy the image runs; CI pins it to src/lib/crypto
     code = ("import(process.argv[1]).then(m => process.stdout.write(JSON.stringify("
             "{e: m.EPOCH_SECONDS ?? null, g: m.GRACE_SECONDS ?? null})))")
     out = subprocess.run([NODE, "-e", code, os.path.realpath(wire)], capture_output=True, text=True, timeout=60, check=True)
     assert json.loads(out.stdout) == {"e": bc.EPOCH_SECONDS, "g": bc.GRACE_SECONDS}
+
+
+# ---- the per-epoch counter and the default cap ----
+fv = FakeVerifier()
+
+
+def _db_with(tmp_path, name, counts, cap=100, clock=lambda: NOW):
+    c = bc.Centurion(str(tmp_path / name), verifier=fv, clock=clock, per_epoch_cap=cap, ip_per_minute=100)
+    with sqlite3.connect(c.db_path) as db:
+        for epoch, how_many in counts.items():
+            for i in range(how_many):
+                db.execute("INSERT INTO beacon_deposits (epoch, slot, n, k, accepted_at) VALUES (?, ?, ?, '1', 'x')", (epoch, f"{epoch}{i}", str(i)))
+    return c
+
+
+def test_startup_rebuilds_the_counter_from_the_rows_and_drops_stale_entries(tmp_path):
+    c = _db_with(tmp_path, "a.db", {100: 3, 101: 1})
+    with sqlite3.connect(c.db_path) as db:
+        db.execute("INSERT OR REPLACE INTO beacon_epoch_counts (epoch, n) VALUES (77, 999)")
+    c2 = bc.Centurion(c.db_path, verifier=fv, clock=lambda: NOW, per_epoch_cap=100, ip_per_minute=100)
+    with sqlite3.connect(c2.db_path) as db:
+        assert dict(db.execute("SELECT epoch, n FROM beacon_epoch_counts")) == {100: 3, 101: 1}
+
+
+def test_a_database_from_before_the_counter_still_enforces_the_cap(tmp_path):
+    e = int(NOW // bc.EPOCH_SECONDS)
+    c = _db_with(tmp_path, "b.db", {e: 2}, cap=2)
+    with sqlite3.connect(c.db_path) as db:
+        db.execute("DROP TABLE beacon_epoch_counts")
+    c2 = bc.Centurion(c.db_path, verifier=fv, clock=lambda: NOW, per_epoch_cap=2, ip_per_minute=100)
+    assert c2.deposit(body(tup("9", "9")), "a") == bc.refused("full")
+
+
+@pytest.mark.parametrize("offset,expect", [(bc.EPOCH_SECONDS // 2, 2), (5, 1 + 2), (bc.EPOCH_SECONDS - 5, 2 + 4)])
+def test_the_open_count_is_exactly_the_open_epochs(tmp_path, offset, expect):
+    e = 3000
+    t = e * bc.EPOCH_SECONDS + offset
+    c = bc.Centurion(str(tmp_path / "c.db"), verifier=fv, clock=lambda: t, per_epoch_cap=100, ip_per_minute=100)
+    with sqlite3.connect(c.db_path) as db:
+        db.executemany("INSERT INTO beacon_epoch_counts (epoch, n) VALUES (?, ?)", [(e - 1, 1), (e, 2), (e + 1, 4), (e + 2, 8), (e - 2, 16)])
+    with closing(c._db()) as db:
+        assert c._open_count(db, t) == expect
+
+
+def test_no_open_epochs_with_counts_reads_as_zero(tmp_path):
+    c = bc.Centurion(str(tmp_path / "d.db"), verifier=fv, clock=lambda: NOW, per_epoch_cap=100, ip_per_minute=100)
+    with closing(c._db()) as db:
+        assert c._open_count(db, NOW) == 0
+
+
+def test_the_open_count_never_scans_the_deposits():
+    assert "beacon_deposits" not in inspect.getsource(bc.Centurion._open_count)
+
+
+class FailsOnCounter:
+    """A connection that dies at the counter write, the way a crash between the two statements would."""
+    def __init__(self, real):
+        self.real = real
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+    def execute(self, sql, *a):
+        if sql.startswith("INSERT INTO beacon_epoch_counts"):
+            raise RuntimeError("died at the counter")
+        return self.real.execute(sql, *a)
+
+
+def test_a_failure_writing_the_counter_leaves_neither_the_deposit_nor_a_count(tmp_path, monkeypatch):
+    c = bc.Centurion(str(tmp_path / "e.db"), verifier=fv, clock=lambda: NOW, per_epoch_cap=100, ip_per_minute=100)
+    real = c._db
+    monkeypatch.setattr(c, "_db", lambda: FailsOnCounter(real()))
+    with pytest.raises(RuntimeError):
+        c.deposit(body(tup("5", "6")), "a")
+    with sqlite3.connect(c.db_path) as db:
+        assert db.execute("SELECT count(*) FROM beacon_deposits").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM beacon_epoch_counts").fetchone()[0] == 0
+
+
+GB = 1024 ** 3
+
+
+@pytest.mark.parametrize("free,cap", [
+    (1400 * GB, 1_000_000),                                                             # a big disk: held at the ceiling
+    (5 * GB, 1_000_000),                                                                # still the ceiling
+    (GB, 214_748),                                                                      # a tenth of what's free, at 500 B a row
+    (1024 ** 2, 10_000),                                                                # nearly full: keeps the floor
+])
+def test_the_default_cap_comes_from_the_disk(free, cap):
+    usage = lambda p: shutil._ntuple_diskusage(free * 2, free, free)
+    assert bc.default_epoch_cap("/x/b.db", environ={}, disk_usage=usage) == cap
+
+
+def test_an_unreadable_disk_gets_the_ceiling():
+    def usage(p):
+        raise OSError("no")
+    assert bc.default_epoch_cap("/x/b.db", environ={}, disk_usage=usage) == 1_000_000
+
+
+def test_the_setting_wins_and_a_junk_setting_is_ignored():
+    usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "7"}, disk_usage=usage) == 7
+    for junk in ("", "0", "-1", "lots", "1e6", "7\n"):
+        assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": junk}, disk_usage=usage) == 214_748, junk

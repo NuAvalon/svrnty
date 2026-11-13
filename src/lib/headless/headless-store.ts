@@ -9,6 +9,7 @@
 // NOTE: this is a HEADLESS-ONLY module (imports node:fs) — never import it into the browser bundle.
 
 import { readJsonStrict, writeFileAtomic } from './atomic-file';
+import type { DeliveryDefaultRead } from '@/lib/trust/delivery-receipt-setting';
 import { withWriterLock } from './writer-lock';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
@@ -30,6 +31,8 @@ export interface HeadlessContact {
   version?: number;
   pq_sig_public_key?: string; // base64
   pq_kem_public_key?: string; // base64
+  delivery_receipts?: 'on' | 'off'; // #714 R2a: this contact's override of the book's Delivery default (absent = follow it)
+  next_authority_commitment?: string; // 64 lowercase hex: the contact's pin, kept only from a signature-verified source (a verified joiner response admitted from the Gate)
   mutual?: { they_trust_me: boolean | null; last_sync: string | null; reciprocal: boolean; last_affirm_at?: string };
   [key: string]: unknown;
 }
@@ -41,6 +44,8 @@ interface HeadlessData {
   // #712 C1: envelopes whose contents a chunk commit already holds, keyed by consume's envelopeDedupeKey (a hash, never the raw id).
   // A redelivered one (killed between commit and ack) is acked WITHOUT being opened again. Bounded: see commitChunk.
   applied_envelopes?: AppliedEnvelope[];
+  // #714 R2a: the book's Delivery-receipt default. Absent = On (an agent's default; the spec keeps agent-to-agent receipts on).
+  delivery_receipts_default?: 'on' | 'off';
 }
 
 interface AppliedEnvelope {
@@ -169,6 +174,7 @@ export class HeadlessStore {
       notes: book?.notes ?? [],
       threads: book?.threads ?? [],
       ...(Array.isArray(book?.applied_envelopes) ? { applied_envelopes: book.applied_envelopes } : {}),
+      ...(book?.delivery_receipts_default === 'on' || book?.delivery_receipts_default === 'off' ? { delivery_receipts_default: book.delivery_receipts_default } : {}),
     };
   }
 
@@ -305,6 +311,15 @@ export class HeadlessStore {
     };
   }
 
+  // --- delivery-receipt default (#714 R2a) ---
+  /** The book's Delivery default as the shared rule reads it. Nothing set = On. A value that is not exactly 'on' or 'off' was already dropped at load. */
+  getDeliveryDefault(): DeliveryDefaultRead {
+    return { state: 'ok', rec: { v: 1, value: this.data.delivery_receipts_default ?? 'on' } };
+  }
+  setDeliveryDefault(value: 'on' | 'off'): void {
+    this.mutate(() => { this.data.delivery_receipts_default = value; });
+  }
+
   // --- contacts ---
   getContactByFingerprint(fingerprint: string): HeadlessContact | null {
     return this.data.contacts.find((c) => c.fingerprint === fingerprint) ?? null;
@@ -365,10 +380,11 @@ export class HeadlessStore {
    * commit, a sender blocked by a concurrent writer since the note was opened is refused there, exactly as before the poll. `threadFor`
    * builds the thread from the CURRENT one on that copy. Returns 'not-admitted' (nothing stored) when the sender is not admitted, and
    * 'kept' (nothing changed) when the note reuses a stored inbound id with different content: FIRST WRITE WINS, the same rule as putNote.
+   * 'created' (#714 R1) is a NEW row; 'stored' is the same note stored again (a byte-identical redelivery): only 'created' earns a receipt.
    * The op returns false ONLY for not-admitted: that is the refusal commitChunk reports (a 'kept' note is stored, the stored row stands).
    */
-  acceptInboundNote(n: NoteRecord, threadFor: (existing: NoteThread | undefined) => NoteThread, admit: (c: HeadlessContact | null) => boolean): 'stored' | 'kept' | 'not-admitted' {
-    const r = this.mutate((): 'stored' | 'kept' | false => {
+  acceptInboundNote(n: NoteRecord, threadFor: (existing: NoteThread | undefined) => NoteThread, admit: (c: HeadlessContact | null) => boolean): 'created' | 'stored' | 'kept' | 'not-admitted' {
+    const r = this.mutate((): 'created' | 'stored' | 'kept' | false => {
       if (!admit(this.getContactByFingerprint(n.from_fingerprint))) return false;
       // same key as putNote: sender + direction + id (Chaos #170)
       const i = this.data.notes.findIndex((x) =>
@@ -381,7 +397,7 @@ export class HeadlessStore {
       const j = this.data.threads.findIndex((x) => x.thread_id === t.thread_id);
       if (j === -1) this.data.threads.push(t);
       else this.data.threads[j] = t;
-      return 'stored';
+      return i === -1 ? 'created' : 'stored';
     });
     return r === false ? 'not-admitted' : r;
   }

@@ -9,7 +9,7 @@ process.env.E2E_PROD = '1';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /demo-arc\.spec\.ts/,
+  testMatch: /(demo-arc|csp-script-lock|csp-egress)\.spec\.ts/,
   // beat-3 is a HEAVY 2-device prod ceremony — genesis×2 (OpenPGP + ML-DSA-87 + ML-KEM-1024 keygen)
   // + grow + join + add-to-gate + 2× Argon2id(64MiB) unlocks, across 2 prod contexts. That real
   // crypto cost sits right at the old 180s cap: the failure slid between the Galaxy-tab click (line

@@ -57,6 +57,7 @@ import {
 } from './notes-field';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
 import { sendNoteFromInbox } from './notes-send';
+import { recipientGateFromBook } from '@/lib/sync/contact-update-gate';
 import { outboundStatus, statusLabel, peerSendsReceipts, showAwaitingHint, showRatchetOffLine, type NoteBubbleStatus } from './notes-status';
 import { boundDisplayText, formatFingerprintShort } from './notes-text';
 
@@ -446,6 +447,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
         peerPublicKeyArmored: selected.publicKeyArmored,
         peerPqKemPublicKey: selected.pqKemPublicKey, // HNDL: present ⇒ hybrid seal; absent ⇒ fail-closed skip
         peerPqSigPublicKey: selected.pqSigPublicKey,
+        loadRecipientGate: async () => recipientGateFromBook(await getAllContacts(fp)),
         body,
         threadId: existing?.thread_id,
       });

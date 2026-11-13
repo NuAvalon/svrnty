@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 
+// These specs inject a test harness with addScriptTag, which the page's script policy refuses, as it should.
+test.use({ bypassCSP: true });
+
 /**
  * Contact writes are a compare-and-swap, and writes that protect the owner take a per-contact Web Lock, in a REAL browser: real IndexedDB, the
  * real encrypted contact rows and book manifest, real navigator.locks across two tabs of one context.

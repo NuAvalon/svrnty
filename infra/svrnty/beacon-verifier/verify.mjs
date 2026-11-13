@@ -17,7 +17,7 @@ import { buildBn128 } from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
 import {
   parseDeposit, serializeSignals, serializeProof, R, WireError, EPOCH_SECONDS, GRACE_SECONDS,
-} from '../../../src/lib/crypto/beacon-wire.mjs';
+} from './beacon-wire.mjs';
 
 export { EPOCH_SECONDS, GRACE_SECONDS };   // the shared module's values, re-exported (never redefined here)
 const MAX_STDIN = 16 * 1024 + 1;
