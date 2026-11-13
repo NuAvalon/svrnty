@@ -1,7 +1,9 @@
 // src/lib/trust/types.ts
 // Trust is binary: you know someone, or you trust them.
 // Known = contact exists. Trusted = vouched.
-// Trust decays over time without interaction. Default: 2 years.
+// Trust does NOT decay — once trusted, stays fully trusted (it is not a setting).
+// After ~2 years without interaction the bond only DIMS visually (a presentational nudge);
+// any interaction relights it. The trust itself never lapses.
 // No levels. No tiers. No popularity contest.
 
 // --- Core Types ---
