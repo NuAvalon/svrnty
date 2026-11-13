@@ -38,6 +38,22 @@
 /src/lib/contacts/safe-contact-link.ts   @palberts22
 /src/lib/contacts/resolve-sms-href.ts   @palberts22
 
+# --- Fence gaps found 2026-11-13 (task #627 item 5 / Delta2): security LOGIC outside the fenced dirs.
+#     Whole dir only where the dir has no render (headless: 0 .tsx; format: wire bytes only; identity/archive:
+#     frozen seal fixtures + their generators). In component dirs, ONLY the key/restore/verify logic files;
+#     the screens next to them stay render-glass. ---
+/src/lib/headless/                                      @palberts22
+/src/lib/format/                                        @palberts22
+/src/lib/contacts/crypto-util.ts                        @palberts22
+/src/components/encrypt-decrypt/encrypt-decrypt-actions.ts  @palberts22
+/src/components/encrypt-decrypt/encrypt-decrypt-keys.ts     @palberts22
+/src/components/encrypt-decrypt/load-owner-message-keys.ts  @palberts22
+/src/components/recovery/seedVaultRestore.ts            @palberts22
+/src/components/recovery/vaultPassphraseRestore.ts      @palberts22
+/src/components/notes/notes-keys.ts                     @palberts22
+/src/components/verify/fingerprint-from-scan.ts         @palberts22
+/src/components/identity/archive/                       @palberts22
+
 # --- CI / guard-of-guards: Devin's App has workflows:write, and CI enforces test-guarded
 #     surfaces (e.g. the book-export.test.ts private-tag export-firewall). Fence CI so any
 #     workflow change needs code-owner review (else Devin could gut a firewall test with only a
