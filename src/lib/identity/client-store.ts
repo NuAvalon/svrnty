@@ -1268,7 +1268,7 @@ export function mergeContactUpdate(existing: ContactRecord, updates: ContactUpda
  * The gates a finished contact record must pass before it is stored. They run on every attempt of a write, on the record that attempt
  * decided from. Throws to refuse.
  */
-async function finalizeContactUpdate(existing: ContactRecord, next: ContactRecord): Promise<ContactRecord> {
+export async function finalizeContactUpdate(existing: ContactRecord, next: ContactRecord): Promise<ContactRecord> {
   // #724: a row's fingerprint is its identity; trust + visibility hang off the row, so an update may never replace it.
   assertFingerprintUnchanged(existing.fingerprint, next.fingerprint);
   const pk = (next.public_key || '').trim();
