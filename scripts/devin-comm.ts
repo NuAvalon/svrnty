@@ -466,7 +466,7 @@ async function main() {
       const arrival = g[owner.fingerprint]?.[fp];
       if (!arrival) throw new Error(`no gate arrival ${fp}`);
       const rec = buildAdmitRecord(arrival, {});
-      // First write wins: a pin the row already holds is kept; upsertContact replaces the row, so say so here instead of letting the arrival's pin win.
+      // First write wins: a pin the row already holds is kept. upsertContact merges the arrival over the row (#724), so the pin is chosen here, explicitly, rather than left to field order.
       const heldPin = canonicalAuthorityPin(store.getContactByFingerprint(arrival.fingerprint)?.next_authority_commitment);
       if (heldPin && rec.next_authority_commitment && heldPin !== rec.next_authority_commitment) console.error(`kept the pin already held for ${arrival.fingerprint.slice(0, 8)}; the arrival carried a different one`);
       const pinToStore = heldPin ?? rec.next_authority_commitment;
