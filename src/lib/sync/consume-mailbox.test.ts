@@ -412,3 +412,87 @@ test('#720 benign terminal: a contact-update that is stale (already applied) is 
   assert.deepEqual(recorded, [], 'a stale update is consumed content, not a loss: no record');
   assert.equal(summary.deadLettered, 0);
 });
+
+// ---------- lenses v1.7 review-3, gap E1: refused lens payloads through consumeInboundContactUpdates ----------
+
+import { isMessageReason, type DeadLetterRow } from './dead-letter';
+import { lensTerminalClass } from './consume-mailbox';
+
+test('R4-T1b: a refused lens result drops the fingerprint AT DISPATCH — not at the row gate', () => {
+  // The "a refusal stores the fingerprint again" mutant survived because makeDeadLetterRow's
+  // AUTHENTICATED_REASONS gate drops the fp anyway. This pins the dispatch itself: hand it a
+  // refused result WITH a fingerprint and none may come out the other side.
+  for (const refused of ['method-cap', 'shared-slot'] as const) {
+    const cls = lensTerminalClass({ refused, fingerprint: 'f'.repeat(64) });
+    assert.equal('fp' in cls, false, `${refused}: the dispatch carries no fp — a stored-fp mutant goes red here`);
+    assert.equal('reason' in cls && cls.reason, refused === 'method-cap' ? 'lens-method-cap' : 'lens-shared-slot');
+  }
+});
+
+test('R4-T1b end-to-end: a refused lens payload through consume records NO fingerprint even when the seam names one', async () => {
+  const recorded: DeadLetterRow[] = [];
+  const lens = {
+    verify: async () => new Uint8Array([1, 2, 3]),
+    accept: async () => ({ refused: 'method-cap' as const, fingerprint: bob.fingerprint }),
+  };
+  const ackLog: string[][] = [];
+  await consumeInboundContactUpdates(baseDeps({
+    lens,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].reason, 'lens-method-cap');
+  assert.equal('fp' in recorded[0], false, 'no fingerprint reaches the record — and not via the row gate alone');
+});
+
+test('R2b (v1.10): a HELD lens payload is NOT acknowledged — the relay keeps it and it applies on the next poll', async () => {
+  const recorded: DeadLetterRow[] = [];
+  let calls = 0;
+  const lens = {
+    verify: async () => new Uint8Array([1, 2, 3]),
+    // First poll: the book is unreadable → held. Second poll (healed): the same envelope applies.
+    accept: async () => (calls++ === 0 ? { held: true as const } : { applied: true as const, id: 'ev', fingerprint: 'f'.repeat(64), ignited: false }),
+  };
+  const ackLog: string[][] = [];
+  const deps = (ack: string[][]) => baseDeps({
+    lens,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ack),
+  });
+  const first = await consumeInboundContactUpdates(deps(ackLog));
+  assert.deepEqual(ackLog, [], 'a receiver-side hold is NOT acked — an ack would lose the payload (must go red)');
+  assert.equal(recorded.length, 0, 'a held payload is not a loss — no dead-letter row');
+  assert.equal(first.deadLettered, 0);
+  const second = await consumeInboundContactUpdates(deps(ackLog));
+  assert.deepEqual(ackLog, [['e1']], 'the same envelope re-runs next poll and acks once it applies');
+  assert.equal(second.applied, 1, 'exactly one apply across the polls');
+  assert.equal(recorded.length, 0, 'still no dead-letter row — it applied');
+});
+
+test('R3-E1: each refused lens payload is recorded under its OWN reason — NO fingerprint, never a message', async () => {
+  const recorded: DeadLetterRow[] = [];
+  let call = 0;
+  const lens = {
+    verify: async () => new Uint8Array([1, 2, 3]),
+    accept: async () =>
+      call++ === 0
+        ? { refused: 'method-cap' as const, fingerprint: bob.fingerprint }
+        : { refused: 'shared-slot' as const, fingerprint: bob.fingerprint },
+  };
+  const ackLog: string[][] = [];
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    lens,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }, { envelope_id: 'e2', blob: 'BLOB2' }], ackLog),
+  }));
+  assert.equal(recorded.length, 2);
+  assert.equal(recorded[0].reason, 'lens-method-cap', 'method-cap keeps its own reason — never collapsed or swapped');
+  assert.equal(recorded[1].reason, 'lens-shared-slot', 'shared-slot keeps its own reason');
+  for (const row of recorded) {
+    assert.equal(row.fp, undefined, 'classical-only pair-MAC — no sender fingerprint is stored (A ruling)');
+    assert.equal(isMessageReason(row.reason), false, `${row.reason} is a non-message: it can never feed a message count`);
+  }
+  assert.deepEqual(ackLog, [['e1', 'e2']], 'both terminal rows were acked after recording');
+  assert.equal(summary.deadLettered, 2);
+});

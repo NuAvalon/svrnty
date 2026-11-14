@@ -41,7 +41,7 @@ async function sendOne(sender: Minted, peer: Minted, body = 'hello there') {
     blob = (JSON.parse(String(init.body)) as { blob: string }).blob;
     return new Response('{"ok":true}', { status: 200 });
   }) as typeof fetch;
-  await sendNoteToPeer({
+  await sendNoteToPeer({ admit: () => true,
     sender: { fingerprint: idOf(sender).fingerprint, participant_kind: 'human' },
     senderPublicKeyArmored: idOf(sender).public_key,
     senderPrivateKeyArmored: sender.secret_material.classicalPrivateKey,

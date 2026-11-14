@@ -1,4 +1,7 @@
+import { NotLiveBanner } from '@/components/NotLiveBanner'
+import { showNotLiveBanner } from '@/lib/not-live-banner'
 import './globals.css'
+import { headers } from 'next/headers'
 import localFont from 'next/font/local'
 import { AppearanceProvider } from '@/components/ui-prefs/AppearanceProvider'
 import { UI_PREFS_KEY } from '@/components/recovery/solar-ember'
@@ -73,11 +76,17 @@ const appearanceBoot = `
 })();
 `;
 
-export default function RootLayout({
+// Every page gets a new script nonce (middleware.ts), so no page can be prerendered or cached as HTML.
+export const dynamic = 'force-dynamic'
+
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
+  const nonce = (await headers()).get('x-nonce') ?? undefined
+  const notLive = showNotLiveBanner((await headers()).get('x-svrnty-path'), process.env.SVRNTY_NOT_LIVE_BANNER)
+
   return (
     <html
       lang="en"
@@ -86,8 +95,8 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: appearanceBoot }} />
-        <script dangerouslySetInnerHTML={{ __html: LEGACY_CHAT_KEYS_BOOT_SCRIPT }} />
+        <script nonce={nonce} suppressHydrationWarning dangerouslySetInnerHTML={{ __html: appearanceBoot }} />
+        <script nonce={nonce} suppressHydrationWarning dangerouslySetInnerHTML={{ __html: LEGACY_CHAT_KEYS_BOOT_SCRIPT }} />
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#c8a84e" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -97,8 +106,11 @@ export default function RootLayout({
       </head>
       <body>
         <div className="stars" />
+        {notLive && <NotLiveBanner />}
         <AppearanceProvider>{children}</AppearanceProvider>
         <script
+          nonce={nonce}
+          suppressHydrationWarning
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {

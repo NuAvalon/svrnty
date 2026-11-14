@@ -120,7 +120,7 @@ async function flowArgs(over: { kem: boolean; io: RatchetIO }) {
   const stored: NoteRecord[] = [];
   const fetched: string[] = [];
   const me = ratchetIdentity(), them = ratchetIdentity();
-  const call = () => sendNoteToPeer({
+  const call = () => sendNoteToPeer({ admit: () => true,
     sender: { fingerprint: idOf(sender).fingerprint, participant_kind: 'human' },
     senderPublicKeyArmored: idOf(sender).public_key,
     senderPrivateKeyArmored: sender.secret_material.classicalPrivateKey,

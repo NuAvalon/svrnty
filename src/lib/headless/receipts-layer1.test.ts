@@ -18,7 +18,8 @@ import { consumeInboundContactUpdates } from '@/lib/sync/consume-mailbox';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { DEAD_LETTER_FILE } from './headless-dead-letter';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, buildHeadlessConsumeDeps, pickReceipts, pollHeadlessOnce, receiptsPerPoll, sendHeadlessReceipts, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, buildHeadlessConsumeDeps, pickReceipts, pollHeadlessOnce, receiptsPerPoll, sendHeadlessReceipts } from './headless-client';
+import { sendNoteFromHeadless } from './headless-test-send';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { buildReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { sealReceiptV1To } from '@/lib/messaging/seal';
@@ -416,7 +417,7 @@ test('N7 (C1) N receipts + M notes in one poll = ONE store write per ack chunk; 
   }
 });
 
-test('N8 (C2) a byte-identical redelivery re-emits once per poll; a different-content one (FWW refusal) emits nothing', async () => {
+test('N8 (#714 created-only) the poll that CREATES the note sends one receipt; a later byte-identical redelivery and a different-content one (FWW refusal) send none', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
   const b = tmpBook();
@@ -434,17 +435,36 @@ test('N8 (C2) a byte-identical redelivery re-emits once per poll; a different-co
     const s1 = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(s1.notes, 2);
     assert.equal(s1.receipts_sent, 1, 'at most one receipt per (sender, note_id) per poll');
-    // a later poll with the identical note again: re-emits ONCE (the first receipt may have been lost)
+    // a later poll with the identical note again: NO receipt (the delivery that created the row already answered; a stored-and-acked note is not redelivered by an honest relay)
     await deposit(relay, B, blob);
     const s2 = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-    assert.equal(s2.receipts_sent, 1);
+    assert.equal(s2.receipts_sent, 0);
     // the same note_id with different content: refused (FWW), no receipt
     await send(A, B, new HeadlessStore(), relay.fetchImpl, 'rewritten', { noteId: 'n-same', sentAt: '2026-10-31T20:00:00.000Z' });
     const s3 = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(s3.notes, 1, 'consumed as the stored note');
     assert.equal(s3.receipts_sent, 0);
     assert.equal(b.open().listNotes()[0].body, 'same');
-    assert.equal((await inbox(relay, A)).length, 2);
+    assert.equal((await inbox(relay, A)).length, 1, 'A holds exactly the ONE receipt, from the first poll');
+  } finally {
+    b.done();
+  }
+});
+
+test('N8b (#714) HeadlessStore.acceptInboundNote tells a CREATED row from a re-stored one: created / stored / kept / not-admitted', async () => {
+  const A = await mint();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    const at = '2026-10-31T20:00:00.000Z';
+    const note = (body: string) => ({ note_id: 'x1', thread_id: 't1', direction: 'inbound', from_fingerprint: A.fp, to_fingerprints: [], sent_at: at, body, participant_kind: 'human', retention: { expires_at: null }, wire_type: 'x' }) as never;
+    const threadFor = (e: unknown) => (e ?? { thread_id: 't1', kind: 'direct', participants: [], created_at: at, last_activity_at: at, retention: { expires_at: null } }) as never;
+    const { admitContact } = await import('@/lib/trust/admit-contact');
+    assert.equal(bs.acceptInboundNote(note('hi'), threadFor, admitContact as never), 'created');
+    assert.equal(bs.acceptInboundNote(note('hi'), threadFor, admitContact as never), 'stored', 'byte-identical redelivery: the row existed');
+    assert.equal(bs.acceptInboundNote(note('EDITED'), threadFor, admitContact as never), 'kept');
+    assert.equal(bs.acceptInboundNote(note('hi'), threadFor, () => false), 'not-admitted');
   } finally {
     b.done();
   }
@@ -474,6 +494,56 @@ test('N9 (C3) the emit path re-checks admitContact itself: a candidate from a st
   } finally {
     b.done();
   }
+});
+
+// ── #714 R2a: the Delivery setting is read AT SEND on the headless path too ──
+async function storedCandidate() {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  const bs = b.open();
+  bs.upsertContact(asContact(A));
+  await send(A, B, new HeadlessStore(), relay.fetchImpl, 'from A');
+  const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+  const accept = deps.note!.accept;
+  let wire: NoteWireV0 | undefined;
+  deps.note!.accept = async (w) => ((wire = w), accept(w));
+  await consumeInboundContactUpdates(deps);
+  const emit = () => sendHeadlessReceipts(bs, new Map([[`${A.fp}:${wire!.note_id}`, wire!]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+  return { A, bs, b, relay, emit };
+}
+
+test('N-D1 (#714 R2a) the global default is On when nothing was set; turning it Off AFTER the note was stored but BEFORE the send stops the receipt', async () => {
+  const { A, bs, b, relay, emit } = await storedCandidate();
+  try {
+    bs.setDeliveryDefault('off'); // between accept and send
+    assert.deepEqual(await emit(), { sent: 0, skipped: 1, failed: 0, capped: 0 });
+    assert.equal((await inbox(relay, A)).length, 0, 'nothing left the device');
+  } finally { b.done(); }
+});
+
+test('N-D2 (#714 R2a) a per-contact setting wins over the global both ways: contact Off beats global On; contact On beats global Off', async () => {
+  for (const [contact, global, sent] of [['off', 'on', 0], ['on', 'off', 1]] as const) {
+    const { A, bs, b, relay, emit } = await storedCandidate();
+    try {
+      bs.setDeliveryDefault(global);
+      bs.updateContact(asContact(A).id, { delivery_receipts: contact });
+      assert.equal((await emit()).sent, sent, `contact ${contact} / global ${global}`);
+      assert.equal((await inbox(relay, A)).length, sent);
+    } finally { b.done(); }
+  }
+});
+
+test('N-D3 (#714 R2a) the control: with nothing set, the receipt goes (default On), and the choice survives a reopen of the book', async () => {
+  const { A, bs, b, relay, emit } = await storedCandidate();
+  try {
+    assert.equal(bs.getDeliveryDefault().state, 'ok');
+    bs.setDeliveryDefault('off');
+    assert.deepEqual(b.open().getDeliveryDefault(), { state: 'ok', rec: { v: 1, value: 'off' } }, 'written to the book, not kept in memory');
+    bs.setDeliveryDefault('on');
+    assert.equal((await emit()).sent, 1);
+    assert.equal((await inbox(relay, A)).length, 1);
+  } finally { b.done(); }
 });
 
 test('N10 a FWW refusal (\'kept\') never becomes a receipt CANDIDATE: asserted on the candidate set itself, not only on "nothing sent"', async () => {

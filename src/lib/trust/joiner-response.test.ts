@@ -342,3 +342,42 @@ test('CANONICAL joiner with a WRONG-LENGTH kem → rejected at the structural bo
   const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
 });
+
+// ── The joiner's own authority pin rides the response as an optional SIGNED field (same pattern as joiner_pq_kem_public_key) ──
+const PIN = 'a1'.repeat(32);
+test('PIN-1 round trip: a joiner_next_authority_commitment in the response surfaces on the verified PendingJoiner as authorityPin', async () => {
+  const cid = await makeCanonicalIdentity('canon-pin1');
+  const signed = await buildJoinerResponse(canonJoinerArgs(cid, { joinerNextAuthorityCommitment: PIN }), cid.privateKey, cid.passphrase, cid.sigSecretKey);
+  assert.equal((signed.envelope as any).joiner_next_authority_commitment, PIN, 'control: the field is in the signed envelope');
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
+  const joiner = await verifyJoinerResponse(blob, aliceGiver(), yes, { requirePq: true });
+  assert.ok(joiner, 'a response carrying the pin must verify');
+  assert.equal((joiner as any).authorityPin, PIN);
+});
+test('PIN-2 omitted when absent: no key in the envelope, and no authorityPin on the PendingJoiner', async () => {
+  const cid = await makeCanonicalIdentity('canon-pin2');
+  const signed = await buildJoinerResponse(canonJoinerArgs(cid), cid.privateKey, cid.passphrase, cid.sigSecretKey);
+  assert.equal('joiner_next_authority_commitment' in (signed.envelope as object), false);
+  const joiner = await verifyJoinerResponse(await encryptJoinerResponseClassicalFixture(signed, alicePub), aliceGiver(), yes, { requirePq: true });
+  assert.ok(joiner);
+  assert.equal('authorityPin' in (joiner as object), false);
+});
+test('PIN-3 the builder refuses a non-canonical pin (the sender controls its input: fail loud)', async () => {
+  const cid = await makeCanonicalIdentity('canon-pin3');
+  for (const bad of ['A1'.repeat(32), 'a1'.repeat(31), '', 'zz'.repeat(32)]) {
+    await assert.rejects(() => buildJoinerResponse(canonJoinerArgs(cid, { joinerNextAuthorityCommitment: bad }), cid.privateKey, cid.passphrase), (e: any) => e?.name === 'JoinerResponseSignError' && e?.reason === 'bad-authority-pin', bad);
+  }
+});
+test('PIN-4 the receiver DROPS a response whose pin is non-canonical, even when it is validly signed (structural boundary)', async () => {
+  const cid = await makeCanonicalIdentity('canon-pin4');
+  const env: any = buildJoinerResponseEnvelope(canonJoinerArgs(cid));
+  env.joiner_next_authority_commitment = 'A1'.repeat(32); // set before signing, so the signature is valid over it
+  const signed = await signJoinerResponse(env, cid.privateKey, cid.passphrase, cid.sigSecretKey);
+  assert.equal(await verifyJoinerResponse(await encryptJoinerResponseClassicalFixture(signed, alicePub), aliceGiver(), yes, { requirePq: true }), null);
+});
+test('PIN-5 the pin is COVERED by the signature: changing it after signing drops the response', async () => {
+  const cid = await makeCanonicalIdentity('canon-pin5');
+  const signed: any = await buildJoinerResponse(canonJoinerArgs(cid, { joinerNextAuthorityCommitment: PIN }), cid.privateKey, cid.passphrase, cid.sigSecretKey);
+  signed.envelope.joiner_next_authority_commitment = 'b2'.repeat(32);
+  assert.equal(await verifyJoinerResponse(await encryptJoinerResponseClassicalFixture(signed, alicePub), aliceGiver(), yes, { requirePq: true }), null);
+});

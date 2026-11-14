@@ -28,6 +28,7 @@ import {
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import { emitContactChange } from '@/lib/contacts/contact-events';
+import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 
@@ -122,6 +123,17 @@ export function starsOnly<T extends { metadata?: { grow_gate?: unknown } }>(cont
   return contacts.filter((c) => !isGrowGateRecord(c));
 }
 
+/**
+ * First write wins at the Gate: the pin a signed card carried is kept on the waiting arrival, and a later card for the same person with a
+ * DIFFERENT pin changes nothing and is reported as a conflict. A card with no pin never erases one already held.
+ */
+export function mergeArrivalPin(waiting: { nextAuthorityCommitment?: unknown } | null, incoming: unknown): { pin: string | null; conflict: boolean } {
+  const held = canonicalAuthorityPin(waiting?.nextAuthorityCommitment);
+  const next = canonicalAuthorityPin(incoming);
+  if (held && next && held !== next) return { pin: held, conflict: true };
+  return { pin: held ?? next, conflict: false };
+}
+
 export type AdmitOptions = {
   name?: string;
   tags?: string[];
@@ -157,6 +169,8 @@ export function buildAdmitRecord(
   };
   if (arrival.pqKemPublicKey) rec.pq_kem_public_key = arrival.pqKemPublicKey;
   if (arrival.pqSigPublicKey) rec.pq_sig_public_key = arrival.pqSigPublicKey;
+  const pin = canonicalAuthorityPin(arrival.nextAuthorityCommitment);
+  if (pin) rec.next_authority_commitment = pin;
   if (verifyPatch) rec.owner_verify = verifyPatch.owner_verify;
   return rec;
 }
@@ -211,6 +225,9 @@ export function arrivalFromPendingJoiner(
   // canonical fingerprintMatchesKey (needs BOTH PQ legs) refuses the joiner ("binding failed").
   const kem = pqToB64(pj.pqKemPublicKey);
   if (kem) arrival.pqKemPublicKey = kem;
+  // The joiner's own pin, from the signed response (canonical only): the Gate keeps it so Admit can put it on the contact.
+  const pin = canonicalAuthorityPin(pj.authorityPin);
+  if (pin) arrival.nextAuthorityCommitment = pin;
   return arrival;
 }
 

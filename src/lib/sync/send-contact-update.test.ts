@@ -5,11 +5,18 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildContactUpdateDeposits,
-  sendContactUpdate,
+  buildContactUpdateDeposits as buildWithGate,
+  sendContactUpdate as sendWithGate,
   type ContactUpdateOwner,
   type ContactUpdateRecipient,
 } from './send-contact-update';
+
+// The tests above the block section exercise everything except the recipient check, so they pass a check that admits everyone.
+const ALLOW = () => true;
+const buildContactUpdateDeposits = (c: Parameters<typeof buildWithGate>[0], o: Parameters<typeof buildWithGate>[1], r: Parameters<typeof buildWithGate>[2]) =>
+  buildWithGate(c, o, r, ALLOW);
+const sendContactUpdate = (c: Parameters<typeof sendWithGate>[0], o: Parameters<typeof sendWithGate>[1], r: Parameters<typeof sendWithGate>[2], opts: Parameters<typeof sendWithGate>[4]) =>
+  sendWithGate(c, o, r, ALLOW, opts);
 import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from './contact-update-envelope';
 import { mintHybridRecipient, openerFor, type HybridRecipient } from './hybrid-test-fixture';
 import { verifyIncomingContactUpdate, type KnownContactIdentity } from '../trust/contact-update';
@@ -190,4 +197,56 @@ test('sendContactUpdate: a no-key recipient is skipped (never POSTed), others se
   );
   assert.equal(r.deposited.length, 1);
   assert.deepEqual(r.skipped, [{ fingerprint: 'FPNOKEY', reason: 'no-public-key' }]);
+});
+
+
+// --- a blocked contact is never sent an update, whatever list the caller was handed ---
+const CHANGE = { version: 1, delta: { display_name: 'Alice' } };
+
+test('blocked: that recipient gets no deposit and is reported; the others are still sent', async () => {
+  const { deposits, skipped } = await buildWithGate(CHANGE, owner, [bob, carol], (fp) => fp !== bob.fingerprint);
+  assert.deepEqual(deposits.map((d) => d.mailbox_id), [deriveMailboxId(carol.fingerprint)]);
+  assert.deepEqual(skipped, [{ fingerprint: bob.fingerprint, reason: 'blocked' }]);
+});
+
+test('blocked wins over every other skip reason, so nothing is even attempted for that recipient', async () => {
+  const bad = { fingerprint: bob.fingerprint, publicKeyArmored: 'not a key', pqKemPublicKey: 'not a key' };
+  const none = { fingerprint: carol.fingerprint, publicKeyArmored: '' };
+  const { deposits, skipped } = await buildWithGate(CHANGE, owner, [bad, none], () => false);
+  assert.equal(deposits.length, 0);
+  assert.deepEqual(skipped, [{ fingerprint: bob.fingerprint, reason: 'blocked' }, { fingerprint: carol.fingerprint, reason: 'blocked' }]);
+});
+
+test('the check is asked once per recipient, with that recipient', async () => {
+  const asked: string[] = [];
+  await buildWithGate(CHANGE, owner, [bob, carol], (fp) => { asked.push(fp); return true; });
+  assert.deepEqual(asked, [bob.fingerprint, carol.fingerprint]);
+});
+
+for (const missing of [undefined, null, 'yes', {}, true]) {
+  test(`no usable check (${String(missing)}): refuses outright, and sends nothing`, async () => {
+    await assert.rejects(buildWithGate(CHANGE, owner, [bob], missing as never), /recipient check/);
+    const posted: unknown[] = [];
+    const fetchImpl = mockFetch((_u, body) => { posted.push(body); return { ok: true, status: 200 }; });
+    await assert.rejects(sendWithGate(CHANGE, owner, [bob], missing as never, { fetchImpl }), /recipient check/);
+    assert.equal(posted.length, 0);
+  });
+}
+
+test('a check that throws sends nothing to anyone, including recipients it had already passed', async () => {
+  const posted: unknown[] = [];
+  const fetchImpl = mockFetch((_u, body) => { posted.push(body); return { ok: true, status: 200 }; });
+  let n = 0;
+  const boom = () => { if (++n === 2) throw new Error('store went away'); return true; };
+  await assert.rejects(sendWithGate(CHANGE, owner, [bob, carol], boom, { fetchImpl }));
+  assert.equal(posted.length, 0);
+});
+
+test('sendContactUpdate: no POST for a blocked recipient; the result says so', async () => {
+  const posted: Array<{ mailbox_id: string }> = [];
+  const fetchImpl = mockFetch((_u, body) => { posted.push(body); return { ok: true, status: 200 }; });
+  const r = await sendWithGate(CHANGE, owner, [bob, carol], (fp) => fp === carol.fingerprint, { fetchImpl });
+  assert.deepEqual(posted.map((b) => b.mailbox_id), [deriveMailboxId(carol.fingerprint)]);
+  assert.deepEqual(r.deposited, [deriveMailboxId(carol.fingerprint)]);
+  assert.deepEqual(r.skipped, [{ fingerprint: bob.fingerprint, reason: 'blocked' }]);
 });

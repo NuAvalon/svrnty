@@ -27,6 +27,9 @@ import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { VivreCaution } from '@/components/VivreBurn';
 import { contactHasDistress } from '@/lib/trust/distress';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
+import { ContactDeliveryDialog } from '@/components/settings/ContactDeliveryDialog';
+import { contactDeliveryPatch, type ContactDeliveryChoice } from '@/components/settings/delivery-actions';
+import { DELIVERY_COPY } from '@/components/settings/delivery-copy';
 import { CardMenuItem } from '@/components/ui/CardActionMenu';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -62,6 +65,7 @@ import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safe
 import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
@@ -96,6 +100,8 @@ interface Contact {
   verified_at?: string;
   /** Owner-local mute (CUR-5) — never publish. */
   blocked?: boolean;
+  /** Per-contact Delivery choice; absent = follow the global setting (delivery-receipt-setting.ts). */
+  delivery_receipts?: 'on' | 'off';
   metadata?: {
     notes?: string;
     tags?: string[];
@@ -169,6 +175,7 @@ function recordToContact(r: ContactRecord): Contact {
     added_at: r.added_at || new Date().toISOString(),
     verified_at: r.verified_at,
     blocked,
+    delivery_receipts: r.delivery_receipts,
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls
     connection_status: (r as any).connection_status,
@@ -245,6 +252,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     handlesText: '',
   });
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [linkFingerprint, setLinkFingerprint] = useState('');
   const [linkPublicKey, setLinkPublicKey] = useState('');
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -591,6 +601,22 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     }
   };
 
+  const deliveryContact = selectedContact ? (contacts.find((c) => c.id === selectedContact.id) ?? selectedContact) : null;
+  const handleSetDelivery = async (choice: ContactDeliveryChoice) => {
+    if (!deliveryContact) return;
+    try {
+      setDeliveryBusy(true);
+      setDeliveryError(null);
+      await updateContact(deliveryContact.id, (fresh) => contactDeliveryPatch(fresh, choice));
+      await loadContacts();
+      onContactsChange?.();
+    } catch {
+      setDeliveryError(DELIVERY_COPY.writeFailed);
+    } finally {
+      setDeliveryBusy(false);
+    }
+  };
+
   const confirmTarget: TrustActionTarget | null = selectedContact
     ? {
         id: selectedContact.id,
@@ -689,6 +715,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // piece-2: carry the authenticated device-mailbox (onion seal-target) ONLY when present under a
       // valid signature (classifyImportedCard sets it non-null in branch 4 only). Threaded exactly like pq.
       const mailboxField = d.deviceMailbox ? { device_mailbox: d.deviceMailbox } : {};
+      // #787: keep the card's authority pin, ONLY under a valid signature (branch 4), and FIRST WRITE WINS (see the back-fill below).
+      const pinField = d.authorityPin ? { next_authority_commitment: d.authorityPin } : {};
 
       const existing = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
       if (existing) {
@@ -697,9 +725,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
         if (d.alarm === 'loud') {
           setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
-        } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox)) {
-          // Back-fill authenticated pq and/or the device-mailbox onto a known edge that lacks them.
-          await updateContact(existing.id, { ...pqFields, ...mailboxField });
+        } else if (d.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== d.authorityPin) {
+          // #787: first write wins. A DIFFERENT pin on a valid card is loud and changes nothing.
+          setExchangeResult({ success: false, message: authorityPinConflictMessage(displayName) });
+        } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment)) {
+          // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held).
+          await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField) });
           setExchangeResult({ success: true, message: `Updated "${displayName}" — their key material is now stored.` });
         } else {
           setExchangeResult({ success: true, message: `You already have "${displayName}".` });
@@ -714,6 +745,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
           metadata: { connection_method: 'manual' as const },
           ...pqFields, // present ONLY on branch 4b (authenticated pq); dropped on 2/3/4a/4c
           ...mailboxField, // present ONLY under a valid signature (branch 4); dropped on 1/2/3
+          ...pinField, // #787: present ONLY under a valid signature (branch 4) and only if canonical; dropped on 1/2/3
         } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
         // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
         const message =
@@ -1772,6 +1804,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                     />
                   ) : null}
                   <CardMenuItem
+                    testId="contact-delivery-open"
+                    label={DELIVERY_COPY.title}
+                    onClick={() => { setDeliveryError(null); setDeliveryOpen(true); closeMenu(); }}
+                  />
+                  <CardMenuItem
                     label={isContactBlocked(focused) ? 'Unblock' : 'Block'}
                     danger={!isContactBlocked(focused)}
                     onClick={() => {
@@ -2052,6 +2089,16 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <ContactDeliveryDialog
+          open={deliveryOpen && !!deliveryContact}
+          contactName={deliveryContact?.name || 'contact'}
+          stored={deliveryContact?.delivery_receipts}
+          busy={deliveryBusy}
+          error={deliveryError}
+          onClose={() => setDeliveryOpen(false)}
+          onChoose={(choice) => { void handleSetDelivery(choice); }}
+        />
 
         <InviteToSvrntyDialog
           open={inviteOpen}

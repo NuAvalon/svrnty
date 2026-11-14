@@ -121,6 +121,8 @@ export function VaultExportDialog({
           },
         })),
         contacts: backup.contacts,
+        // task #714 R2a: the global delivery-receipt default rides the vault so a restore keeps it (absent when it could not be read).
+        delivery_receipts_default: backup.delivery_receipts_default,
       };
 
       const { createVaultContents, packVault, downloadVault } = await import(

@@ -50,6 +50,8 @@ export interface JoinerResponseSender {
   kemPublicKeyB64?: string;
   /** §5 canonical-fp binding: the joiner's ML-DSA-87 public (base64, 2592B) — the other half. */
   sigPublicKeyB64?: string;
+  /** The joiner's own next-authority pin (64 lowercase hex), the one its signed card carries. Pass only a canonical value; omitted when the identity has none. */
+  nextAuthorityCommitment?: string;
 }
 
 /** The giver being connected back to: fingerprint (→ mailbox + binding) + pubkey (→ encrypt-to) + code. */
@@ -107,6 +109,7 @@ export async function buildJoinerResponseDeposit(
         ...(sender.kemPublicKeyB64 && sender.sigPublicKeyB64
           ? { joinerPqKemPublicKey: sender.kemPublicKeyB64, joinerPqSigPublicKey: sender.sigPublicKeyB64 }
           : {}),
+        ...(sender.nextAuthorityCommitment ? { joinerNextAuthorityCommitment: sender.nextAuthorityCommitment } : {}),
       },
       sender.privateKeyArmored,
       sender.passphrase,
@@ -128,8 +131,22 @@ export async function buildJoinerResponseDeposit(
 export async function sendJoinerResponse(
   sender: JoinerResponseSender,
   target: JoinerResponseTarget,
-  opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
+  opts: {
+    /** Required: has this giver been blocked? Someone unknown is NOT blocked; an invite usually comes from someone not yet in the book. */
+    isBlocked: (fingerprint: string) => boolean;
+    fetchImpl?: typeof fetch;
+    relayBase?: string;
+  },
 ): Promise<JoinerResponseSendResult> {
+  // Before anything is sealed. Reported, never thrown: the ceremony is fail-soft.
+  let blocked: boolean;
+  try {
+    blocked = !!opts.isBlocked(target.fingerprint);
+  } catch {
+    return { ok: false, status: 'blocked-check-failed' };
+  }
+  if (blocked) return { ok: false, status: 'blocked' };
+
   const doFetch = opts.fetchImpl ?? fetch;
   const relayBase = opts.relayBase ?? '/api/relay';
 

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildBn128 } from 'ffjavascript';
 import { epochOk, checkPoints, verifyDeposit, EPOCH_SECONDS, GRACE_SECONDS } from './verify.mjs';
-import { R } from '../../../src/lib/crypto/beacon-wire.mjs';
+import { R } from './beacon-wire.mjs';
 
 const VERIFY = new URL('./verify.mjs', import.meta.url).pathname;
 const WEEK = EPOCH_SECONDS;
@@ -58,6 +58,8 @@ test('points: generators pass; off-curve G1, identity and an on-curve G2 point o
     await checkPoints({ pi_a: g1, pi_b: g2, pi_c: g1 }, curve);                          // passes
     const reason = async (p) => checkPoints(p, curve).then(() => 'accepted', (e) => e.reason);
     assert.equal(await reason({ pi_a: [1n, 3n], pi_b: g2, pi_c: g1 }), 'point:pi_a:off-curve');
+    assert.equal(await reason({ pi_a: g1, pi_b: g2, pi_c: [1n, 3n] }), 'point:pi_c:off-curve');
+    assert.equal(await reason({ pi_a: g1, pi_b: [[1n, 0n], [1n, 0n]], pi_c: g1 }), 'point:pi_b:off-curve');
     assert.equal(await reason({ pi_a: g1, pi_b: g2, pi_c: [0n, 0n] }), 'point:pi_c:identity');      // (0,0) = affine identity
     assert.equal(await reason({ pi_a: g1, pi_b: rogue, pi_c: g1 }), 'point:pi_b:not-in-subgroup');
   } finally {
@@ -168,7 +170,7 @@ test('launched through a SYMLINK, the verifier still runs main() (never exit 0 w
 });
 
 test('ONE epoch constant: verify.mjs re-exports beacon-wire.mjs\'s values and defines none of its own', async () => {
-  const wire = await import('../../../src/lib/crypto/beacon-wire.mjs');
+  const wire = await import('./beacon-wire.mjs');
   assert.equal(wire.EPOCH_SECONDS, 604800);
   assert.equal(wire.GRACE_SECONDS, 600);
   assert.equal(EPOCH_SECONDS, wire.EPOCH_SECONDS);

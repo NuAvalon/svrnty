@@ -163,3 +163,56 @@ test('W7 static: the PWA poll wires the refusal counter, and the counter module 
   const mod = readFileSync(new URL('./rewrite-refused.ts', import.meta.url), 'utf8');
   assert.match(mod, /export function noteRewriteRefused\(\): void \{/, 'takes no argument, so nothing identifying can be passed');
 });
+
+// ── #714 R1: onCreated fires ONLY for the delivery that created the note row ──
+test('C1 a NEW note reports a creation once, at the end of the flow; a byte-identical redelivery does not', async () => {
+  const { io, wireWith } = await plain();
+  let created = 0;
+  await acceptInboundNote({ wire: await wireWith({}), isAdmitted: ok, io: io as never, onCreated: () => created++ });
+  assert.equal(created, 1);
+  const again = await acceptInboundNote({ wire: await wireWith({}), isAdmitted: ok, io: io as never, onCreated: () => created++ });
+  assert.equal(again?.body, 'what I really said', 'the redelivery is still acked as the stored note');
+  assert.equal(created, 1, 'the redelivery created nothing');
+});
+test('C2 NEG: a first-write-wins REFUSAL (same id, different body) reports no creation', async () => {
+  const { io, wireWith } = await plain();
+  await acceptInboundNote({ wire: await wireWith({}), isAdmitted: ok, io: io as never });
+  let created = 0;
+  await acceptInboundNote({ wire: await wireWith({ body: 'EDITED later' }), isAdmitted: ok, io: io as never, onCreated: () => created++ });
+  assert.equal(created, 0);
+});
+test('C3 NEG: a frame whose message key is already spent (stored note, the frame no longer opens) reports no creation', async () => {
+  const { wire, io, openRatchet } = await setup();
+  let created = 0;
+  assert.equal((await acceptInboundNote({ wire, isAdmitted: ok, openRatchet, io: io as never, onCreated: () => created++ }))?.body, 'hello');
+  assert.equal(created, 1);
+  const again = await acceptInboundNote({ wire, isAdmitted: ok, openRatchet, io: io as never, onCreated: () => created++ });
+  assert.equal(again?.body, 'hello', 'the spent frame returns the stored note');
+  assert.equal(created, 1);
+});
+test('C4 an io.putNoteChecked that says the row ALREADY EXISTED (another tab created it between our read and write) reports no creation, and still returns the note', async () => {
+  const { notes, wireWith } = await plain();
+  const io = { putNote: async () => {}, putNoteChecked: async (n: NoteRecord) => { notes.set(n.note_id, n); return false; }, putThread: async () => {}, listThreads: async () => [], getNote: async (id: string) => notes.get(id) ?? null };
+  let created = 0;
+  const r = await acceptInboundNote({ wire: await wireWith({}), isAdmitted: ok, io: io as never, onCreated: () => created++ });
+  assert.equal(r?.body, 'what I really said');
+  assert.equal(created, 0);
+  const io2 = { ...io, putNoteChecked: async (n: NoteRecord) => { notes.set('x' + n.note_id, n); return true; } };
+  await acceptInboundNote({ wire: await wireWith({ note_id: 'n2' }), isAdmitted: ok, io: io2 as never, onCreated: () => created++ });
+  assert.equal(created, 1, 'a checked write that created the row reports it');
+});
+test('C5 a dropped note (stranger) reports no creation', async () => {
+  const { io, wireWith } = await plain();
+  let created = 0;
+  assert.equal(await acceptInboundNote({ wire: await wireWith({}), isAdmitted: async () => false, io: io as never, onCreated: () => created++ }), null);
+  assert.equal(created, 0);
+});
+test('C6 residual, pinned on purpose: the note stored but the ratchet commit failed => no creation reported on the failed attempt, and the retry finds the row (no receipt: the sender shows "delivery unknown")', async () => {
+  const { wire, io } = await setup();
+  let attempt = 0;
+  const openRatchet = async () => ({ plaintext: 'hello', commit: async () => { if (attempt++ === 0) throw new Error('disk full'); }, release: () => {} }) as never;
+  let created = 0;
+  await assert.rejects(acceptInboundNote({ wire, isAdmitted: ok, openRatchet, io: io as never, onCreated: () => created++ }), /disk full/);
+  await acceptInboundNote({ wire, isAdmitted: ok, openRatchet, io: io as never, onCreated: () => created++ });
+  assert.equal(created, 0);
+});

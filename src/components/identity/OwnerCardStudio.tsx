@@ -27,6 +27,8 @@ import {
 } from '@/components/identity/owner-card';
 import { OwnerLensPicker } from '@/components/identity/OwnerLensPicker';
 import { saveLocalMethods } from '@/components/identity/local-methods';
+import { isLensDeliveryLive } from '@/lib/claim-gates';
+import { EXTRA_METHODS_LENS_LINE, EXTRA_METHODS_LOCAL_LINE } from '@/lib/lenses/lens-copy';
 
 export function OwnerCardStudio({
   fingerprint,
@@ -342,7 +344,7 @@ export function OwnerCardStudio({
 
       <FirstVisitHint id="identity-lenses" label="What a lens is">
         The share link is still you — one key. A lens is the default profile you intend to hand them.
-        Extra methods stay on this device until the living card schema carries them.
+        {isLensDeliveryLive() ? EXTRA_METHODS_LENS_LINE : EXTRA_METHODS_LOCAL_LINE}
       </FirstVisitHint>
     </div>
   );

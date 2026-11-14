@@ -49,6 +49,10 @@ import {
 } from '@/lib/contacts/safe-contact-link';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
+import { CONTACT_HANDLE_KEYS } from '@/lib/trust/contact-update';
+import { lensDisplayRows } from '@/lib/lenses/lens-display';
+import { lensChangedLine, lensChangedWasLine, lensGivenLine, lensStoppedLine } from '@/lib/lenses/lens-copy';
+import { methodKindLabel } from '@/components/identity/owner-card';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { VerifySheet } from '@/components/verify/VerifySheet';
@@ -86,6 +90,9 @@ export type ContactDetailModel = {
     emails?: string[];
     urls?: string[];
     handles?: Record<string, string>;
+    /** Methods this contact gave you via their lens — device-recorded, MAC-only-authenticated.
+     *  Shown as GIVEN, never merged into the primary fields above. */
+    lens_methods?: Record<string, { kind: string; value: string; label?: string }>;
   };
   /** Fleet PSI may populate later — glass never invents peer↔peer from tags. */
   peer_mutual?: Array<{ peer_name: string; peer_fingerprint: string }>;
@@ -180,6 +187,14 @@ export function ContactDetailDialog({
   const phones = (contact?.contact_info?.phones || []).filter(Boolean);
   const urls = (contact?.contact_info?.urls || []).filter(Boolean);
   const handles = contact?.contact_info?.handles || {};
+  const lensRows = contact ? lensDisplayRows(contact) : [];
+  // R8a: the visible state set when a payload from this contact was refused for the method cap —
+  // a silent stop would read like a Freeze or a Remove nobody made.
+  const lensStopped = !!(
+    contact?.contact_info &&
+    typeof contact.contact_info === 'object' &&
+    (contact.contact_info as Record<string, unknown>).lens_stopped === true
+  );
   const classicalExtras = contact ? readClassicalExtras(contact) : null;
   const share = contact ? readShareSettings(contact) : defaultShareSettings();
   // piece-1 H2 (honest-UX): disable the open_visibility toggle on a NOT-trusted edge — the label already
@@ -571,6 +586,49 @@ export function ContactDetailDialog({
                     </div>
                   ) : null}
 
+                  {lensStopped ? (
+                    <span data-testid="lens-stopped" style={{ fontSize: 11, color: E.accent, lineHeight: 1.4 }}>
+                      {lensStoppedLine(contact?.name || 'this contact')}
+                    </span>
+                  ) : null}
+
+                  {lensRows.length > 0 ? (
+                    <div data-testid="lens-methods">
+                      <SectionLabel>Shared with you</SectionLabel>
+                      <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {lensRows.map((row) => {
+                          // R6b: a relabel-swap names the KIND (the label changed); a same-slot
+                          // change names the method's own label.
+                          const label = row.kindChanged
+                            ? methodKindLabel(row.method.kind as Parameters<typeof methodKindLabel>[0])
+                            : row.method.label?.trim() || methodKindLabel(row.method.kind as Parameters<typeof methodKindLabel>[0]);
+                          return (
+                            <div key={row.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <MethodRow icon={<AtSign className="h-3.5 w-3.5" />}>
+                                <span style={{ color: E.dim }}>{label}: </span>
+                                {lensMethodLink(row.method)}
+                              </MethodRow>
+                              {row.heldValue !== null ? (
+                                <>
+                                  <span style={{ fontSize: 11, color: E.accent, lineHeight: 1.4 }}>
+                                    {lensChangedLine(contact?.name || '', label)}
+                                  </span>
+                                  <span style={{ fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
+                                    {lensChangedWasLine(row.heldValue)}
+                                  </span>
+                                </>
+                              ) : (
+                                <span style={{ fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
+                                  {lensGivenLine(contact?.name || 'They')}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
                   {classicalExtras ? (
                     <div
                       data-testid="classical-extras"
@@ -797,4 +855,18 @@ export function ContactDetailDialog({
     />
     </>
   );
+}
+
+/** A lens-given value rendered through the SAME scheme-allowlist link path as signed fields —
+ *  a poisoned lens method must not become code (I-10a). Unknown kinds render as plain text. */
+function lensMethodLink(method: { kind: string; value: string }): ReactNode {
+  if (method.kind === 'email') return <ContactMethodLink safe={safeEmailLink(method.value)} />;
+  if (method.kind === 'phone') return <ContactMethodLink safe={safePhoneLink(method.value)} />;
+  if (method.kind === 'site' || method.kind === 'url' || method.kind === 'website') {
+    return <ContactMethodLink safe={safeUrlLink(method.value)} className="truncate" />;
+  }
+  if (CONTACT_HANDLE_KEYS.has(method.kind)) {
+    return <ContactMethodLink safe={safeHandleLink(method.kind, method.value)} />;
+  }
+  return <span>{method.value}</span>;
 }

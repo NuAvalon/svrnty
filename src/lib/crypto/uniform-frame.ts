@@ -80,8 +80,11 @@ export const FRAME_MAX_PAYLOAD = FRAME_BYTES - HEADER_BYTES;
  *  channel's type space is complete; its emitter is K3). `visible-affirm` is piece-2's mutual-block
  *  held-affirmative (#579) — it rides this SAME uniform channel (same 2048B cell, same /onion path, swapped
  *  into a cover slot) so its presence is cadence-indistinguishable from any other kind (§F5). Its emit path
- *  is the shared onion transport (src/lib/sync/onion-transport.ts). */
-export type FrameType = 'consent-delta' | 'message' | 'distress' | 'cover' | 'visible-affirm';
+ *  is the shared onion transport (src/lib/sync/onion-transport.ts). `lens` is the lenses-v1.3 per-recipient
+ *  method payload (src/lib/lenses/lens-wire.ts) — it rides the SAME 2048B cell over the mailbox path so a
+ *  lens payload is size-indistinguishable from any other kind (R8); its emit path is flag-gated
+ *  (isLensDeliveryLive, off by default). */
+export type FrameType = 'consent-delta' | 'message' | 'distress' | 'cover' | 'visible-affirm' | 'lens';
 
 // TYPE_TO_CODE and CODE_TO_TYPE are hand-maintained mirrors — a new kind MUST be added to BOTH (frameUniform
 // reads TYPE_TO_CODE and throws on an unknown type; unframeUniform reads CODE_TO_TYPE and returns null on an
@@ -93,6 +96,7 @@ const TYPE_TO_CODE: Record<FrameType, number> = {
   distress: 3,
   cover: 4,
   'visible-affirm': 5,
+  lens: 6,
 };
 const CODE_TO_TYPE: Record<number, FrameType> = {
   1: 'consent-delta',
@@ -100,6 +104,7 @@ const CODE_TO_TYPE: Record<number, FrameType> = {
   3: 'distress',
   4: 'cover',
   5: 'visible-affirm',
+  6: 'lens',
 };
 
 /**

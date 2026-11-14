@@ -196,7 +196,15 @@ jobs:
           shopt -s nullglob
           FILES=(infra/svrnty/test_*.py)
           [ "${#FILES[@]}" -gt 0 ] || { echo "::error::no infra/svrnty/test_*.py found — refusing to pass"; exit 1; }
+          # The image's build context can't reach src/, so the verifier ships a byte copy of the one wire parser. It stays one.
+          cmp src/lib/crypto/beacon-wire.mjs infra/svrnty/beacon-verifier/beacon-wire.mjs \
+            || { echo "::error::infra/svrnty/beacon-verifier/beacon-wire.mjs differs from src/lib/crypto/beacon-wire.mjs"; exit 1; }
+          # Installed on the runner so the mounted tree has it: without this the real-verifier tests would skip, not run.
+          (cd infra/svrnty/beacon-verifier && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
           docker build -q -f infra/svrnty/Dockerfile -t svrnty-sat-ci infra/svrnty
+          # A missing node, npm tree or wire file would only ever surface as a beacon that silently never mounts.
+          docker run --rm --network none --entrypoint python3 svrnty-sat-ci -c "import hashlib,shutil,sys,beacon_routes as r; p='/tmp/v.json'; open(p,'w').write('{}'); s=hashlib.sha256(b'{}').hexdigest(); sys.exit(0 if r._verifiers_load(shutil.which('node'),p,s) else 1)" \
+            || { echo "::error::the satellite image cannot load the beacon verifiers"; exit 1; }
           printf 'FROM svrnty-sat-ci\nUSER root\nRUN pip install --no-cache-dir pytest==9.0.2 httpx==0.28.1\nUSER satellite\n' \
             | docker build -q -t svrnty-sat-ci-test -
           FAIL=0

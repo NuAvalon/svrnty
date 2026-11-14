@@ -40,7 +40,7 @@ async function flow(over: Over = {}) {
   const posts: string[] = [];
   const me = ratchetIdentity(), them = ratchetIdentity();
   const okFetch = (async (url: string) => { posts.push(String(url)); return new Response('{"ok":true}', { status: 200 }); }) as typeof fetch;
-  const call = () => sendNoteToPeer({
+  const call = () => sendNoteToPeer({ admit: () => true,
     sender: { fingerprint: idOf(sender).fingerprint, participant_kind: 'human' },
     senderPublicKeyArmored: idOf(sender).public_key,
     senderPrivateKeyArmored: sender.secret_material.classicalPrivateKey,
@@ -166,12 +166,14 @@ test('sent-not-saved: the same when listThreads or putThread is what fails after
 const sendArgs = {
   sender: { fingerprint: 'fp-me', publicKeyArmored: 'x', privateKeyArmored: 'x', passphrase: 'x', canonical: true } as never,
   peerFingerprint: 'fp-them', peerPublicKeyArmored: 'x', body: 'b',
+  loadRecipientGate: async () => () => true,
 };
 
 test('sendNoteFromInbox maps each kind to its ruled message and keeps the kind; an unknown throw before the POST is not-sent', async () => {
   const ids = { note_id: 'note_1', thread_id: 'thr_1' };
   const want = {
     'not-sent': NOTES_COPY.sendFailed,
+    blocked: NOTES_COPY.sendBlocked,
     refused: NOTES_COPY.sendRefused,
     unconfirmed: NOTES_COPY.sendUnconfirmed,
     'sent-not-saved': NOTES_COPY.sentNotSaved,

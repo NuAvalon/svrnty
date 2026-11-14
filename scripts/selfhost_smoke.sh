@@ -6,8 +6,8 @@
 #   scripts/selfhost_smoke.sh --keep     # leave the smoke stack running for inspection
 #
 # It never touches your real setup: its own compose project (svrnty-smoke), its own throwaway
-# env file (not your .env), and it starts only `app` + `registration` (no Caddy, so it needs
-# no ports and no domain). Everything it creates is removed at the end unless --keep.
+# env file (not your .env), and it starts only `app` + `registration` (Caddy runs only briefly
+# for check 8, so it needs no ports and no domain). Everything it creates is removed at the end unless --keep.
 #
 # Checks:
 #   1. compose refuses to start without SATELLITE_ADMIN_KEY (fails loud, not a restart loop)
@@ -17,6 +17,7 @@
 #   5. a relay deposit lands in the mailbox database on the relay_data volume
 #   6. the deposit survives `restart app` AND a recreate (the `up --build` update path)
 #   7. the documented housekeeping command runs; a wrong admin key is refused
+#   8. a page served through this checkout's Caddyfile still carries the app's script policy
 set -euo pipefail
 
 PROJECT="svrnty-smoke"
@@ -117,5 +118,10 @@ try: u.urlopen(u.Request('http://localhost:8101/msg/cleanup', method='POST', hea
 except e.HTTPError as x: print(x.code)")"
 [[ "$code" == "403" ]] || fail "cleanup accepted a wrong admin key (got $code)"
 pass "documented cleanup runs with the key; a wrong key gets 403"
+
+# 8. The script policy survives the Caddyfile (a temporary Caddy on the smoke network, no ports published).
+scripts/selfhost_csp_check.sh "$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(dc ps -q app)")" Caddyfile \
+  || fail "the app's script policy does not survive this Caddyfile"
+pass "the app's script policy reaches the browser through the Caddyfile"
 
 echo "ALL PASS"

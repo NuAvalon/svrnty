@@ -32,7 +32,7 @@ export interface Envelope {
 
 /** Resolve the SQLite path. Prod: a DIRECTORY-mounted persistent volume (RELAY_DB_PATH). Tests:
  *  in-memory (fresh per process; reset between tests via resetMailboxStore). */
-function dbPath(): string {
+export function dbPath(): string {
   const p = process.env.RELAY_DB_PATH;
   if (p && p.length > 0) return p;
   // Prod default: an ABSOLUTE path under the mounted persistent-volume directory (/data/relay).
@@ -162,6 +162,11 @@ export function depositEnvelope(
     .prepare('SELECT COUNT(*) AS c FROM envelopes WHERE mailbox_id = ? AND expires_at > ?')
     .get(mailboxId, now) as { c: number };
   if (row.c >= cfg.cap) return { ok: false, status: 429 };
+  // The same limit in bytes: a thousand full-size blobs is a lot more disk than a thousand notes. Same 429, so the same bounded residual as the count cap.
+  const held = d
+    .prepare('SELECT COALESCE(SUM(octet_length(blob)), 0) AS b FROM envelopes WHERE mailbox_id = ? AND expires_at > ?')
+    .get(mailboxId, now) as { b: number };
+  if (held.b + Buffer.byteLength(blob) > cfg.mailboxBytesCap) return { ok: false, status: 429 };
 
   d.prepare(
     'INSERT INTO envelopes (mailbox_id, envelope_id, blob, deposited_at, expires_at) VALUES (?, ?, ?, ?, ?)',

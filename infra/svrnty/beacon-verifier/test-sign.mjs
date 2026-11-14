@@ -3,7 +3,7 @@
 // Uses the SAME shared module (kInputs, authMessage) and the same pinned Poseidon as auth.mjs.
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import { buildPoseidon } from 'circomlibjs';
-import { kInputs, authMessage } from '../../../src/lib/crypto/beacon-wire.mjs';
+import { kInputs, authMessage } from './beacon-wire.mjs';
 
 const chunks = [];
 for await (const c of process.stdin) chunks.push(c);

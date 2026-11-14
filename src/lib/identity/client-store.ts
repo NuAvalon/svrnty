@@ -5,13 +5,16 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+import { canonicalAuthorityPin } from './authority-pin';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
+import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
+import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
@@ -134,6 +137,8 @@ async function deriveHmacMasterSalt(keSalt: Uint8Array): Promise<Uint8Array> {
  * The derived CryptoKey is held in memory — lost on tab close.
  */
 export async function initSessionKey(passphrase: string): Promise<void> {
+  // First, before the key changes: the old verified set must never meet a new, unverified key.
+  _unlockVerifiedOwners = new Set();
   // Check if we have an existing salt stored for this browser
   const setting = await txGet<{ key: string; value: string }>('settings', 'key_encryption_salt');
   let salt: Uint8Array;
@@ -149,6 +154,8 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // enc-b: derive the two HMAC subkeys {index, manifest} from the passphrase via the salt-(b)
   // HMAC-master. Contact-record AES reuses _sessionKey (◆5701) — no separate AES key derived here.
   _contactKeys = await deriveContactCryptoKeys(passphrase, await deriveHmacMasterSalt(salt), PBKDF2_ITERATIONS);
+  // Before any migration below: decides which owners those migrations may touch.
+  _unlockVerifiedOwners = await ownersVerifiedBySession();
   // enc-b B5: on every unlock, heal any legacy plaintext-at-rest contacts to encrypted, then establish
   // (first run / post-upgrade) or verify the per-owner book manifest. Best-effort + resumable — it
   // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
@@ -168,6 +175,50 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   await ensureDeviceMailboxesOnUnlock();
 }
 
+/**
+ * Owners whose existing encrypted records open under the current session key. initSessionKey doesn't validate the passphrase, so this
+ * is what stands between a mistyped passphrase and a write: anything that heals plaintext or creates a record at unlock runs only for
+ * these owners. An owner with no encrypted rows can't be verified and stays as it was; a key lost under a typo can't be recovered.
+ */
+let _unlockVerifiedOwners: Set<string> = new Set();
+
+const OWNER_KEY_STORES = ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox'];
+const MAX_CONTACT_SAMPLES = 3;
+
+async function sessionVerifiesOwner(owner: string, contactRows: Array<Record<string, unknown>>): Promise<boolean> {
+  if (!_sessionKey) return false;
+  for (const store of OWNER_KEY_STORES) {
+    if (await keyRecordOpens(await txGet<unknown>(store, owner), _sessionKey, ENC_VERSION)) return true;
+  }
+  for (const rec of contactRows.filter((r) => r.enc_version && typeof r.ciphertext === 'string').slice(0, MAX_CONTACT_SAMPLES)) {
+    try {
+      await decryptContactIfNeeded(rec);
+      return true;
+    } catch {
+      /* wrong key for this row: try the next sample */
+    }
+  }
+  return false;
+}
+
+/** Reads only, and never throws into unlock: any failure means nobody is verified, so nothing is written. */
+async function ownersVerifiedBySession(): Promise<Set<string>> {
+  const verified = new Set<string>();
+  try {
+    const contacts = await txGetAll<Record<string, unknown>>('contacts');
+    const owners = new Set<string>((await listIdentities()).map((i) => i.fingerprint));
+    for (const c of contacts) if (typeof c?.owner_fingerprint === 'string') owners.add(c.owner_fingerprint);
+    for (const owner of owners) {
+      if (await sessionVerifiesOwner(owner, contacts.filter((c) => c?.owner_fingerprint === owner))) verified.add(owner);
+    }
+    const unverified = owners.size - verified.size;
+    if (unverified > 0) console.info(`[enc-b] ${unverified} owner(s) could not be verified on this unlock; left as they were`);
+  } catch {
+    verified.clear();
+  }
+  return verified;
+}
+
 /** Check if the session is unlocked (key available in memory). */
 export function isSessionUnlocked(): boolean {
   return _sessionKey !== null;
@@ -178,6 +229,7 @@ export function lockSession(): void {
   _sessionKey = null;
   _sessionSalt = null;
   _contactKeys = null;
+  _unlockVerifiedOwners = new Set();
   fireSessionLockHooks(); // P1#1: drop the notes-store key (+ any registered session-scoped key) on lock
 }
 
@@ -245,11 +297,18 @@ export interface ContactRecord {
   // an unauthenticated pq_kem is NEVER stored. Both are projected → TrustEdge.peer_pq_*.
   pq_sig_public_key?: string;   // ML-DSA base64
   pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
+  // ── delivery receipts (task #714 R2a): this contact's override of the global default, read AT SEND. Absent = follow the global. ──
+  delivery_receipts?: 'on' | 'off';
   // ── piece-2 device-mailbox (onion seal-target) ──────────────────────────────
   // The peer's PUBLIC device-mailbox block (fp + x25519/ml-kem pubkeys, hex). Stored ONLY from a card
   // whose signature VERIFIED (classifyImportedCard branch 4) — a seal-target is as MITM-sensitive as
   // pq_kem, so a no/invalid-signature card drops it (emit under-reveals). Read via peerDeviceMailbox().
   device_mailbox?: DeviceMailboxPublic;
+  // ── #787 the contact's authority pin ────────────────────────────────────────────────────────────────────────────────
+  // The 64-hex next_authority_commitment the contact's signed card carried at import. Stored ONLY from a card whose signature VERIFIED
+  // (classifyImportedCard branch 4), and FIRST WRITE WINS: a later card with a different pin never replaces it (the import raises the loud
+  // alarm instead). Nothing reads it yet: it is kept so a later relay move or key rotation can be checked against it.
+  next_authority_commitment?: string;
   trust_level: string;
   added_at: string;
   metadata?: any;
@@ -402,6 +461,26 @@ async function txPut<T>(storeName: string, value: T): Promise<void> {
     store.put(value);
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+/** Put `value` under `key` ONLY IF no row exists, in one readwrite transaction (no await between the get and the put). Returns whether it wrote. */
+async function txPutIfAbsent(storeName: string, key: string, value: unknown): Promise<boolean> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const os = tx.objectStore(storeName);
+    let wrote = false;
+    const existing = os.get(key);
+    existing.onsuccess = () => {
+      if (existing.result === undefined) {
+        os.put(value);
+        wrote = true;
+      }
+    };
+    tx.oncomplete = () => resolve(wrote);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 
@@ -591,6 +670,116 @@ export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAff
   await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
 }
 
+// ── Delivery-receipt setting (task #714 R2a): the GLOBAL default, a sealed per-owner record ───────────────────────
+// Same pattern as the suppression and held-affirmatives records: the `settings` store, encryptContactRecord under a reserved AAD id, so the
+// blob cannot be moved onto a contact row or another owner. Not the identity row (plaintext at rest) and not localStorage (no owner scope, and
+// clearing site data would silently turn Off back into On).
+const DELIVERY_RECORD_ID = 'piece2:delivery-receipts'; // reserved AAD id (contacts use random UUIDs, never this)
+function deliverySettingKey(ownerFingerprint: string): string {
+  return `delivery_receipts:${ownerFingerprint}`;
+}
+
+/** Read the record. ★ FAIL-CLOSED: locked, a decrypt/tag failure or a malformed shape is 'unreadable' (the caller sends nothing); no row is 'absent'. */
+export async function readDeliveryDefault(ownerFingerprint: string): Promise<DeliveryDefaultRead> {
+  if (!_sessionKey) return { state: 'unreadable' };
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', deliverySettingKey(ownerFingerprint));
+    if (!row?.value) return { state: 'absent' };
+    return parseDeliveryDefault(await decryptContactRecord<unknown>(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, row.value));
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
+/** Replace the record (the owner's own choice, or answering the one-time question). Throws when locked: never stored unencrypted. */
+export async function writeDeliveryDefault(ownerFingerprint: string, rec: DeliveryDefault): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the delivery-receipt setting unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, rec);
+  await txPut('settings', { key: deliverySettingKey(ownerFingerprint), value: payload });
+}
+
+/**
+ * Write `rec` only if NO record exists yet. Used by restores (which mark 'unknown') and by the migration below, so a late migration can never
+ * overwrite a marker or an answer. Returns whether it wrote.
+ */
+export async function writeDeliveryDefaultIfAbsent(ownerFingerprint: string, rec: DeliveryDefault): Promise<boolean> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the delivery-receipt setting unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, DELIVERY_RECORD_ID, ownerFingerprint, rec);
+  return txPutIfAbsent('settings', deliverySettingKey(ownerFingerprint), { key: deliverySettingKey(ownerFingerprint), value: payload });
+}
+
+/**
+ * The read a SEND uses. An ABSENT record here is an identity that existed before this setting did (a restore marks 'unknown' first), and prod
+ * already sends receipts for it, so it is switched to 'on' ONCE and flagged for a one-time notice. Written only-if-absent, then read back, so a
+ * concurrent writer wins. Anything unreadable stays unreadable.
+ */
+export async function readDeliveryDefaultMigrating(ownerFingerprint: string): Promise<DeliveryDefaultRead> {
+  const first = await readDeliveryDefault(ownerFingerprint);
+  if (first.state !== 'absent') return first;
+  try {
+    // A restore path that could not seal a marker (no session yet) left the plaintext flag: that identity was restored here, so its choice is unknown.
+    const restored = await txGet<{ key: string; value: string }>('settings', deliveryRestoredFlagKey(ownerFingerprint));
+    await writeDeliveryDefaultIfAbsent(ownerFingerprint, restored ? { v: 1, value: 'unknown' } : { v: 1, value: 'on', notice_pending: true });
+    if (restored) await txDelete('settings', deliveryRestoredFlagKey(ownerFingerprint)).catch(() => {});
+  } catch {
+    return { state: 'unreadable' };
+  }
+  return readDeliveryDefault(ownerFingerprint);
+}
+
+function deliveryRestoredFlagKey(ownerFingerprint: string): string {
+  return `delivery_receipts_restored:${ownerFingerprint}`;
+}
+
+/**
+ * For a restore path that has NO session key to seal with: leave a plaintext flag ("this identity was restored on this device", nothing
+ * secret in it). The first send's migration reads it and records 'unknown' instead of 'on'. Never throws on a locked session.
+ */
+export async function markDeliveryRestored(ownerFingerprint: string): Promise<void> {
+  await txPut('settings', { key: deliveryRestoredFlagKey(ownerFingerprint), value: '1' });
+}
+
+/** A restore's marker: the choice is not known on this device, so the owner is asked once and nothing is sent until they answer. */
+export async function markDeliveryDefaultUnknown(ownerFingerprint: string): Promise<void> {
+  await writeDeliveryDefaultIfAbsent(ownerFingerprint, { v: 1, value: 'unknown' });
+}
+
+// ── Lenses v1.3: the SEALED recipient→lens grant book (contract review-1 item 6) ────────────────
+// The grant book is the owner's contact fingerprints + which face each person gets + what each was
+// sent — a ranking of their relationships. It must be sealed at rest: the same AAD-bound
+// contact-crypto path, a reserved domain id, the `settings` store (which exportAll never reads).
+// Owner-local, NEVER on the wire. Stated bound: an unlocked phone shows all of it.
+const LENS_BOOK_RECORD_ID = 'lenses:grant-book'; // reserved AAD id (contacts use random UUIDs, never this)
+function lensBookSettingKey(ownerFingerprint: string): string {
+  return `lens_book:${ownerFingerprint}`;
+}
+
+/**
+ * Read the serialized grant book. ABSENT vs UNREADABLE are different verdicts (lenses R2a / at-rest
+ * A4): only a genuinely ABSENT record reads as null (the caller treats that as an empty book —
+ * zero methods go, updates hold — which is exactly the "no record" rule). A locked session, a
+ * decrypt/tag failure (a wrong passphrase reads as one), a non-string payload and a store error
+ * all THROW — the caller marks the book unreadable and read-only, so a transient fault can never
+ * stand in as an empty book that a later save would overwrite.
+ */
+export async function readLensGrantBook(ownerFingerprint: string): Promise<string | null> {
+  if (!_sessionKey) throw new Error('lens grant book unreadable: session locked');
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+    'settings', lensBookSettingKey(ownerFingerprint),
+  );
+  if (!row?.value) return null;
+  const rec = await decryptContactRecord<unknown>(_sessionKey, LENS_BOOK_RECORD_ID, ownerFingerprint, row.value);
+  if (typeof rec !== 'string') throw new Error('lens grant book unreadable: decrypted payload is not a book');
+  return rec;
+}
+
+/** Persist the serialized grant book, encrypted at rest (fail-closed: throws if locked — never plaintext). */
+export async function writeLensGrantBook(ownerFingerprint: string, raw: string): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the lens grant book unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, LENS_BOOK_RECORD_ID, ownerFingerprint, raw);
+  await txPut('settings', { key: lensBookSettingKey(ownerFingerprint), value: payload });
+}
+
 // ── #588 piece B: one-time BEACON deposit seeds (DARK; nothing calls these yet) ────────────────────────────────
 // The one-time Ed25519 seeds the client needs to sign a later poll/withdraw for a deposit it made. A seed is a secret: encrypted at rest through the
 // SAME AAD-bound path as the records above (a reserved id, so a blob can't be transplanted onto a contact row or another owner), owner-local, never on
@@ -711,7 +900,7 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
 
   // Legacy unencrypted record — return as-is
   // Auto-migrate: re-encrypt if session key is available
-  if (_sessionKey && record.privateKey) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.privateKey) {
     const encrypted = await encryptKeyData({ privateKey: record.privateKey, passphrase: record.passphrase });
     await txPut('keys', { fingerprint, ...encrypted });
   }
@@ -756,6 +945,39 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
   }
 }
 
+// ── Restore key-domain guard ──────────────────────────────
+
+/** Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes. */
+export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
+  for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
+    if (await txGet<unknown>(store, fingerprint)) return true;
+  }
+  return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
+}
+
+/** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
+export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
+  if (!_sessionKey) return false;
+  return keyRecordOpens(await txGet<unknown>('keys', fingerprint), _sessionKey, ENC_VERSION);
+}
+
+/**
+ * Call after the owner's fingerprint is derived and BEFORE any initSessionKey or write. Throws RestoreDomainRefused when this restore
+ * would put the owner's records under a different passphrase than the ones already here. Reads only.
+ * initSessionKey itself is deliberately not the guard: a second identity under another passphrase is legitimate.
+ */
+export async function assertRestoreKeepsOwnerDomain(fingerprint: string, passphrase: string, use: RestoreKeyUse): Promise<void> {
+  const held = await deviceHoldsOwner(fingerprint);
+  const unlocked = isSessionUnlocked();
+  const decision = restoreDomainDecision(use, {
+    held,
+    unlocked,
+    sessionOpens: held && unlocked ? await sessionOpensOwner(fingerprint) : false,
+    passphraseOpens: held && passphrase ? await verifyPassphrase(fingerprint, passphrase) : false,
+  });
+  if (decision === 'refuse') throw new RestoreDomainRefused(use);
+}
+
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
@@ -777,7 +999,7 @@ export async function loadPQKeys(fingerprint: string): Promise<any | null> {
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && record.bundle) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.bundle) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.bundle), passphrase: '' });
     await txPut('pq_keys', { fingerprint, ...encrypted });
   }
@@ -806,7 +1028,7 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && record.vault) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.vault) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.vault), passphrase: '' });
     await txPut('vaults', { fingerprint, ...encrypted });
   }
@@ -905,6 +1127,7 @@ async function ensureDeviceMailboxesOnUnlock(): Promise<void> {
   }
   for (const idRec of identities) {
     const fp = idRec.fingerprint;
+    if (!_unlockVerifiedOwners.has(fp)) continue;
     try {
       const existing = await loadDeviceMailbox(fp); // null = absent; throw = present-but-unreadable
       if (existing) continue; // already has a readable mailbox — nothing to do
@@ -954,7 +1177,7 @@ export async function loadShards(fingerprint: string): Promise<ShardsData | null
   }
 
   // Legacy unencrypted — auto-migrate if session key available
-  if (_sessionKey && record.shards_data) {
+  if (_sessionKey && _unlockVerifiedOwners.has(fingerprint) && record.shards_data) {
     const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.shards_data), passphrase: '' });
     await txPut('shards', { fingerprint, ...encrypted });
   }
@@ -1416,6 +1639,7 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
   // 1. Migrate plaintext-at-rest contacts (no enc_version) → encrypted envelope, in place.
   for (const rec of stored) {
     if (rec && rec.enc_version) continue; // already encrypted — idempotent skip
+    if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
     try {
       await txPut('contacts', await buildStoredContact(rec as unknown as ContactRecord));
     } catch (e) {
@@ -1428,6 +1652,7 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
     const healed = await txGetAll<Record<string, unknown>>('contacts');
     const byOwner = new Map<string, ContactRecord[]>();
     for (const rec of healed) {
+      if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
       const c = await decryptContactIfNeeded(rec);
       const list = byOwner.get(c.owner_fingerprint) ?? [];
       list.push(c);
@@ -1485,6 +1710,7 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
   let stored: Array<Record<string, unknown>>;
   try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
   for (const rec of stored) {
+    if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
     try {
       const c = await decryptContactIfNeeded(rec);
       // ★★ edgeTrusted (shared reveal derivation): explicit c.trusted===false WINS over trust_level (?? semantics).
@@ -1527,6 +1753,7 @@ async function purgeAffirmWireMutualTaintOnUnlock(): Promise<void> {
   try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
   let scrubbed = 0;
   for (const rec of stored) {
+    if (!_unlockVerifiedOwners.has(String(rec?.owner_fingerprint))) continue;
     try {
       const c = await decryptContactIfNeeded(rec);
       const res = scrubAffirmWireMutual(c.mutual);
@@ -1567,6 +1794,7 @@ async function eagerMigrateIdentityStoresOnUnlock(): Promise<void> {
   }
   for (const idRec of identities) {
     const fp = idRec.fingerprint;
+    if (!_unlockVerifiedOwners.has(fp)) continue;
     try { await loadKey(fp); } catch (e) { console.warn('[enc-b] eager key migrate skipped', fp, e); }
     try { await loadPQKeys(fp); } catch (e) { console.warn('[enc-b] eager pq_keys migrate skipped', fp, e); }
     try { await loadVault(fp); } catch (e) { console.warn('[enc-b] eager vault migrate skipped', fp, e); }
@@ -1598,6 +1826,9 @@ export interface SovereignBackup {
   // restore preserves onion mailbox continuity (no mailbox_fp churn on migration). Optional/absent on
   // pre-feature backups; a malformed value is skipped on import (a fresh mailbox inits on unlock).
   device_mailbox?: ReturnType<typeof serializeMailboxKeypair>;
+  // task #714 R2a: the owner's GLOBAL delivery-receipt default, so a restore keeps it. Optional/absent on older backups (a restore then asks).
+  // A plaintext file is untrusted: importAll accepts only 'off' from it. The passphrase-authenticated vault may carry any of the three.
+  delivery_receipts_default?: DeliveryDefaultValue;
   contacts: ContactRecord[];
 }
 
@@ -1611,6 +1842,9 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
     identity,
     contacts: await getAllContacts(fingerprint),
   };
+  // Only a record we could READ is exported; an absent or unreadable one is left out, never guessed.
+  const delivery = await readDeliveryDefault(fingerprint);
+  if (delivery.state === 'ok') backup.delivery_receipts_default = delivery.rec.value;
 
   if (includePrivateKeys) {
     backup.keys = await loadKey(fingerprint) ?? undefined;
@@ -1650,6 +1884,9 @@ export function contactFromPlaintextBackup(
   delete next.grow_gate;
   delete next.grow_invite_nonce;
   delete next.grow_mint_channel;
+  // An untrusted file may only TIGHTEN the delivery-receipt choice for a contact; 'on' (or anything else) is dropped.
+  const dr = restrictOnly(next.delivery_receipts);
+  if (dr) next.delivery_receipts = dr; else delete next.delivery_receipts;
   next.trust_level = 'known';
   next.verification = { method: 'none', verified_at: null };
   if (next.metadata && typeof next.metadata === 'object') {
@@ -1723,8 +1960,11 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
+  // A restore: the choice is UNKNOWN on this device unless the file tightens it (a plaintext file may only say 'off').
+  await writeDeliveryDefaultIfAbsent(fingerprint, restrictOnly(backup.delivery_receipts_default) === 'off' ? { v: 1, value: 'off' } : { v: 1, value: 'unknown' });
 
   if (backup.keys) {
     await storeKey(fingerprint, backup.keys.privateKey, backup.keys.passphrase);
@@ -1817,6 +2057,11 @@ export async function importVaultContentsReport(
   }
 
   await storeIdentity(fp, contents.identity);
+  // A restore: keep what the passphrase-authenticated vault carries (any of the three), else the choice is unknown here. Never overwrites a
+  // record this device already holds.
+  const carried = (contents.trustGraph as unknown as { delivery_receipts_default?: unknown } | null)?.delivery_receipts_default;
+  const carriedParsed = parseDeliveryDefault({ v: 1, value: carried });
+  await writeDeliveryDefaultIfAbsent(fp, { v: 1, value: carriedParsed.state === 'ok' ? carriedParsed.rec.value : 'unknown' });
 
   const classical = contents.keys?.classical;
   if (classical?.privateKey) {
@@ -2092,6 +2337,8 @@ export interface GateArrival {
   publicKeyArmored: string;
   pqSigPublicKey?: string;
   pqKemPublicKey?: string;
+  /** The card's next_authority_commitment, kept only from a card whose signature verified. First write wins: see mergeArrivalPin (trust/grow-gate). */
+  nextAuthorityCommitment?: string;
   epoch: number;
   inviteNonce: string;
   mintChannel: GrowMintChannel;
@@ -2107,7 +2354,7 @@ function isGrowMintChannel(v: unknown): v is GrowMintChannel {
   return v === 'in_person' || v === 'remote';
 }
 
-function normalizeArrival(raw: unknown): GateArrival | null {
+export function normalizeArrival(raw: unknown): GateArrival | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
@@ -2127,6 +2374,8 @@ function normalizeArrival(raw: unknown): GateArrival | null {
   };
   if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
   if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  const pin = canonicalAuthorityPin(r.nextAuthorityCommitment);
+  if (pin) arrival.nextAuthorityCommitment = pin;
   return arrival;
 }
 

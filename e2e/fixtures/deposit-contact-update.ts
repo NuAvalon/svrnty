@@ -100,6 +100,9 @@ export async function buildEncryptedUpdate(
     changed_fields: fields.changedFields,
     delta: fields.delta,
   };
+  // CLASSICAL on purpose: that is what the real sender signs today (it never finds a PQ signing secret; see src/lib/identity/pq-signing-secret.ts,
+  // pinned by pq-signing-secret.test.ts). If that changes, this fixture must change with it, and e2e/contact-update-real-sender.spec.ts (a real
+  // sender, nothing simulated) is the spec that tells you. A simulated sender that signs differently from the real one is how a break hides.
   const signature = await signWithEnvelope(
     DOMAIN_CONTACT_UPDATE,
     contactUpdateSigningInput(env),
