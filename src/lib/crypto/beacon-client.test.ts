@@ -537,16 +537,23 @@ test("kindOf 'frozen': deposits and polls keep running on schedule; only local c
   assert.equal(await client.matchSince('pair-1'), EPOCH);              // v3 A2: frozen does NOT hide matchSince
 });
 
-test('kindOf removed dominates frozen on either source', async () => {
+test('kindOf removed dominates frozen on either source; frozen still renews', async () => {
   const latch = memLatch();
+  const { client, f } = harness({ latch });
+  f.queue.push(ok('accepted'));
+  const r = await client.trustAtTap('pair-1');                         // tap + confirm first, so renew is real
+  assert.equal(r.kind, 'deposited');
   latch.local.set('pair-1', 'frozen');
   latch.remote.set('pair-1', 'removed');
-  assert.equal(await latch.kindOf('pair-1'), 'removed');
-  latch.remote.clear();
-  const { client, f } = harness({ latch });
-  f.setFallback(ok('accepted'));
+  assert.equal(await latch.kindOf('pair-1'), 'removed');               // removed dominates from either source
+  f.calls.length = 0;
+  f.setFallback(ok('none'));
   await client.renew('pair-1');                                        // 'removed' skips every scheduled action
   assert.equal(f.calls.length, 0);
+  latch.remote.clear();                                                // only 'frozen' remains —
+  f.queue.push(nonceOk(NONCE_A), ok('none'));
+  await client.renew('pair-1');                                        // frozen DOES renew on schedule
+  assert.ok(f.calls.length > 0);
 });
 
 test('a remote re-trust does NOT clear a local latch (and vice versa)', async () => {
@@ -758,7 +765,7 @@ test('D15 Remove while a deposit request is in flight (answer accepted): a withd
   new Promise<void>((r) => (gate = r));
   const slowFetch = makeFetch();
   slowFetch.queue.push({ status: 200, body: '{"status":"accepted"}', delayMs: 10 });
-  const { client } = harness({ latch, fetch: slowFetch.fetch });
+  const { client, store } = harness({ latch, fetch: slowFetch.fetch });
   const trusting = client.trustAtTap('pair-1');
   await new Promise((r) => setTimeout(r, 0));                          // let the deposit fetch leave
   latch.local.set('pair-1', 'removed');
@@ -767,7 +774,28 @@ test('D15 Remove while a deposit request is in flight (answer accepted): a withd
   await client.drainPendingWithdraws();
   const after = await latch.kindOf('pair-1');
   assert.equal(after, 'removed');
-  // the accepted row must have been sent a withdraw or durably queued one
+  const rec = (await store.get('pair-1'))!;                            // the accepted row must have been
+  const sentWithdraw = slowFetch.calls.some((c) => c.url.endsWith('/beacon/withdraw'));   // sent a withdraw
+  assert.ok(sentWithdraw || rec.pendingWithdraws.length === 1);        // or durably queued one
+});
+
+test('R6-order: a commit that throws AFTER a confirmed withdraw leaves the seed held', async () => {
+  const { client, f, store, secrets } = harness();
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  const rowId = (await store.get('pair-1'))!.rows[0].rowId;
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'));                     // the Remove's withdraw answers confirmed
+  let casCalls = 0;
+  const realCas = store.cas.bind(store);
+  store.cas = async (p, v, next) => {
+    if (++casCalls === 2) throw new Error('cas blew up');              // cas #1 = the Remove intent; #2 = the retire commit
+    return realCas(p, v, next);
+  };
+  await assert.rejects(() => client.removeAtTap('pair-1'), /cas blew up/);
+  const rec = (await store.get('pair-1'))!;
+  assert.equal(rec.pendingWithdraws.length, 1);                        // the durable queue entry stands
+  assert.ok(!secrets.released.includes(rowId));                        // commit lost => seed NOT released
+  assert.ok(secrets.rows.has(rowId));
 });
 
 test('D16 Remove while a deposit is in flight and the answer is lost: a withdraw is queued for the unknown row', async () => {
