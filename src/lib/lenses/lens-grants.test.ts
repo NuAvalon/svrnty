@@ -92,6 +92,21 @@ test('R1: the record rides no wire path (source guard — unchanged boundary)', 
   assert.equal(/getAllContacts|updateContact|addContact/.test(grantSrc), false);
 });
 
+test('R2: raw == null (absent) reads as a readable EMPTY book', async () => {
+  const s = memStorage();                                              // nothing stored — getItem returns null
+  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {} },
+    'an absent record is the ONE case that reads empty + readable (R2 — zero methods, writable book)');
+  const undef = { getItem: () => undefined, setItem: () => {} };
+  assert.deepEqual(await loadLensGrants(OWNER, undef), { v: 1, grants: {}, inSeq: {} });
+});
+
+test('R2a: raw === "" (present but empty) reads UNREADABLE — never a readable empty', async () => {
+  const s = memStorage();
+  s.map.set(lensGrantKey(OWNER), '');
+  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {}, unreadable: true },
+    'a stored empty string is a record that did not read — read-only stand-in, not no-record');
+});
+
 test('R2: corrupt or unreadable records read as EMPTY — identical to no record', async () => {
   const s = memStorage();
   s.map.set(lensGrantKey(OWNER), '{not json');

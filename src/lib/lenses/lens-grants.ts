@@ -120,7 +120,8 @@ export async function loadLensGrants(ownerFingerprint: string, storage?: LensGra
   if (!store) return empty;
   try {
     const raw = await store.getItem(lensGrantKey(ownerFingerprint));
-    if (!raw) return empty;
+    if (raw == null) return empty;                                    // only an ABSENT record is empty —
+    // '' is present-but-unreadable: it parses-throws into the catch below, never a readable empty
     const parsed = JSON.parse(raw) as LensGrantBook;
     // R2a wrong-shape = unreadable: a valid parse is still a book that did not read if its
     // version is unknown or its maps are not maps (an array parses clean and is still junk).
