@@ -9,14 +9,21 @@ import { EnvelopeRefused } from '../crypto/password-envelope';
 const lookalike = (code: string, message: string) => Object.assign(new Error(message), { code });
 
 test('R1 the errors that really mean a wrong password map to the wrong-password message (a v4 vault gets its recovery-code wording)', () => {
-  const gcm = new DOMException('The operation failed for an operation-specific reason', 'OperationError');
+  const envelope = lookalike('wrong-password', 'Incorrect encryption password.');
   const vault = lookalike('vault-could-not-open', 'Could not open vault — wrong passphrase or the file was altered');
-  for (const e of [gcm, vault]) {
+  for (const e of [envelope, vault]) {
     assert.deepEqual(classifyRestoreFailure(e), { code: 'wrong-password', message: RESTORE_MESSAGES.wrongPassword });
     assert.deepEqual(classifyRestoreFailure(e, { v4Vault: true }), { code: 'wrong-password', message: RESTORE_MESSAGES.wrongPasswordVaultV4 });
   }
   assert.match(RESTORE_MESSAGES.wrongPassword, /^Incorrect encryption password\./);
   assert.match(RESTORE_MESSAGES.wrongPasswordVaultV4, /recovery code/);
+});
+
+test('R1b a BARE OperationError is NOT a wrong password: WebCrypto raises it from any failed decrypt, including a step after the file opened', () => {
+  const gcm = new DOMException('The operation failed for an operation-specific reason', 'OperationError');
+  assert.deepEqual(classifyRestoreFailure(gcm), { code: 'unknown', message: RESTORE_MESSAGES.unknown });
+  assert.deepEqual(classifyRestoreFailure(gcm, { v4Vault: true }), { code: 'unknown', message: RESTORE_MESSAGES.unknown });
+  assert.deepEqual(classifyRestoreFailure(Object.assign(new Error('x'), { name: 'OperationError' })), { code: 'unknown', message: RESTORE_MESSAGES.unknown });
 });
 
 test('R2 NOTHING ELSE reads as a wrong password: an error whose text merely mentions a password, a passphrase or decrypting is not one, and its text is never shown', () => {

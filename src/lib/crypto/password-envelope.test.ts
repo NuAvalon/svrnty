@@ -9,7 +9,7 @@ import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { argon2id } from '@noble/hashes/argon2.js';
 import {
-  sealWithPassword, openWithPassword, EnvelopeRefused, LEGACY_PBKDF2_ITERATIONS, MIN_EXPORT_PASSWORD_LENGTH, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
+  sealWithPassword, openWithPassword, EnvelopeRefused, EnvelopeWrongPassword, LEGACY_PBKDF2_ITERATIONS, MIN_EXPORT_PASSWORD_LENGTH, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
 } from './password-envelope';
 import { ARGON2_MAX_MEMORY_COST, ARGON2_MAX_TIME_COST } from './kdf';
 
@@ -179,4 +179,14 @@ test('E12 the export password floor is 12 (the same as every other password in t
   // and no other copy or test in the repo pins the old floor for these dialogs
   const pinned = app().filter((f) => /minimum 8 char|8\+ char/i.test(code(f))).map((f) => relative(SRC, f));
   assert.deepEqual(pinned, [], 'no source line says "minimum 8 characters" / "8+ characters"');
+});
+
+test('E-typed a wrong password on EITHER format is the typed EnvelopeWrongPassword (code "wrong-password"); a right one opens; anything else is not retyped', async () => {
+  for (const [name, env] of [['argon2id', ARGON_KAT], ['legacy PBKDF2', LEGACY_KAT]] as const) {
+    await assert.rejects(openWithPassword(clone(env), 'not-the-password'), (e: unknown) => e instanceof EnvelopeWrongPassword && (e as EnvelopeWrongPassword).code === 'wrong-password', `${name}: wrong password`);
+    const ok = await openWithPassword(clone(env), PW);
+    assert.ok(ok.plaintext.length > 0, `${name}: the right password opens`);
+  }
+  // a refusal and a malformed field stay what they were: not a wrong password
+  await assert.rejects(openWithPassword({ ...clone(ARGON_KAT), kdf: 'scrypt' }, PW), (e: unknown) => e instanceof EnvelopeRefused && !(e instanceof EnvelopeWrongPassword));
 });

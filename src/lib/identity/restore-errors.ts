@@ -39,13 +39,14 @@ export const RESTORE_MESSAGES = Object.freeze({
 
 /**
  * Classify a restore failure. `ctx.v4Vault`: the file is a v4 vault (its own wording offers the recovery code). Decided by identity only:
- *  - AES-GCM's authentication failure (a DOMException named OperationError) and the vault's typed VaultCouldNotOpen are the wrong-password errors;
+ *  - the two TYPED wrong-password errors: EnvelopeWrongPassword (the file's own AES-GCM check, code 'wrong-password') and VaultCouldNotOpen. A BARE OperationError is
+ *    not one: WebCrypto raises it from any failed decrypt, including steps after the file opened, and says nothing about the password the person typed;
  *  - EnvelopeRefused carries its own fixed sentence (a file this version will not try: it names no secret and echoes nothing from the file);
  *  - the typed needs-device-passphrase, unsupported-format and unrecognized-format errors each have their own sentence;
  *  - anything else is 'unknown': one generic sentence, never the error's own text.
  */
 export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } = {}): RestoreFailure {
-  if (nameOf(err) === 'OperationError' || codeOf(err) === 'vault-could-not-open') {
+  if (codeOf(err) === 'wrong-password' || codeOf(err) === 'vault-could-not-open') {
     return { code: 'wrong-password', message: ctx.v4Vault ? RESTORE_MESSAGES.wrongPasswordVaultV4 : RESTORE_MESSAGES.wrongPassword };
   }
   if (nameOf(err) === 'EnvelopeRefused') return { code: 'envelope-refused', message: (err as Error).message };
