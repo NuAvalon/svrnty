@@ -6,6 +6,10 @@
 // removes the block and everything in it.
 //
 // IT IS THE SAME PREDICATE as isBeaconWireLive() (claim-gates.ts): a dev build (isDevBuild on the domain) AND the explicit opt-in. beacon-dev-flag.test.ts proves they agree on a grid.
+//
+// BOUND (named, not a defect): isDevBuild is a domain-PREFIX test ("dev."). A self-hoster whose domain starts with "dev." and who ALSO sets NEXT_PUBLIC_BEACON_LIVE=true gets the
+// rehearsal zkey pin in their build. That only produces proofs a relay accepts if that relay also pins the rehearsal verifying key (the satellite refuses any unpinned vkey), so
+// it can hurt nobody but themselves.
 
 import { isDevBuild } from './satellite/satellite-base-url';
 

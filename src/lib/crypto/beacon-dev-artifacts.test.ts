@@ -72,7 +72,11 @@ function walk(dir: string, out: string[] = []): string[] {
 test('A5 [static] the rehearsal zkey hash and the dev URL prefix are named in exactly ONE non-test source file, and only inside the static branch', () => {
   const hits = [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'app')), join(ROOT, 'next.config.ts')]
     .filter((p) => /\.(ts|tsx|js|mjs)$/.test(p) && !/\.test\./.test(p))
-    .filter((p) => { const s = readFileSync(p, 'utf8'); return s.includes(ZKEY) || s.includes('/beacon-dev/'); })
+    .filter((p) => {
+      // CODE only: a comment that names a path (the route's own header does) carries no bytes and is stripped from a built bundle; a literal in code anywhere else still fails this
+      const s = readFileSync(p, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+      return s.includes(ZKEY) || s.includes('/beacon-dev/');
+    })
     .map((p) => p.slice(ROOT.length));
   assert.deepEqual(hits, ['src/lib/crypto/beacon-dev-artifacts.ts']);
   const src = readFileSync(join(ROOT, 'src/lib/crypto/beacon-dev-artifacts.ts'), 'utf8');
