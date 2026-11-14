@@ -9,7 +9,7 @@ import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { argon2id } from '@noble/hashes/argon2.js';
 import {
-  sealWithPassword, openWithPassword, EnvelopeRefused, LEGACY_PBKDF2_ITERATIONS, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
+  sealWithPassword, openWithPassword, EnvelopeRefused, LEGACY_PBKDF2_ITERATIONS, MIN_EXPORT_PASSWORD_LENGTH, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
 } from './password-envelope';
 import { ARGON2_MAX_MEMORY_COST, ARGON2_MAX_TIME_COST } from './kdf';
 
@@ -155,11 +155,28 @@ test('E10 the dialogs reach the envelope only through seal / open, and both writ
   assert.ok(!/sealWithPassword\(/.test(fe), 'the restore screen writes nothing');
 });
 
-test('E11 the notice after an older-format restore says what to do, and is defined once', () => {
-  assert.match(LEGACY_PASSWORD_METHOD_NOTICE, /older, weaker password method/);
-  assert.match(LEGACY_PASSWORD_METHOD_NOTICE, /export a new copy/i);
+test('E11 the notice after an older-format restore is the copy owner\'s wording, says what to do, avoids the forbidden words, and is defined once', () => {
+  assert.equal(LEGACY_PASSWORD_METHOD_NOTICE, 'This backup uses an older, weaker password method. It opened fine. Export a new copy now and keep that one instead, so your backup uses the current method.');
+  assert.doesNotMatch(LEGACY_PASSWORD_METHOD_NOTICE, /insecure|compromised|at risk|upgraded|automatically|broken|exposed/i, 'the words ruled out in ledger row 169');
   const users = app().filter((f) => code(f).includes('LEGACY_PASSWORD_METHOD_NOTICE')).map((f) => relative(SRC, f)).sort();
   assert.ok(users.includes('lib/crypto/password-envelope.ts'));
-  assert.ok(users.includes('components/SecureImportExportDialogs.tsx') && users.includes('components/SoverentityFrontend.tsx'), 'both restore surfaces show it: ' + users.join(', '));
+  assert.ok(users.includes('components/SecureImportExportDialogs.tsx') && users.includes('components/SoverentityFrontend.tsx'), 'both restore surfaces use it: ' + users.join(', '));
   assert.ok(!app().some((f) => !/password-envelope\.ts$/.test(f) && code(f).includes('older, weaker password method')), 'the wording is not copied anywhere');
+});
+
+test('E12 the export password floor is 12 (the same as every other password in the app), enforced by the writer itself and read by the dialogs from ONE constant', async () => {
+  assert.equal(MIN_EXPORT_PASSWORD_LENGTH, 12);
+  const eleven = 'x'.repeat(11), twelve = 'x'.repeat(12);
+  await assert.rejects(sealWithPassword(new TextEncoder().encode(PLAIN), eleven), /at least 12 characters/, '11 characters are refused by the writer');
+  await assert.rejects(sealWithPassword(new TextEncoder().encode(PLAIN), ''), /at least 12/, 'and so is the empty password');
+  const ok = await sealWithPassword(new TextEncoder().encode(PLAIN), twelve);
+  assert.equal(dec((await openWithPassword(ok, twelve)).plaintext), PLAIN, '12 characters are accepted');
+  // the dialogs: every check and every line of copy comes from the constant; no literal 8 is left in them
+  const dlg = code(join(SRC, 'components/SecureImportExportDialogs.tsx'));
+  assert.ok((dlg.match(/MIN_EXPORT_PASSWORD_LENGTH/g) ?? []).length >= 7, 'the import plus six uses: 2 checks, 1 flag, 1 button guard, 1 placeholder, 1 label');
+  assert.ok(!/\.length\s*(<|>=|>|<=)\s*8\b/.test(dlg), 'no length compared with a literal 8');
+  assert.ok(!/\b8\+\s*char|minimum 8|at least 8|\(8\b/i.test(dlg), 'no copy that says 8');
+  // and no other copy or test in the repo pins the old floor for these dialogs
+  const pinned = app().filter((f) => /minimum 8 char|8\+ char/i.test(code(f))).map((f) => relative(SRC, f));
+  assert.deepEqual(pinned, [], 'no source line says "minimum 8 characters" / "8+ characters"');
 });

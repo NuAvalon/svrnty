@@ -11,6 +11,7 @@ import { openWithPassword } from '../src/lib/crypto/password-envelope';
  *     iterations, AES-256-GCM) still restores and stores the key. The unchanged build was run on the same file: it stores the key too, so the file is a
  *     faithful old-format file.
  *  C. A wrong password stores nothing.
+ *  D. The key export asks for 12 characters on screen (label, and the button is disabled below 12).
  *
  * NOT driven in a browser, and why (all existing behaviour, reported separately, each checked against the unchanged build where it says so):
  *  - the "export a new copy" notice after an old-format restore. The two old-format restore paths that exist cannot show it today: a key-only restore at the
@@ -42,12 +43,17 @@ async function mint(page: Page) {
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
-async function downloadKeys(page: Page, dest: string) {
+async function openKeyExportDialog(page: Page) {
   await page.getByRole('tab', { name: 'Identity' }).click();
   await page.getByTestId('card-actions-toggle').click();
   await page.getByText('Download Keys', { exact: true }).click();
   await page.getByPlaceholder('Your everyday unlock passphrase').fill(UNLOCK_PW);
   await page.getByRole('button', { name: /^continue$/i }).click();
+  await expect(page.getByPlaceholder('Enter a strong password')).toBeVisible();
+}
+
+async function downloadKeys(page: Page, dest: string) {
+  await openKeyExportDialog(page);
   await page.getByPlaceholder('Enter a strong password').fill(KEY_PW);
   await page.getByPlaceholder('Confirm your password').fill(KEY_PW);
   const download = page.waitForEvent('download', { timeout: 180_000 });
@@ -153,5 +159,20 @@ test('C. a wrong password stores nothing and leaves the restore screen as it was
   expect(await keyStored(page, payload!.fingerprint), 'a wrong password stores no key').toBe(false);
   await expect(page.getByPlaceholder('Encryption password from export')).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).not.toBeVisible();
+  await ctx.close();
+});
+
+test('D. the key export asks for 12 characters on screen: the label says so, and the button stays disabled until the password is 12', async ({ browser }) => {
+  const ctx = await browser.newContext({ acceptDownloads: true });
+  const page = await ctx.newPage();
+  await mint(page);
+  await openKeyExportDialog(page);
+  await expect(page.getByText('Password (minimum 12 characters)')).toBeVisible();
+  const button = page.getByRole('button', { name: /download encrypted key/i });
+  for (const [pw, enabled] of [['x'.repeat(8), false], ['x'.repeat(11), false], ['x'.repeat(12), true]] as const) {
+    await page.getByPlaceholder('Enter a strong password').fill(pw);
+    await page.getByPlaceholder('Confirm your password').fill(pw);
+    if (enabled) await expect(button).toBeEnabled(); else await expect(button).toBeDisabled();
+  }
   await ctx.close();
 });

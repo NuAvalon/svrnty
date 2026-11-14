@@ -12,6 +12,8 @@
 
 import {
   ARGON2_KEY_LENGTH,
+  MIN_PASSPHRASE_LENGTH,
+  assertPassphraseStrength,
   IV_LENGTH,
   SALT_LENGTH,
   aesGcmDecrypt,
@@ -23,6 +25,13 @@ import {
   toBase64,
 } from './kdf';
 import { deriveKeyArgon2idOffThread } from './kdf-offthread';
+
+/**
+ * The shortest password an export may be protected with. The same floor as every other password in the app (the vault passphrase, the recovery sheet): a key
+ * file carries the WHOLE identity, so it is exactly as strong as this password, and a memory-hard derivation slows guessing but does not rescue a short one.
+ * The dialogs read their checks and their copy from this one constant, so the number on the screen cannot differ from the number enforced.
+ */
+export const MIN_EXPORT_PASSWORD_LENGTH = MIN_PASSPHRASE_LENGTH;
 
 export const ENVELOPE_ALGORITHM = 'AES-256-GCM';
 export const ENVELOPE_KDF_ARGON2ID = 'argon2id';
@@ -53,6 +62,7 @@ function aadFor(p: { time_cost: number; memory_cost: number; parallelism: number
 
 /** Encrypt `plaintext` under `password`. Argon2id (in a worker), a fresh salt and iv, the parameters authenticated. The only way this module writes. */
 export async function sealWithPassword(plaintext: Uint8Array, password: string): Promise<SealedEnvelope> {
+  assertPassphraseStrength(password); // the writer refuses a short password itself, whoever calls it (the dialogs check first, for a clear message)
   const salt = randomBytes(SALT_LENGTH);
   const iv = randomBytes(IV_LENGTH);
   const kdf_params = (({ time_cost, memory_cost, parallelism }) => ({ time_cost, memory_cost, parallelism }))(defaultArgon2Params(salt));
@@ -117,6 +127,10 @@ export async function openWithPassword(envelope: unknown, password: string): Pro
   throw new EnvelopeRefused('unknown-kdf', 'This file uses a password method this version does not read.');
 }
 
-/** The one place the notice after a legacy restore lives, so the wording is reviewed once. The owner is told what to do, in plain words. */
+/**
+ * The notice after an older-format restore. ONE constant, so the wording is reviewed once. The wording is the copy owner's (ledger row 169): "weaker" is true
+ * and not alarming; it does not say the old file is broken or exposed; "keep that one instead" because the old file stays as weak as it was until replaced.
+ * Forbidden in it: insecure / compromised / at risk / "we upgraded your file" / automatically.
+ */
 export const LEGACY_PASSWORD_METHOD_NOTICE =
-  'This file was protected with an older, weaker password method. It opened, but export a new copy now so your backup uses the current one.';
+  'This backup uses an older, weaker password method. It opened fine. Export a new copy now and keep that one instead, so your backup uses the current method.';

@@ -22,7 +22,7 @@ import {
   loadPQKeys,
 } from '@/lib/identity/client-store';
 import { contactsEncryptedExportFilename } from '@/components/export/contacts-export-name';
-import { sealWithPassword, openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
+import { sealWithPassword, openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE, MIN_EXPORT_PASSWORD_LENGTH } from '@/lib/crypto/password-envelope';
 
 // ── Helpers ────────────────────────────────────────────
 
@@ -85,8 +85,8 @@ export function SecureExportDialog({
       let result: string;
       let method: string;
 
-      if (!password || password.length < 8) {
-        throw new Error('A password (8+ characters) is required to export contacts.');
+      if (!password || password.length < MIN_EXPORT_PASSWORD_LENGTH) {
+        throw new Error(`A password (${MIN_EXPORT_PASSWORD_LENGTH}+ characters) is required to export contacts.`);
       }
 
       // Encrypt with AES-256-GCM, the key derived from the password with Argon2id (the one derivation path, kdf.ts). Older exports used a weaker password
@@ -176,7 +176,7 @@ export function SecureExportDialog({
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter a password (8+ characters)"
+                  placeholder={`Enter a password (${MIN_EXPORT_PASSWORD_LENGTH}+ characters)`}
                   className="flex-1"
                 />
                 <Button
@@ -251,7 +251,7 @@ export function SecureExportDialog({
           {!exportComplete && (
             <Button
               onClick={handleExport}
-              disabled={loading || password.length < 8}
+              disabled={loading || password.length < MIN_EXPORT_PASSWORD_LENGTH}
               className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
@@ -287,7 +287,7 @@ export function PrivateKeyExportDialog({
   const [exportComplete, setExportComplete] = useState(false);
 
   const passwordsMatch = password === confirmPassword;
-  const passwordValid = password.length >= 8;
+  const passwordValid = password.length >= MIN_EXPORT_PASSWORD_LENGTH;
 
   const handleExport = async () => {
     if (!identityFingerprint || !passwordValid || !passwordsMatch) return;
@@ -377,7 +377,7 @@ export function PrivateKeyExportDialog({
             </Alert>
 
             <div className="space-y-2">
-              <Label htmlFor="keyPassword" className="text-[var(--se-muted)]">Password (minimum 8 characters)</Label>
+              <Label htmlFor="keyPassword" className="text-[var(--se-muted)]">{`Password (minimum ${MIN_EXPORT_PASSWORD_LENGTH} characters)`}</Label>
               <div className="flex">
                 <Input
                   id="keyPassword"
