@@ -11,15 +11,29 @@
  *  - present -> a safe integer >= 0, else refuse.
  *  - durable_fingerprint absent -> allowed ONLY at epoch 0, where the durable id IS the current fingerprint. At epoch > 0 an absent
  *    durable id cannot be reconstructed, so refuse rather than guess (guessing the current fp breaks the second rotation, R7.3).
- *  - present -> a non-empty string; at epoch 0 it must EQUAL the current fingerprint (a genesis identity has one id).
+ *  - present -> a canonical fingerprint (64 lowercase hex, any epoch: a malformed durable id would break the NEXT rotation, R7.3);
+ *    at epoch 0 it must EQUAL the current fingerprint (a genesis identity has one id).
  * Pure: no I/O, no clock, no secrets. The caller derives the commitment from the master secret.
  */
 
+const CANONICAL_FP = /^[0-9a-f]{64}$/;
+
+export const RESTORE_DURABLE_CODE = 'restore-durable';
+/** The ONE user-facing string. The recovery code DID open the bundle, so it must never read as a wrong code; the reason stays out of it. */
+export const RESTORE_DURABLE_MESSAGE = "This backup file can't be used: the identity record inside it is inconsistent. Nothing was restored.";
+
 export class RestoreDurableRefused extends Error {
+  readonly code = RESTORE_DURABLE_CODE;
+  /** For logs and tests only; never shown. */
   constructor(public readonly reason: 'bad-epoch' | 'missing-durable-id' | 'bad-durable-id' | 'genesis-id-mismatch') {
-    super(`This backup's identity record is inconsistent (${reason}). Nothing was restored.`);
+    super(RESTORE_DURABLE_MESSAGE);
     this.name = 'RestoreDurableRefused';
   }
+}
+
+/** Recognisable without instanceof (the restore module is loaded by a dynamic import, so class identity is not guaranteed). */
+export function isRestoreDurableRefusal(e: unknown): e is RestoreDurableRefused {
+  return typeof e === 'object' && e !== null && (e as { code?: unknown }).code === RESTORE_DURABLE_CODE;
 }
 
 export interface SeedBundleDurable {
@@ -49,7 +63,7 @@ export function durableFromSeedBundle(bundle: SeedBundleDurable, currentFingerpr
     if (epoch !== 0) throw new RestoreDurableRefused('missing-durable-id');
     fingerprint = currentFingerprint;
   } else {
-    if (typeof rawId !== 'string' || rawId.length === 0) throw new RestoreDurableRefused('bad-durable-id');
+    if (typeof rawId !== 'string' || !CANONICAL_FP.test(rawId)) throw new RestoreDurableRefused('bad-durable-id');
     if (epoch === 0 && rawId !== currentFingerprint) throw new RestoreDurableRefused('genesis-id-mismatch');
     fingerprint = rawId;
   }

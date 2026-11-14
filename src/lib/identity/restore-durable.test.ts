@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { durableFromSeedBundle, RestoreDurableRefused } from './restore-durable';
+import { durableFromSeedBundle, RestoreDurableRefused, isRestoreDurableRefusal, RESTORE_DURABLE_CODE, RESTORE_DURABLE_MESSAGE } from './restore-durable';
 import { createKeyVault, recoverFromSeedPhrase, seedPhraseToMasterSecret, type PrivateKeyBundle } from '../crypto/recovery';
 import { deriveNextAuthorityCommitment } from './fingerprint';
 import { createVaultContents, packVault, unpackVault, type VaultIdentity } from '../sync/vault';
@@ -29,17 +29,29 @@ test('D2 a rotated identity keeps its epoch AND its durable id (not the current 
 test('D3 fail-closed: a bad epoch, a missing durable id past genesis, a bad id, a genesis id that is not the current fp', () => {
   for (const e of [-1, 1.5, NaN, Infinity, '3', null, Number.MAX_SAFE_INTEGER]) refuses(() => durableFromSeedBundle({ durable_epoch: e, durable_fingerprint: DURABLE }, FP), 'bad-epoch');
   refuses(() => durableFromSeedBundle({ durable_epoch: 2 }, FP), 'missing-durable-id');
-  for (const id of ['', 7, null, {}]) refuses(() => durableFromSeedBundle({ durable_epoch: 2, durable_fingerprint: id }, FP), 'bad-durable-id');
+  for (const id of ['', 7, null, {}, 'zz', 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), ` ${'a'.repeat(64)}`]) refuses(() => durableFromSeedBundle({ durable_epoch: 2, durable_fingerprint: id }, FP), 'bad-durable-id');
   refuses(() => durableFromSeedBundle({ durable_epoch: 0, durable_fingerprint: DURABLE }, FP), 'genesis-id-mismatch');
   refuses(() => durableFromSeedBundle({ durable_fingerprint: DURABLE }, FP), 'genesis-id-mismatch');
 });
 
-test('D4 the refusal echoes no bundle bytes and says nothing was restored', () => {
-  try { durableFromSeedBundle({ durable_epoch: 2, durable_fingerprint: '' }, FP); assert.fail('no throw'); } catch (e) {
-    assert.ok(e instanceof RestoreDurableRefused);
-    assert.match((e as Error).message, /Nothing was restored/);
-    assert.ok(!(e as Error).message.includes(FP));
+const WRONG_CODE_RE = /master secret|seed phrase|Invalid seed|hash|mismatch/i; // the seed-restore catch's wrong-code regex (G4 pins it)
+test('D4 every refusal: ONE user string, no reason token, no bundle bytes, recognisable by code, and never the wrong-code wording', () => {
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ durable_epoch: -1 }, 'bad-epoch'], [{ durable_epoch: 2 }, 'missing-durable-id'],
+    [{ durable_epoch: 2, durable_fingerprint: '' }, 'bad-durable-id'], [{ durable_epoch: 0, durable_fingerprint: DURABLE }, 'genesis-id-mismatch'],
+  ];
+  for (const [b, reason] of cases) {
+    try { durableFromSeedBundle(b, FP); assert.fail('no throw'); } catch (e) {
+      assert.ok(e instanceof RestoreDurableRefused);
+      assert.equal((e as RestoreDurableRefused).reason, reason);
+      assert.equal((e as Error).message, RESTORE_DURABLE_MESSAGE);
+      assert.ok(!(e as Error).message.includes(reason) && !(e as Error).message.includes(FP) && !(e as Error).message.includes(DURABLE));
+      assert.doesNotMatch((e as Error).message, WRONG_CODE_RE, `${reason} would read as a wrong recovery code`);
+      assert.ok(isRestoreDurableRefusal(e));
+      assert.ok(isRestoreDurableRefusal({ code: RESTORE_DURABLE_CODE }));
+    }
   }
+  assert.ok(!isRestoreDurableRefusal(new Error('x')) && !isRestoreDurableRefusal(null) && !isRestoreDurableRefusal({ code: 'restore-domain' }));
 });
 
 const bundle = (extra: Partial<PrivateKeyBundle>): PrivateKeyBundle => ({
@@ -121,4 +133,14 @@ test('G3 both mint paths seal a genesis durable record into the seed bundle', ()
     assert.match(lit, /durable_epoch: 0,/, p);
     assert.match(lit, /durable_fingerprint: fingerprint,/, p);
   }
+});
+
+test('G4 the seed-restore UI catch routes this refusal to its own string BEFORE the wrong-code regex', () => {
+  const src = read('../../components/SoverentityFrontend.tsx');
+  const i = src.indexOf('await restoreIdentityFromSeedVault(');
+  assert.ok(i >= 0);
+  const s = code(src.slice(src.indexOf('} catch (err) {', i), src.indexOf('} finally {', i)));
+  before(s, 'isRestoreDurableRefusal(err)', '/master secret|seed phrase|Invalid seed|hash|mismatch/i', 'routed before the regex');
+  assert.match(s, /if \(isRestoreDurableRefusal\(err\)\) \{\s*setRestoreError\(RESTORE_DURABLE_MESSAGE\);\s*return;/);
+  assert.ok(s.includes(String(WRONG_CODE_RE).slice(1, -2)), 'the regex D4 checks against is the one in the catch');
 });
