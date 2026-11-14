@@ -70,6 +70,7 @@ export function addSeed(map: BeaconSeeds, e: BeaconSeedEntry): BeaconSeeds {
 export function removeSeed(map: BeaconSeeds, H_e: string, N: string): BeaconSeeds {
   const k = seedKey(H_e, N);
   if (!(k in map)) return { ...map };
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping that key is the point of this destructure
   const { [k]: _gone, ...rest } = map;
   return rest;
 }

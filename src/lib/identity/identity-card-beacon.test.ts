@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- test doubles and deliberately wrong inputs */
 // src/lib/identity/identity-card-beacon.test.ts
 // #588 T4: the beacon key on the SIGNED identity card (identity.beacon_public_key + identity.beacon_key_generation). Trust stays DARK.
 // Run: npx tsx --test src/lib/identity/identity-card-beacon.test.ts

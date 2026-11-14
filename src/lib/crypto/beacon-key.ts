@@ -25,7 +25,9 @@ export type BeaconKeyReason = 'encoding' | 'off-curve' | 'identity' | 'small-ord
 export type BeaconKeyCheck = { ok: true; point: readonly [bigint, bigint] } | { ok: false; reason: BeaconKeyReason };
 
 /** Caches a SUCCESSFUL load and forgets a failed one: with `??=` alone a single failed import() stayed cached and failed every later check. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the curve object comes from circomlibjs, which ships no types
 export function makeCurveLoader(load: () => Promise<any>): () => Promise<any> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the curve object comes from circomlibjs, which ships no types
   let cached: Promise<any> | undefined;
   return () => {
     if (!cached) {
@@ -36,9 +38,11 @@ export function makeCurveLoader(load: () => Promise<any>): () => Promise<any> {
     return cached;
   };
 }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- circomlibjs ships no types
 const loadCurve = makeCurveLoader(() => import('circomlibjs').then((m: any) => m.buildBabyjub()));
 
 function defaultRandomBytes(n: number): Uint8Array {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis has no typed crypto on every target
   const c: Crypto | undefined = (globalThis as any).crypto;
   if (!c || typeof c.getRandomValues !== 'function') throw new Error('no CSPRNG available');
   return c.getRandomValues(new Uint8Array(n));
@@ -90,6 +94,7 @@ function decode32(s: unknown): Uint8Array | null {
 
 /** The receiver's checks, in the ruled order: canonical decode, on the curve, not the identity, not of small order, in the prime-order
  * subgroup (l*Y = O), not my own key. NEVER throws and returns a fixed reason word, never the input. A failure drops the KEY only (the card is kept). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the curve object comes from circomlibjs, which ships no types
 export async function checkBeaconPublicKey(b64: unknown, ownPublicKey?: string, loader: () => Promise<any> = loadCurve): Promise<BeaconKeyCheck> {
   const bytes = decode32(b64);
   if (!bytes) return { ok: false, reason: 'encoding' };
@@ -100,6 +105,7 @@ export async function checkBeaconPublicKey(b64: unknown, ownPublicKey?: string, 
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the curve object comes from circomlibjs, which ships no types
 function checkOnCurve(bj: any, bytes: Uint8Array, b64: string, ownPublicKey?: string): BeaconKeyCheck {
   const sign = (bytes[31] & 0x80) !== 0;
   let y = ZERO;
@@ -120,7 +126,9 @@ function checkOnCurve(bj: any, bytes: Uint8Array, b64: string, ownPublicKey?: st
   if ((xo > HALF) !== sign) xe = F.neg(xe);
   const pt = [xe, F.e(y)];
   if (!bj.inCurve(pt)) return { ok: false, reason: 'off-curve' };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a field element from circomlibjs, which ships no types
   const O = (e: any) => bj.F.toObject(e) as bigint;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a curve point from circomlibjs, which ships no types
   const isId = (p: any) => O(p[0]) === ZERO && O(p[1]) === ONE;
   if (isId(pt)) return { ok: false, reason: 'identity' };
   if (isId(bj.mulPointEscalar(pt, EIGHT))) return { ok: false, reason: 'small-order' };

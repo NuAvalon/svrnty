@@ -19,8 +19,10 @@ const PASS = 'e2e-passphrase-1234';
 const OWNER = 'owner-cas-e2e';
 const CONTROL = !!process.env.CAS_CONTROL;
 
+// circomlibjs is external: client-store reaches it only through a dynamic import() on the (flagged, dark) beacon path, which the app's own bundler splits out
+// and loads lazily, but esbuild must resolve it at build time and it needs Node built-ins a browser bundle does not have. These harnesses never call it.
 const bundle = (file: string): string =>
-  execFileSync('node_modules/.bin/esbuild', [file, '--bundle', '--format=iife', '--platform=browser', '--alias:@=./src'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  execFileSync('node_modules/.bin/esbuild', [file, '--bundle', '--format=iife', '--platform=browser', '--alias:@=./src', '--external:circomlibjs'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');

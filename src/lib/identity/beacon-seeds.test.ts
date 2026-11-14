@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- test doubles and deliberately wrong inputs */
 // src/lib/identity/beacon-seeds.test.ts
 // #588 piece B: the ONE-TIME deposit seeds the client must keep so it can sign a later poll/withdraw. This file tests the PURE half (map ops, validation,
 // expiry) and STATIC GUARDS on the IndexedDB-bound half (client-store has no fake-indexeddb runtime harness; the real-browser proof comes with the wiring).

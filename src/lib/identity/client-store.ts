@@ -822,17 +822,21 @@ function beaconKeySettingKey(ownerFingerprint: string): string {
   return `beacon_key:${ownerFingerprint}`;
 }
 
-/** What a read of the record found. 'none' = nothing is held (no trust key was ever needed). 'unreadable' = something may be held, or we cannot tell (locked,
- * storage error, decrypt-fail, malformed): the honest answer on ANY doubt. Only 'held' carries a record. */
+/** What a read of the record found. 'none' = no row is held (no trust key was ever needed); this is knowable while locked, since looking for the row needs no
+ * key. 'unreadable' = a row IS held but cannot be opened (locked session, decrypt-fail, malformed), or the look itself failed (storage error): the honest answer
+ * on ANY doubt about a row that may exist. Only 'held' carries a record. */
 export type BeaconKeyRead = { state: 'none' } | { state: 'held'; record: BeaconKeyRecord } | { state: 'unreadable' };
 
 export async function readBeaconKeyRecord(ownerFingerprint: string): Promise<BeaconKeyRead> {
-  if (!_sessionKey) return { state: 'unreadable' };
   try {
+    // Whether a row exists is knowable WITHOUT the session key: this is a raw read, only the decrypt needs the key. So a locked session with no row
+    // is 'none' (nothing is held, nothing can be lost) and only a row we cannot open is 'unreadable'. An identity whose keys are not encrypted at rest
+    // never gets a session key, and must not be told a trust key it never had "could not be read".
     const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
       'settings', beaconKeySettingKey(ownerFingerprint),
     );
     if (!row?.value) return { state: 'none' };
+    if (!_sessionKey) return { state: 'unreadable' };
     const rec = await decryptContactRecord<unknown>(_sessionKey, BEACON_KEY_RECORD_ID, ownerFingerprint, row.value);
     return isBeaconKeyRecord(rec) ? { state: 'held', record: rec } : { state: 'unreadable' };
   } catch {

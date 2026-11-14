@@ -54,6 +54,7 @@ export function isBeaconKeyRecord(x: unknown): x is BeaconKeyRecord {
 }
 
 function defaultRandom(n: number): Uint8Array {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis has no typed crypto on every target
   const c: Crypto | undefined = (globalThis as any).crypto;
   if (!c || typeof c.getRandomValues !== 'function') throw new Error('no CSPRNG available');
   return c.getRandomValues(new Uint8Array(n));

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- test doubles and deliberately wrong inputs */
 // src/lib/crypto/beacon-generation.test.ts
 // #588 D3 (Flint 11-09): the key generation is seeded from the CLOCK so "later = higher" holds without shared state, and BOUNDED so a wrong clock cannot
 // make itself durable: a build-time FLOOR (no honest clock is earlier), and a FUTURE bound (now + 1 day) on both the sender and the receiver.

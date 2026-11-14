@@ -5,6 +5,7 @@ import * as wire from '../crypto/beacon-wire.mjs';
 
 /** When a deposit for `epoch` stops being useful: the end of that epoch plus one grace window. Both constants come from beacon-wire (the ONE definition). */
 export function expiryForEpoch(epoch: bigint): number {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the wire module is untyped .mjs
   const w = wire as any;
   return (Number(epoch) + 1) * w.EPOCH_SECONDS * 1000 + w.GRACE_SECONDS * 1000;
 }
