@@ -49,7 +49,7 @@ test('R4 the two names are served with their bytes, the right content type, an e
     assert.equal(r.status, 200);
     if (r.status === 200) {
       assert.deepEqual(r.body, body);
-      assert.deepEqual(r.headers, { 'content-type': type, 'content-length': '5', 'cache-control': 'no-store' });
+      assert.deepEqual(r.headers, { 'content-type': type, 'content-length': '5', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     }
     assert.deepEqual(calls, [`/mnt/dev|${file}`]);
   }

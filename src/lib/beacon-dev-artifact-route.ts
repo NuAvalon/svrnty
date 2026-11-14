@@ -40,7 +40,7 @@ export async function serveBeaconDevArtifact(i: ArtifactServeInput): Promise<Art
     return {
       status: 200,
       body,
-      headers: { 'content-type': TYPES[i.file], 'content-length': String(body.length), 'cache-control': 'no-store' },
+      headers: { 'content-type': TYPES[i.file], 'content-length': String(body.length), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
     };
   } catch {
     return NOT_FOUND; // never echo a path or an error
