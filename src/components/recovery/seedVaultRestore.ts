@@ -9,6 +9,7 @@
 import { readPrivateKey, decryptKey } from 'openpgp';
 import { extractRecoveryVault } from '@/lib/sync/vault';
 import { recoverFromSeedPhrase, seedPhraseToMasterSecret } from '@/lib/crypto/recovery';
+import { durableFromSeedBundle } from '@/lib/identity/restore-durable';
 import {
   storeIdentity,
   markDeliveryDefaultUnknown,
@@ -117,9 +118,12 @@ export async function restoreIdentityFromSeedVault(
   // seed so a seed-restored identity can verify its own rotations (mint sets this at genesis; a
   // restore that omits it = the T2.4 gap). masterSecret isn't exposed by recoverFromSeedPhrase, so
   // re-derive it from the phrase — deterministic, the same value recoverFromSeedPhrase uses
-  // internally. Mirror mint exactly (browser-identity.ts:204): epoch=1.
+  // internally. Mint pins epoch 1 at genesis; restore pins durable.epoch + 1 (genesis -> 1, as before).
+  // #532 C1: the bundle carries the durable epoch + id; never hard-code genesis (an identity that rotated once would restore as
+  // epoch 0 with its CURRENT fp as the durable id and the epoch-1 pin). Refuses an inconsistent bundle before anything is written.
+  const durable = durableFromSeedBundle(bundle, fingerprint);
   const _ms = seedPhraseToMasterSecret(phrase);
-  const next_authority_commitment = deriveNextAuthorityCommitment(_ms, 1);
+  const next_authority_commitment = deriveNextAuthorityCommitment(_ms, durable.nextCommitmentEpoch);
   _ms.fill(0); // zero immediately (mint's ORDER INVARIANT: derive before zero)
 
   const identity = {
@@ -137,10 +141,9 @@ export async function restoreIdentityFromSeedVault(
       verified_at: null,
     },
     post_quantum,
-    // T2.4: genesis-equivalent authority pin so rotations verify (see re-derive above).
-    // durable.epoch=0 + commitment epoch=1 is correct for genesis-epoch identities (all alpha).
+    // T2.4 + #532 C1: the authority pin for durable.epoch + 1, so this identity's NEXT rotation verifies (see re-derive above).
     next_authority_commitment,
-    durable: { fingerprint, epoch: 0, next_authority_commitment },
+    durable: { fingerprint: durable.fingerprint, epoch: durable.epoch, next_authority_commitment },
     metadata: {
       client_version: '0.2.0',
       key_type: 'ED25519+ML-DSA-87+ML-KEM-1024',

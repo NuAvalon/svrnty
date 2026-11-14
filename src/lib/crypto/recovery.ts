@@ -80,6 +80,12 @@ export interface PrivateKeyBundle {
    *  KeyVault outer) so the recovery envelope stays identity-blind. Optional: pre-fix seed vaults
    *  lack it -> seed restore fails closed (acceptable; those are pre-9/9). */
   identity_fingerprint?: string;
+  /** #532 C1: the identity's DURABLE key epoch when this bundle was sealed (genesis = 0). Absent = 0: every bundle sealed before
+   *  this field is a genesis bundle. Inside the AES-GCM bundle, so authenticated. Read by restore-durable.ts. */
+  durable_epoch?: number;
+  /** #532 C1: the DURABLE id (the genesis fingerprint, unchanged across rotations; identity_fingerprint is the CURRENT one).
+   *  Required by restore when durable_epoch > 0. */
+  durable_fingerprint?: string;
 }
 
 // --- Master Secret ---
