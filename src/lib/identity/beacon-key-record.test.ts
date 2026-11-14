@@ -82,9 +82,12 @@ test('BR6 [static] the record lives under its own reserved AAD id, distinct from
 test('BR7 [static] getBeaconKeyRecord returns null on any doubt; ensureBeaconKeyRecord creates with an ATOMIC add (not get-then-put) and adopts the winner on a conflict; nothing is stored unencrypted', () => {
   const s = store();
   const get = s.slice(s.indexOf('export async function readBeaconKeyRecord'), s.indexOf('export async function ensureBeaconKeyRecord'));
-  // readBeaconKeyRecord: 'unreadable' on ANY doubt, 'none' only for an absent row; getBeaconKeyRecord stays fail-closed (null unless a record is HELD).
-  assert.match(get, /if \(!_sessionKey\) return \{ state: 'unreadable' \}/);
-  assert.match(get, /if \(!row\?\.value\) return \{ state: 'none' \}/);
+  // readBeaconKeyRecord: 'unreadable' on ANY doubt about a row that may exist, 'none' only for an absent row; getBeaconKeyRecord stays fail-closed (null unless
+  // a record is HELD). ORDER matters: the row is looked up BEFORE the session-key check, because absence is knowable while locked (an identity whose keys are not
+  // encrypted at rest never gets a session key and must not be told a trust key it never had could not be read); a row that is there but cannot be opened is 'unreadable'.
+  assert.match(get, /if \(!row\?\.value\) return \{ state: 'none' \};\s*if \(!_sessionKey\) return \{ state: 'unreadable' \};/);
+  assert.ok(get.indexOf("txGet<") < get.indexOf('if (!_sessionKey)'), 'the row lookup comes before the session-key check');
+  assert.ok(!/^\s*export async function readBeaconKeyRecord[^{]*\{\s*if \(!_sessionKey\)/.test(get), 'the session-key check must not be the first statement');
   assert.match(get, /isBeaconKeyRecord\(rec\) \? \{ state: 'held', record: rec \} : \{ state: 'unreadable' \}/);
   assert.match(get, /catch \{\s*return \{ state: 'unreadable' \}/);
   assert.match(get, /return r\.state === 'held' \? r\.record : null/);
