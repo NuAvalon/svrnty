@@ -121,6 +121,21 @@ export function isMutualTrustWireLive(): boolean {
 }
 
 /**
+ * #822 (a): the BEACON trust wire (the client's trust, untrust, block and remove hooks and the slow renew loop) is switched on. DARK by default.
+ *
+ * TRUE only when BOTH hold: (1) a DEV build, by the SAME isDevBuild predicate as isPSIDiscoveryLive and the /api/satellite proxy fence (domain
+ * "dev.*", inlined at build time; an unset or unknown domain is prod and fails closed), and (2) an explicit opt-in, NEXT_PUBLIC_BEACON_LIVE === 'true'
+ * (inlined at build time; unset, 'TRUE', '1' and anything else are OFF). Read as a STATIC `process.env.NEXT_PUBLIC_*` reference so Next inlines it.
+ *
+ * It is NOT isMutualTrustWireLive. That one stays false: it is the copy switch for "trust is mutual" strings, and flipping it needs reviewed evidence.
+ * With this false the beacon client must make ZERO requests (counted from outside the page). No registry row: no user-facing copy depends on it.
+ * A dev build only gets the flag if its build passes NEXT_PUBLIC_BEACON_LIVE (a build arg, like the domain): deployment config, not this file.
+ */
+export function isBeaconWireLive(): boolean {
+  return isDevBuild(process.env.NEXT_PUBLIC_SVRNTY_DOMAIN) && process.env.NEXT_PUBLIC_BEACON_LIVE === 'true';
+}
+
+/**
  * LENSES v1.3 — per-recipient lens delivery (sealed per-recipient method payloads, the
  * recipient→lens device-local record, the send filter, the Revise view) is live end-to-end.
  *
