@@ -32,6 +32,7 @@ export const RESTORE_MESSAGES = Object.freeze({
   wrongPasswordVaultV4: 'Incorrect passphrase. Try again, or recover with your recovery code below.',
   wrongPassword: 'Incorrect encryption password. Use the password you set when you exported this copy.',
   needsDevicePassphrase: 'This backup opened, but it could not be saved on this device: a device passphrase has to be set first.',
+  keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
   unsupportedFormat: 'This file is in a format this version does not read.',
   unknown: 'This backup could not be restored.',
 });

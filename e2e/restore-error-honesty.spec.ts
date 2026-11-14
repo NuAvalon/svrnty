@@ -118,3 +118,25 @@ test('3. a file with a password method this version does not read shows its own 
   expect(shown).toBe('This file uses a password method this version does not read.');
   expect(shown).not.toMatch(/incorrect/i);
 });
+
+// The copy owner's wording for a key-only restore (ledger row 170). Kept as a literal here so the spec does not read it from the code under test.
+const KEY_ONLY_SENTENCE = 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.';
+
+test('4. a KEY-ONLY file restored on a fresh device says what it did and what it did not bring back (silence would be a claim by omission)', async ({ browser }, testInfo) => {
+  const b = backup as { identity?: { identity?: { fingerprint?: string } }; keys?: { privateKey?: string; passphrase?: string } };
+  const fingerprint = b.identity?.identity?.fingerprint;
+  expect(fingerprint && b.keys?.privateKey, 'the exported backup carries the owner\'s key').toBeTruthy();
+  const file = testInfo.outputPath('keys-only.json');
+  writeFileSync(file, JSON.stringify(oldFormat(JSON.stringify({ fingerprint, privateKey: b.keys!.privateKey, passphrase: b.keys!.passphrase ?? '' }), FILE_PW, { type: 'svrnty-keys', version: '1.0', fingerprint })));
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
+  await page.setInputFiles('input[accept=".svrnty,.json"]', file);
+  await page.getByPlaceholder('Encryption password from export').fill(FILE_PW);
+  await page.getByRole('button', { name: /^(open vault|restore identity)$/i }).click();
+  await page.waitForTimeout(8_000);
+  console.log(`[restore-honesty] key-only restore, screen after 8 s:\n${(await page.locator('body').innerText()).replace(/\n{2,}/g, '\n')}`);
+  await expect(page.getByText(KEY_ONLY_SENTENCE)).toBeVisible({ timeout: 15_000 });
+  await ctx.close();
+});

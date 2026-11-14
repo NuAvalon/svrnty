@@ -6,7 +6,7 @@ import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
-import { classifyRestoreFailure, RestoreFormatUnrecognized } from '@/lib/identity/restore-errors';
+import { classifyRestoreFailure, RestoreFormatUnrecognized, RESTORE_MESSAGES } from '@/lib/identity/restore-errors';
 import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { isRestoreDurableRefusal, RESTORE_DURABLE_MESSAGE } from '@/lib/identity/restore-durable';
@@ -354,6 +354,8 @@ export function SoverentityFrontend({
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  /** What a restore that did NOT end on the identity screen did and did not bring back (a key-only file on a fresh device). Not an error. */
+  const [restoreOutcome, setRestoreOutcome] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -561,6 +563,7 @@ export function SoverentityFrontend({
 
     setVaultFile(file);
     setRestoreError(null);
+    setRestoreOutcome(null);
 
     try {
       // JSON-based backups (.json or .svrnty that are JSON inside)
@@ -688,6 +691,7 @@ export function SoverentityFrontend({
     try {
       setRestoreLoading(true);
       setRestoreError(null);
+      setRestoreOutcome(null);
 
       // Set when the file was protected with the older password method: the owner is told, after the restore, to export a new copy.
       let legacyOpened = false;
@@ -836,8 +840,11 @@ export function SoverentityFrontend({
           if (existingIdentity) {
             setIdentity(existingIdentity);
             onIdentityUpdate?.(existingIdentity);
+            if (legacyOpened) setPlaintextImportNote(LEGACY_PASSWORD_METHOD_NOTICE);
+          } else {
+            // A fresh device: the key is saved but there is no profile to show, so the identity screen (where notes live) never appears. Say what happened here.
+            setRestoreOutcome(withLegacyNotice(RESTORE_MESSAGES.keyOnlyRestored));
           }
-          if (legacyOpened) setPlaintextImportNote(LEGACY_PASSWORD_METHOD_NOTICE);
         } else if (data.fingerprint && (data.public_key || data.identity)) {
           // Raw identity object — wrap and import
           const fp = data.fingerprint;
@@ -1311,6 +1318,7 @@ export function SoverentityFrontend({
           )}
 
           {restoreError && <div style={s.error}>{restoreError}</div>}
+          {restoreOutcome && <div role="status" data-testid="restore-outcome" style={s.trustWarning}>{restoreOutcome}</div>}
 
           {vaultHeader?.format === 'json-backup' ? (
             <div style={s.trustWarning}>
