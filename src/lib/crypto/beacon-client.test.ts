@@ -3016,3 +3016,74 @@ test('R10: a Remove commits while a renew deposit is in flight; accepted + match
   // the epoch stays covered by the 'matched' row, which is the stored state the commit must carry.
   assert.equal(rec.rows.filter((rw) => rw.epoch === String(EPOCH)).every((rw) => rw.state === 'matched'), true);
 });
+
+// ---------- gate 15 O4 (v0.2): WITHDRAW-THEN-FORGET. The adapter plans rows (drops nothing); a Remove withdraws each, signed with its own seed; a seed leaves only on a confirmed withdraw ----------
+
+const IN_GRACE_MS = EPOCH_START_MS + 100_000;           // the first 600 s of EPOCH: EPOCH-1 and EPOCH are both live
+const withdrawCalls = (f: ReturnType<typeof makeFetch>) => f.calls.filter((c) => c.url.endsWith('/beacon/withdraw')).map((c) => JSON.parse(c.init.body) as { H_e: string; N: string });
+/** A recorded row's plan entry (the prover double stamps every deposit with H_e 111, N 222) and an orphan the record never listed. */
+const PLAN_RECORDED = { rowId: 'row-1', epoch: String(EPOCH), H_e: '111', N: '222' };
+const PLAN_ORPHAN = { rowId: 'row-orphan', epoch: String(EPOCH - 1), H_e: '333', N: '444' };
+const addOrphan = (secrets: ReturnType<typeof memSecrets>) => secrets.rows.set('row-orphan', { epoch: String(EPOCH - 1), pk: new Uint8Array(32).fill(77), seed: new Uint8Array(32).fill(8) });
+
+test('O4-12 a Remove inside the grace window withdraws BOTH epochs\' rows (the recorded one and an ORPHAN the record does not list), each signed, and a seed is released only AFTER its own withdraw is confirmed', async () => {
+  const { client, f, secrets } = harness({ now: () => IN_GRACE_MS, backoffMs: () => 0 });
+  Object.assign(secrets, { planPairRows: async () => [PLAN_RECORDED, PLAN_ORPHAN] });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  addOrphan(secrets);
+  f.calls.length = 0;
+  // every release is checked against the withdraws seen so far: the row's own withdraw must already have reached the relay
+  const wdOf: Record<string, string> = { 'row-1': '111', 'row-orphan': '333' };
+  const releasedWithWithdrawSeen: Array<[string, boolean]> = [];
+  const origRelease = secrets.releaseRow;
+  secrets.releaseRow = async (id: string) => { releasedWithWithdrawSeen.push([id, withdrawCalls(f).some((w) => w.H_e === wdOf[id])]); return origRelease(id); };
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'), nonceOk(NONCE_B), ok('withdrawn'));
+  await client.removeAtTap('pair-1');
+  assert.deepEqual(withdrawCalls(f).map((w) => w.H_e).sort(), ['111', '333'], 'a withdraw request for BOTH rows reached the relay, counted at the fetch seam');
+  assert.deepEqual(releasedWithWithdrawSeen.map(([id]) => id).sort(), ['row-1', 'row-orphan']);
+  assert.ok(releasedWithWithdrawSeen.every(([, seen]) => seen), 'no seed was released before its own withdraw');
+});
+
+test('O4-12b a FAILED withdraw keeps every seed and the queue entry, including the orphan\'s; the retry then withdraws and releases', async () => {
+  const { client, f, store, secrets } = harness({ now: () => IN_GRACE_MS, backoffMs: () => 0 });
+  Object.assign(secrets, { planPairRows: async () => [PLAN_RECORDED, PLAN_ORPHAN] });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  addOrphan(secrets);
+  f.calls.length = 0;
+  f.setFallback({ throw: true });                                      // offline
+  await client.removeAtTap('pair-1');
+  const rec = (await store.get('pair-1'))!;
+  assert.deepEqual(rec.pendingWithdraws.map((w) => w.rowId).sort(), ['row-1', 'row-orphan'], 'both queued durably, the orphan too');
+  assert.deepEqual(secrets.released, [], 'no seed released while the withdraws failed');
+  assert.ok(secrets.rows.has('row-1') && secrets.rows.has('row-orphan'), 'both seeds still held, so a retry can sign');
+  const orphanRow = rec.rows.find((r) => r.rowId === 'row-orphan');
+  assert.equal(orphanRow?.state, 'unknown', 'recorded as a row whose answer is unknown: it withdraws, and its seed is kept until confirmed');
+  f.calls.length = 0;
+  f.setFallback(ok('withdrawn'));
+  f.queue.push(nonceOk(NONCE_A), ok('withdrawn'), nonceOk(NONCE_B), ok('withdrawn'));
+  await client.drainPendingWithdraws();
+  assert.deepEqual(withdrawCalls(f).map((w) => w.H_e).sort(), ['111', '333']);
+  assert.deepEqual([...secrets.released].sort(), ['row-1', 'row-orphan'], 'released only now, after the confirmed withdraws');
+  assert.equal((await store.get('pair-1'))!.pendingWithdraws.length, 0);
+});
+
+test('O4-12c a planned row already in the record is not added twice, a planned row in a CLOSED epoch is ignored, and a row this writer deliberately dropped is not brought back', async () => {
+  const { client, f, store, secrets } = harness({ now: () => IN_GRACE_MS, backoffMs: () => 0 });
+  const closed = { rowId: 'row-closed', epoch: String(EPOCH - 4), H_e: '555', N: '666' };
+  const dropped = { rowId: 'row-dropped', epoch: String(EPOCH - 1), H_e: '777', N: '888' };
+  Object.assign(secrets, { planPairRows: async () => [PLAN_RECORDED, closed, dropped] });
+  f.queue.push(ok('accepted'));
+  await client.trustAtTap('pair-1');
+  const rec0 = (await store.get('pair-1'))!;
+  rec0.deletedRows = [{ id: 'row-dropped', epoch: String(EPOCH - 1) }];   // a tombstone: this writer dropped it on purpose
+  await store.put(rec0);
+  f.setFallback({ throw: true });
+  await client.removeAtTap('pair-1');
+  const rec = (await store.get('pair-1'))!;
+  assert.deepEqual(rec.rows.map((r) => r.rowId), ['row-1'], 'no duplicate, no closed-epoch row, no resurrected row');
+  assert.equal(rec.rows[0].state, 'standing', 'the recorded row keeps its recorded state: a plan entry never overwrites it');
+  assert.equal(rec.rows[0].oneTimePk, rec0.rows[0].oneTimePk, 'and its pinned one-time key');
+  assert.deepEqual(rec.pendingWithdraws.map((w) => w.rowId), ['row-1']);
+});

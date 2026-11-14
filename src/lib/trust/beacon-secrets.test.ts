@@ -140,58 +140,62 @@ test('S6 releaseRow removes exactly that row, tolerates a missing one, and refus
   assert.deepEqual(Object.keys(st.map), [r2.rowId], 'a refused id changes nothing');
 });
 
-// ---------- the ONE release primitive (gate 15 O4, test 12) ----------
-test('S7 releasePair inside the grace window releases BOTH epochs rows for that pair (and only that pair); a primitive that released only the current epoch would leave one', async () => {
+// ---------- the plan a Remove withdraws from (gate 15 O4, v0.2: WITHDRAW-THEN-FORGET): it lists, it never drops ----------
+const heldEntry = (y: Point, e: number, fill: number, expiresAtMs = (e + 1) * EPOCH_MS + GRACE_MS) => ({
+  epoch: String(e), H_e: String(10_000 + Number(y[0]) * 1000 + e), N: String(20_000 + Number(y[0]) * 1000 + e), seed: btoa(String.fromCharCode(...new Uint8Array(32).fill(fill))), expiresAtMs,
+});
+
+test('S7 planPairRows inside the grace window lists BOTH epochs\' rows for that pair (and only that pair), and DROPS NOTHING: the map and the store are exactly as they were', async () => {
   const { a, st, setNow } = setup({ now: startOf(E) - 1 });      // last second of E-1: mint its row, as the client would
-  const old = await a.newRow(PAIR_P, BigInt(E - 1));
-  const oldQ = await a.newRow(PAIR_Q, BigInt(E - 1));
+  await a.newRow(PAIR_P, BigInt(E - 1));
+  await a.newRow(PAIR_Q, BigInt(E - 1));
   setNow(IN_GRACE);                                              // now inside E's grace window: E-1 and E are both live
-  const cur = await a.newRow(PAIR_P, BigInt(E));
-  const curQ = await a.newRow(PAIR_Q, BigInt(E));
-  assert.equal(Object.keys(st.map).length, 4);
-  const res = await a.releasePair(PAIR_P);
-  assert.deepEqual(res.epochs, [String(E - 1), String(E)], 'both live epochs were walked');
-  assert.equal(res.released, 2);
-  assert.equal(res.recomputed, true);
-  assert.ok(!(old.rowId in st.map) && !(cur.rowId in st.map), "BOTH of P's rows are gone");
-  assert.ok(oldQ.rowId in st.map && curQ.rowId in st.map, "Q's rows are untouched");
+  await a.newRow(PAIR_P, BigInt(E));
+  await a.newRow(PAIR_Q, BigInt(E));
+  const before = JSON.stringify(st.map), updatesBefore = st.updates;
+  const plan = await a.planPairRows(PAIR_P);
+  assert.deepEqual(plan, [
+    { rowId: rowOf(YP, E - 1), epoch: String(E - 1), H_e: String(10_000 + 11_000 + E - 1), N: String(20_000 + 11_000 + E - 1) },
+    { rowId: rowOf(YP, E), epoch: String(E), H_e: String(10_000 + 11_000 + E), N: String(20_000 + 11_000 + E) },
+  ], "both live epochs, P's rows only, in epoch order");
+  assert.equal(JSON.stringify(st.map), before, 'the map is untouched');
+  assert.equal(st.updates, updatesBefore, 'planning writes nothing');
+  assert.ok((await a.rowAuth(rowOf(YP, E - 1))) && (await a.rowAuth(rowOf(YP, E))), 'every planned row can still be SIGNED for: its seed is still there');
 });
 
-test('S8 releasePair near the end of an epoch also releases the NEXT epoch\'s row (the client may deposit it early)', async () => {
-  const { a, st } = setup({ now: NEAR_END });
-  const cur = await a.newRow(PAIR_P, BigInt(E));
-  const next = await a.newRow(PAIR_P, BigInt(E + 1));
-  const res = await a.releasePair(PAIR_P);
-  assert.deepEqual(res.epochs, [String(E), String(E + 1)]);
-  assert.equal(res.released, 2);
-  assert.ok(!(cur.rowId in st.map) && !(next.rowId in st.map));
+test('S8 planPairRows near the end of an epoch also lists the NEXT epoch\'s row (the client may deposit it early)', async () => {
+  const { a } = setup({ now: NEAR_END });
+  await a.newRow(PAIR_P, BigInt(E));
+  await a.newRow(PAIR_P, BigInt(E + 1));
+  const plan = await a.planPairRows(PAIR_P);
+  assert.deepEqual(plan.map((t) => t.epoch), [String(E), String(E + 1)]);
 });
 
-test('S9 releasePair also releases row ids the caller already knows (a recorded row from an epoch that is no longer live), and an orphan seed that was never recorded', async () => {
-  const stale = rowOf(YP, E - 5);
-  const orphanEntry = { epoch: String(E), H_e: String(10_000 + 11 * 1000 + E), N: String(20_000 + 11 * 1000 + E), seed: btoa(String.fromCharCode(...new Uint8Array(32).fill(9))), expiresAtMs: (E + 1) * EPOCH_MS + GRACE_MS };
-  const staleEntry = { epoch: String(E - 5), H_e: String(10_000 + 11 * 1000 + E - 5), N: String(20_000 + 11 * 1000 + E - 5), seed: btoa(String.fromCharCode(...new Uint8Array(32).fill(8))), expiresAtMs: (E - 4) * EPOCH_MS + GRACE_MS + 10_000_000_000 };
-  const { a, st } = setup({ map: { [seedKey(orphanEntry.H_e, orphanEntry.N)]: orphanEntry, [stale]: staleEntry } });
-  const res = await a.releasePair(PAIR_P, { rowIds: [stale] });
-  assert.equal(res.released, 2, 'the orphan (found by recomputing) and the recorded stale row');
-  assert.deepEqual(st.map, {});
+test('S9 an ORPHAN seed (held, never recorded by any pair record) is planned like any other row; a seed for a closed epoch, for another pair, or already expired is not', async () => {
+  const orphan = heldEntry(YP, E, 5), farOld = heldEntry(YP, E - 5, 6, startOf(E) + 10_000_000_000), other = heldEntry(YQ, E, 7);
+  const expiredButLive = heldEntry(YP, E - 1, 8, startOf(E) - 1);   // would be a live epoch's row, but its seed has expired
+  const { a, st } = setup({ now: IN_GRACE, map: { [seedKey(orphan.H_e, orphan.N)]: orphan, [seedKey(farOld.H_e, farOld.N)]: farOld, [seedKey(other.H_e, other.N)]: other, [seedKey(expiredButLive.H_e, expiredButLive.N)]: expiredButLive } });
+  const plan = await a.planPairRows(PAIR_P);
+  assert.deepEqual(plan.map((t) => t.rowId), [seedKey(orphan.H_e, orphan.N)], 'only the orphan: it is live, held, and unexpired');
+  assert.equal(Object.keys(st.map).length, 4, 'nothing dropped, including the ones not planned');
 });
 
-test('S10 releasePair works for a REMOVED pair (it never consults the latch), and with no secrets it releases only the row ids it was given and says it could not recompute', async () => {
-  const removedPair = setup({ latchKind: async () => 'removed' });
-  const seedRow = await setup().a.newRow(PAIR_P, BigInt(E));      // any entry shape; build one directly in the removed pair's store
-  void seedRow;
-  const { a, st } = setup({ latchKind: async () => 'removed' });
-  st.map = { [rowOf(YP, E)]: { epoch: String(E), H_e: String(10_000 + 11 * 1000 + E), N: String(20_000 + 11 * 1000 + E), seed: btoa(String.fromCharCode(...new Uint8Array(32).fill(5))), expiresAtMs: (E + 1) * EPOCH_MS + GRACE_MS } };
-  const res = await a.releasePair(PAIR_P);
-  assert.equal(res.released, 1, 'a blocked pair\'s row is released');
-  assert.deepEqual(st.map, {});
-  void removedPair;
-  const none = setup({ secretX: async () => undefined });
-  none.st.map = { [rowOf(YP, E)]: { epoch: String(E), H_e: String(10_000 + 11 * 1000 + E), N: String(20_000 + 11 * 1000 + E), seed: btoa(String.fromCharCode(...new Uint8Array(32).fill(5))), expiresAtMs: (E + 1) * EPOCH_MS + GRACE_MS } };
-  const r2 = await none.a.releasePair(PAIR_P, { rowIds: [rowOf(YP, E)] });
-  assert.equal(r2.recomputed, false);
-  assert.equal(r2.released, 1, 'the known id still goes');
+test('S10 planning works for a REMOVED pair (it never consults the latch), and with no secrets it plans nothing (nothing can be recomputed)', async () => {
+  const held = heldEntry(YP, E, 5);
+  const { a } = setup({ latchKind: async () => 'removed', map: { [seedKey(held.H_e, held.N)]: held } });
+  assert.deepEqual((await a.planPairRows(PAIR_P)).map((t) => t.rowId), [seedKey(held.H_e, held.N)], "a blocked pair's row is exactly what a Block must withdraw");
+  assert.deepEqual(await setup({ secretX: async () => undefined, map: { [seedKey(held.H_e, held.N)]: held } }).a.planPairRows(PAIR_P), []);
+  assert.deepEqual(await a.planPairRows('no-such-pair'), []);
+});
+
+test('S10b there is NO pair-wide delete: the adapter has no releasePair, and the only code that removes a seed is releaseRow (one row, by id)', () => {
+  const { a } = setup();
+  assert.ok(!('releasePair' in a), 'no pair-wide delete is exposed');
+  const src = readFileSync(new URL('./beacon-secrets.ts', import.meta.url), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.equal((code.match(/removeSeed\(/g) ?? []).length, 1, 'exactly one place removes a seed');
+  assert.ok(/async releaseRow[\s\S]{0,400}removeSeed\(/.test(code), 'and it is releaseRow');
+  assert.ok(!/releasePair/.test(code));
 });
 
 // ---------- the stuck state (Flint condition 3) ----------
@@ -203,7 +207,7 @@ test('S11 an unreadable map is a STUCK state: every seed operation fails closed 
   for (let i = 0; i < 5; i++) await assert.rejects(a.newRow(PAIR_Q, BigInt(E)), (e: unknown) => e instanceof SeedsStuckError && (e as SeedsStuckError).code === 'seeds-stuck');
   await assert.rejects(a.rowAuth(before.rowId), SeedsStuckError);
   await assert.rejects(a.releaseRow(before.rowId), SeedsStuckError);
-  await assert.rejects(a.releasePair(PAIR_P), SeedsStuckError);
+  await assert.rejects(a.planPairRows(PAIR_P), SeedsStuckError);
   assert.equal(stuckCalls.n, 1, 'told once, however many attempts');
   assert.equal(a.status(), 'stuck');
   assert.equal(JSON.stringify(st.map), snapshot, 'nothing was overwritten');
@@ -230,7 +234,7 @@ test('S12 repair is EXPLICIT: it refuses without the confirmation (and stays stu
 test('S13 a LOCKED session is not stuck: the error is passed through as it is, the app is not told, and status stays ok', async () => {
   const { a, st, stuckCalls } = setup();
   st.broken = 'locked';
-  for (const op of [() => a.newRow(PAIR_P, BigInt(E)), () => a.rowAuth(rowOf(YP, E)), () => a.releaseRow(rowOf(YP, E)), () => a.releasePair(PAIR_P)]) {
+  for (const op of [() => a.newRow(PAIR_P, BigInt(E)), () => a.rowAuth(rowOf(YP, E)), () => a.releaseRow(rowOf(YP, E)), () => a.planPairRows(PAIR_P)]) {
     await assert.rejects(op(), (e: unknown) => (e as { code?: string }).code === 'locked' && !(e instanceof SeedsStuckError));
   }
   assert.equal(stuckCalls.n, 0);
@@ -273,7 +277,9 @@ test('S15 with the REAL prover, the slot and nullifier do not depend on the one-
   const r = await a.newRow('real-pair', BigInt(E));
   assert.equal(r.rowId, seedKey(s1.H_e.toString(), s1.N.toString()));
   assert.equal(Object.keys(st.map).length, 1);
-  const rel = await a.releasePair('real-pair');
-  assert.equal(rel.released, 1);
+  const plan = await a.planPairRows('real-pair');
+  assert.deepEqual(plan.map((t) => t.rowId), [r.rowId], 'the real derivation plans exactly the row it minted');
+  assert.equal(Object.keys(st.map).length, 1, 'and drops nothing');
+  await a.releaseRow(r.rowId);                                   // the confirmed path: the only way a seed leaves
   assert.deepEqual(st.map, {});
 });

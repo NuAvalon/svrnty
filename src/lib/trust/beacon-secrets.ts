@@ -6,10 +6,13 @@
 // What it keeps (Flint's rulings, #8744 and gate 15 v0.1):
 //  - A one-time seed never leaves the sealed map. newRow hands out only the PUBLIC key; rowAuth hands out a signer, never the seed.
 //  - newRow is IDEMPOTENT for a live row: the same (pair, epoch) answers the same one-time key, so a retry after a lost answer re-deposits the SAME K.
-//  - releasePair is the ONE release primitive: Block, Untrust, Remove and a key rotation all call it. It releases every live row for the pair across EVERY live
-//    epoch (the current one, the previous one inside the grace window, the next one inside the last window), by RECOMPUTING each epoch's (slot, nullifier)
-//    (a seed entry carries no pair id, on purpose: no social graph in the map), plus any row ids the caller already knows. A seed that was minted but never
-//    recorded (a crash between the two) is therefore released too. It works for a blocked pair: it never consults the latch.
+//  - There is NO pair-wide delete. A seed is what signs the withdraw of its row, so dropping a pair's seeds first would strand its deposits at the relay until
+//    the week ends (the opposite of Block). planPairRows only PLANS: it returns every row the pair holds a seed for across EVERY live epoch (the client's own
+//    visibleEpochsAt: the current one, the previous one inside the grace window, the next one inside the last window), RECOMPUTED from (x, Y, epoch) because a
+//    seed entry carries no pair id on purpose. That includes a row the pair record does not list (a crash between minting a seed and saving the record, after
+//    the deposit may already have left). The client's Remove adds those rows to its durable withdraw queue, signs each with rowAuth, and the seed leaves ONLY
+//    through releaseRow once the withdraw is confirmed or the epoch has closed; a failed withdraw keeps the seed for the retry. Planning never consults the latch:
+//    it must work for a blocked pair.
 //  - An unreadable seed map is a STUCK state: every operation that needs a seed fails closed, the app is told ONCE (onStuck), and the way out is an explicit
 //    repair that says what it destroys. Never an automatic reset, never a silent retry loop. A LOCKED session is not stuck: unlocking is the whole remedy.
 //  - A blocked pair gets nothing: secrets and new rows are refused for a pair whose latch is 'removed', so even a mint that runs early (before a restore has
@@ -64,18 +67,9 @@ export class SecretsUnavailableError extends Error {
 /** repair() runs only with exactly this value: the caller has to type out what it is agreeing to. */
 export const REPAIR_CONFIRMATION = 'destroy every held one-time seed';
 
-export interface ReleaseResult {
-  /** how many seed entries were actually removed from the map */
-  released: number;
-  /** the live epochs that were walked (canonical decimals) */
-  epochs: string[];
-  /** false when the pair's secrets are unknown, so only the caller's own row ids could be released */
-  recomputed: boolean;
-}
-
 export interface BeaconSecretsAdapter extends BeaconSecretsPort {
-  /** THE release primitive: every live row for this pair across every live epoch (+ any row ids the caller already knows). Does not consult the latch. */
-  releasePair(pairId: string, known?: { rowIds?: readonly string[] }): Promise<ReleaseResult>;
+  /** Required here (optional on the port): the plan the client's Remove withdraws from. Drops nothing; never consults the latch. */
+  planPairRows(pairId: string): Promise<ReadonlyArray<{ rowId: string; epoch: string; H_e: string; N: string }>>;
   status(): 'ok' | 'stuck';
   /** The explicit repair for the stuck state. Destroys every held one-time seed; refuses without REPAIR_CONFIRMATION. */
   repair(confirmation: string): Promise<void>;
@@ -161,20 +155,17 @@ export function createBeaconSecrets(deps: BeaconSecretsDeps): BeaconSecretsAdapt
       await guarded(() => deps.seeds.update((cur) => removeSeed(cur, H_e, N)));
     },
 
-    async releasePair(pairId, known = {}) {
-      const s = await secretsFor(pairId); // NOT latch-gated: releasing a blocked pair's rows is the whole point of Block
-      const epochs = [...visibleEpochsAt(now())].sort((a, b) => Number(a) - Number(b));
-      const keys = new Set<string>();
-      if (s) for (const e of epochs) { const { H_e, N } = await slotOf(s.x, s.y, BigInt(e)); keys.add(seedKey(H_e, N)); }
-      for (const id of known.rowIds ?? []) { const [H_e, N, ...rest] = id.split(':'); if (rest.length === 0) keys.add(seedKey(H_e, N)); }
-      let released = 0;
-      await guarded(() => deps.seeds.update((cur) => {
-        released = 0;
-        let next = cur;
-        for (const k of keys) if (k in next) { const [H_e, N] = k.split(':'); next = removeSeed(next, H_e, N); released++; }
-        return next;
-      }));
-      return { released, epochs, recomputed: s !== undefined };
+    async planPairRows(pairId) {
+      const s = await secretsFor(pairId); // NOT latch-gated: a blocked pair's rows are exactly what a Block must withdraw
+      if (!s) return []; // nothing can be recomputed (and without the keys nothing could have been deposited from here)
+      const map = await guarded(() => deps.seeds.read());
+      const out: Array<{ rowId: string; epoch: string; H_e: string; N: string }> = [];
+      for (const e of [...visibleEpochsAt(now())].sort((a, b) => Number(a) - Number(b))) {
+        const { H_e, N } = await slotOf(s.x, s.y, BigInt(e));
+        const held = map[seedKey(H_e, N)];
+        if (held && held.expiresAtMs >= now()) out.push({ rowId: seedKey(H_e, N), epoch: e, H_e, N }); // only a row we can still SIGN for is a target
+      }
+      return out;
     },
 
     status: () => (stuck ? 'stuck' : 'ok'),
