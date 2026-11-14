@@ -204,6 +204,9 @@ export class BrowserIdentity {
       // Carried INSIDE the encrypted bundle (not the plaintext KeyVault) so SEED restore has a
       // claim to check its recompute against — the recovery envelope stays identity-blind. (#110)
       identity_fingerprint: fingerprint,
+      // #532 C1: a genesis bundle: epoch 0, and the durable id is this first fingerprint.
+      durable_epoch: 0,
+      durable_fingerprint: fingerprint,
     };
 
     const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(

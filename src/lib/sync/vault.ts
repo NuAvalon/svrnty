@@ -149,6 +149,14 @@ export interface VaultIdentity {
     verified_at: string | null;
     proof?: string;
   };
+  /** #532 C1: carried verbatim from the stored identity (exportAll), inside the GCM body. Optional: absent on identities minted before
+   *  the authority pin. A restore must keep them as given; never re-derive or default them to genesis. */
+  next_authority_commitment?: string;
+  durable?: {
+    fingerprint: string;
+    epoch: number;
+    next_authority_commitment: string;
+  };
   metadata: {
     client_version: string;
     key_type: string;

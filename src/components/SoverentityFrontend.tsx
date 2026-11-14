@@ -7,6 +7,7 @@ import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
+import { isRestoreDurableRefusal, RESTORE_DURABLE_MESSAGE } from '@/lib/identity/restore-durable';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { saveOwnerEmail } from '@/lib/identity/save-owner-email';
@@ -659,6 +660,12 @@ export function SoverentityFrontend({
       const msg = err instanceof Error ? err.message : '';
       if (isRestoreDomainRefusal(err)) {
         setRestoreError(msg);
+        return;
+      }
+      // #532 C1: the code opened the bundle but its identity record is inconsistent. Routed BEFORE the wrong-code regex below,
+      // which would otherwise match and tell the person their recovery code is wrong.
+      if (isRestoreDurableRefusal(err)) {
+        setRestoreError(RESTORE_DURABLE_MESSAGE);
         return;
       }
       // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
