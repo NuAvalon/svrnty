@@ -768,3 +768,29 @@ test('AP6 an APPROVE at the held pointer epoch with a DIFFERENT claim replaces i
   assert.equal(nextOf(d).pointerEpoch, 10);
   assert.notEqual(nextOf(d).heldPointerDigest, h.heldPointerDigest);
 });
+
+test('X3 first sight: a successor whose new keys cannot be READ, or are not the keys its fingerprint names, is refused on arrival and records nothing (the authority signature alone does not get a claim into pending)', async () => {
+  const c = await ch();
+  // CONTROL: the genuine claim is recorded, so the refusals below are about the keys and not about the fixture.
+  const ok = await receive(c.held, succ(c.s1), NOW);
+  assert.equal(act(ok), 'pend');
+  assert.equal(nextOf(ok).pending.length, 1);
+  // 1) the right shape (header, footer, printable ASCII) around a body that is not an OpenPGP key. The authority signature covers the FINGERPRINT, so it still verifies.
+  const lines = c.o1.publicKey.split('\n');
+  const garbage = [lines[0], '', ...Array.from({ length: 6 }, () => 'A'.repeat(64)), lines[lines.length - 1] === '' ? lines[lines.length - 2] : lines[lines.length - 1], ''].join('\n');
+  assert.notEqual(garbage, c.o1.publicKey);
+  // 2) a perfectly good key of ANOTHER identity under o1's fingerprint.
+  const swapped = { ...c.s1, new_public_key: c.o1b.publicKey };
+  const unreadable = { ...c.s1, new_public_key: garbage };
+  for (const [name, s] of [['unreadable key', unreadable], ['another identity\'s key', swapped]] as const) {
+    const d = await receive(c.held, succ(s), NOW);
+    assert.equal(d.action, 'refuse', name + ': ' + act(d));
+    assert.ok(!('next' in d), name + ': the refusal carries no new state');
+    assert.match((d as { reason: string }).reason, /^[a-z-]+$/, name + ': a reason code, no input echoed');
+    // and not after the window either: a redelivery of the bad claim against a state that holds the genuine one changes nothing
+    const again = await receive(deepFreeze({ ...nextOf(ok) }), succ(s), NOW + SUCCESSOR_WINDOW_MS);
+    assert.equal(again.action, 'refuse', name + ' (after the window): ' + act(again));
+    assert.ok(!('next' in again), name + ' (after the window): no new state');
+  }
+  assert.equal(c.held.pending.length, 0, 'the input is not modified');
+});
