@@ -652,8 +652,17 @@ async function sendResyncRequest(
   let real: { keypair: PSIKeypair; blinded: string[]; fpOrder: string[] } | null = null;
   let gateError: string | undefined;
   if (peerFp) {
-    const fps = await getLayerFingerprints(deps, layer);
-    if (fps.length === 0) {
+    let fps: string[] = [];
+    try {
+      fps = await getLayerFingerprints(deps, layer);
+    } catch (e) {
+      // #719: an unreadable opt-in set (e.g. a locked store) is "no consent": cover, never a real initiate, and
+      // never a missing request (a short tick tells the satellite this tick failed, and would strand the slot).
+      gateError = `${layer} opt-in set unreadable: ${e instanceof Error ? e.message : String(e)} (cover sent)`;
+    }
+    if (gateError) {
+      // fall through to the cover below
+    } else if (fps.length === 0) {
       gateError = `No ${layer === 'know' ? 'consented (open-visible)' : 'trusted'} contacts to sync`;
     } else if (!CONSENT_EXEMPT.has(layer) && !fps.includes(peerFp)) {
       // Same consent gate as initiateTrustSync, for EVERY layer (#697): a real initiate to a peer outside the
@@ -921,8 +930,11 @@ export async function syncMutualTrust(
       errors.push('Initiate phase: PSI resync slot requires the PQ wire-wrap: refusing a plaintext slot');
       return { responded, initiated, errors };
     }
+    // getTrustedPeers is the staleness scheduler only; WHO may be contacted is the layer's opt-in set.
+    // #719: if either read throws, the tick is all cover. It still sends exactly K requests (the count is
+    // not a tell) and a queued cry still rides them; the cover path performs no consent read.
+    let due: string[] = [];
     try {
-      // getTrustedPeers is the staleness scheduler only; WHO may be contacted is the layer's opt-in set.
       let dueRows = (await deps.getTrustedPeers()).filter(p => !p.pending && isStale(p.lastSync));
       if (!CONSENT_EXEMPT.has(layer)) {
         const consented = new Set(await getLayerFingerprints(deps, layer));
@@ -931,10 +943,15 @@ export async function syncMutualTrust(
       // Least recently ATTEMPTED first. lastTrySeq is a logical sequence number (never a wall-clock; a peer never tried has none and sorts
       // first), and ties keep book order. Without this the queue always starts at the same peer: one whose request errors, or whose session
       // expires unanswered, is first again next tick and a peer behind it is never reached.
-      const due = dueRows
+      due = dueRows
         .map((p, i) => ({ fp: p.fingerprint, seq: p.lastTrySeq ?? 0, i }))
         .sort((a, b) => a.seq - b.seq || a.i - b.i)
         .map(x => x.fp);
+    } catch (e) {
+      due = [];
+      errors.push(`Initiate phase: due list unreadable, tick sent as cover: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    try {
       for (let k = 0; k < PSI_REQUESTS_PER_TICK_K; k++) {
         const slot = await options.slots.nextSlot();
         if (due[k]) attempted.push(due[k]);
