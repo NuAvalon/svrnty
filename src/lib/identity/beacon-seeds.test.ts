@@ -5,7 +5,9 @@
 // Run: npx tsx --test src/lib/identity/beacon-seeds.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   seedKey, isBeaconSeeds, addSeed, removeSeed, sweepExpired, MAX_SEEDS, type BeaconSeedEntry, type BeaconSeeds,
 } from './beacon-seeds';
@@ -105,9 +107,9 @@ test('BS10 [static] client-store holds the seeds under a RESERVED AAD id, distin
   assert.ok(s.includes('beacon_seeds:${ownerFingerprint}') || s.includes('`beacon_seeds:${'), 'the settings key is per owner');
 });
 
-test('BS11 [static] setBeaconSeeds throws when locked and encrypts BEFORE it writes; getBeaconSeeds returns null when locked, absent, or malformed', () => {
+test('BS11 [static] setBeaconSeedsUnsafeForTest throws when locked and encrypts BEFORE it writes; getBeaconSeeds returns null when locked, absent, or malformed', () => {
   const s = store();
-  const set = s.slice(s.indexOf('export async function setBeaconSeeds'), s.indexOf('export async function listIdentities'));
+  const set = s.slice(s.indexOf('export async function setBeaconSeedsUnsafeForTest'), s.indexOf('export async function listIdentities'));
   assert.match(set, /if \(!_sessionKey\) throw new Error\(/);
   const encAt = set.indexOf('encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID');
   const putAt = set.indexOf("txPut('settings'");
@@ -128,4 +130,16 @@ test('BS12 [static] the seeds are NOT part of the .svrnty backup (packVault take
 test('BS13 [static] beacon-seeds.ts (imported by client-store, so in the main bundle) does not import beacon-wire, snarkjs or circomlibjs', () => {
   const src = readFileSync(new URL('./beacon-seeds.ts', import.meta.url), 'utf8');
   assert.ok(!/^import .*(beacon-wire|snarkjs|circomlibjs)/m.test(src));
+});
+
+test('BS13 [static] no APPLICATION code calls the blind setter or the ambiguous reader: only client-store.ts defines them, and tests use them as controls', () => {
+  const src = fileURLToPath(new URL('../../', import.meta.url)); // src/
+  const walk = (d: string): string[] => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walk(p) : [p]; });
+  const code = (f: string) => readFileSync(f, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const users = walk(src).filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\.(ts|tsx)$/.test(f) && !f.endsWith('client-store.ts'))
+    .filter((f) => /\b(setBeaconSeedsUnsafeForTest|getBeaconSeeds)\b/.test(code(f))).map((f) => relative(src, f));
+  assert.deepEqual(users, [], 'nothing outside client-store.ts (and tests) names the blind setter or the ambiguous reader');
+  const st = readFileSync(new URL('./client-store.ts', import.meta.url), 'utf8');
+  assert.equal((st.match(/export async function setBeaconSeedsUnsafeForTest/g) ?? []).length, 1);
+  assert.ok(!/export async function setBeaconSeeds\(/.test(st), 'the old name is gone');
 });

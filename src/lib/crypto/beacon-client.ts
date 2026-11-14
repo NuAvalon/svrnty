@@ -187,6 +187,21 @@ export interface BeaconClient {
 const fresh = (pairId: string): PairRecord =>
   ({ pairId, observedMatch: false, spentEpochs: [], refusedEpochs: [], rows: [], pendingWithdraws: [] });
 
+/**
+ * Epochs the server considers open (mirrors open_epochs): the current one, the previous one in the first GRACE_SECONDS, the next one in the last GRACE_SECONDS.
+ * THE one definition: the client's own scheduling and the secrets adapter's release of every live row for a pair both use it, so they cannot disagree
+ * about which deposits are still live.
+ */
+export function visibleEpochsAt(ms: number): Set<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the wire module is untyped .mjs
+  const w: any = wire;
+  const EPOCH_SECONDS: number = w.EPOCH_SECONDS, GRACE_SECONDS: number = w.GRACE_SECONDS;
+  const cur = Math.floor(ms / 1000 / EPOCH_SECONDS), start = cur * EPOCH_SECONDS * 1000, out = new Set([String(cur)]);
+  if (ms < start + GRACE_SECONDS * 1000) out.add(String(cur - 1));
+  if (ms > start + EPOCH_SECONDS * 1000 - GRACE_SECONDS * 1000) out.add(String(cur + 1));
+  return out;
+}
+
 export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const base = (deps.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const now = deps.now ?? (() => Date.now());
@@ -196,13 +211,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const EPOCH_SECONDS: number = w.EPOCH_SECONDS, GRACE_SECONDS: number = w.GRACE_SECONDS, MAX_DEPOSIT_BYTES: number = w.MAX_DEPOSIT_BYTES;
 
   const epochAt = (ms: number) => Math.floor(ms / 1000 / EPOCH_SECONDS);
-  /** Epochs the server considers open (mirrors open_epochs): cur, cur-1 in the first 600 s, cur+1 in the last. */
-  const visibleEpochs = (ms: number): Set<string> => {
-    const cur = epochAt(ms), start = cur * EPOCH_SECONDS * 1000, out = new Set([String(cur)]);
-    if (ms < start + GRACE_SECONDS * 1000) out.add(String(cur - 1));
-    if (ms > start + EPOCH_SECONDS * 1000 - GRACE_SECONDS * 1000) out.add(String(cur + 1));
-    return out;
-  };
+  const visibleEpochs = visibleEpochsAt;
   /** Epochs a deposit may be made for: cur, plus cur+1 inside the last-600 s window (v2 s0). */
   const depositableEpochs = (ms: number): bigint[] => {
     const cur = epochAt(ms), out = [BigInt(cur)];

@@ -6,10 +6,10 @@ import { join } from 'node:path';
  * #822 (a) P1: updateBeaconSeeds (client-store.ts) on the REAL code, a REAL IndexedDB and REAL AES-GCM in a real browser, bundled like beacon-ports-idb.spec.ts (client-store has no
  * fake-indexeddb harness; ONE package is stubbed: circomlibjs, imported by beacon-key.ts and never called here). What it proves, which the pure unit tests cannot:
  *  - an ABSENT map is the one allowed starting point; the map at rest is ciphertext (no seed marker);
- *  - concurrent updates all LAND (a compare-and-swap in one transaction), and a CONTROL (the old blind get -> wait -> setBeaconSeeds) LOSES updates, so this harness can tell the difference.
+ *  - concurrent updates all LAND (a compare-and-swap in one transaction), and a CONTROL (the old blind get -> wait -> setBeaconSeedsUnsafeForTest) LOSES updates, so this harness can tell the difference.
  *    Six writers, not twenty: a lost race re-reads and retries up to 8 times and at least one writer wins each round, so 8 attempts always cover six; real contention here is one tab and a
  *    handful of rows;
- *  - a row that EXISTS but cannot be opened (damaged, or sealed under another passphrase) makes the update THROW and leaves the row byte-for-byte as it was. The old blind setBeaconSeeds
+ *  - a row that EXISTS but cannot be opened (damaged, or sealed under another passphrase) makes the update THROW and leaves the row byte-for-byte as it was. The old blind setBeaconSeedsUnsafeForTest
  *    over the same state overwrites it (the control), which is the defect this helper replaces;
  *  - a locked session throws and writes nothing; a mutate that returns a malformed map throws and writes nothing.
  */
@@ -17,7 +17,7 @@ let bundle = '';
 test.beforeAll(async () => {
   const out = await build({
     stdin: {
-      contents: `import { updateBeaconSeeds, getBeaconSeeds, setBeaconSeeds, initSessionKey, lockSession } from '@/lib/identity/client-store';\n(window as any).__h = { updateBeaconSeeds, getBeaconSeeds, setBeaconSeeds, initSessionKey, lockSession };`,
+      contents: `import { updateBeaconSeeds, readBeaconSeeds, getBeaconSeeds, setBeaconSeedsUnsafeForTest, initSessionKey, lockSession } from '@/lib/identity/client-store';\n(window as any).__h = { updateBeaconSeeds, readBeaconSeeds, getBeaconSeeds, setBeaconSeedsUnsafeForTest, initSessionKey, lockSession };`,
       resolveDir: process.cwd(),
       loader: 'ts',
     },
@@ -87,7 +87,7 @@ test('ABSENT is the allowed start: an update creates the map, it reads back, the
   expect(r.otherOwner).toBe('null');
 });
 
-test('six concurrent updates ALL land; CONTROL: the old blind get -> wait -> setBeaconSeeds loses updates, so the harness can tell the difference', async ({ page }) => {
+test('six concurrent updates ALL land; CONTROL: the old blind get -> wait -> setBeaconSeedsUnsafeForTest loses updates, so the harness can tell the difference', async ({ page }) => {
   await harness(page);
   const r = await page.evaluate(async ([entrySrc, keySrc]) => {
     const w = window as any; const entry = eval(entrySrc), key = eval(keySrc);
@@ -99,7 +99,7 @@ test('six concurrent updates ALL land; CONTROL: the old blind get -> wait -> set
     await Promise.all(Array.from({ length: 6 }, async (_, i) => {
       const cur = (await w.__h.getBeaconSeeds('carol')) ?? {};
       await new Promise((res) => setTimeout(res, 20));
-      await w.__h.setBeaconSeeds('carol', { ...cur, [key(i)]: entry(i) });
+      await w.__h.setBeaconSeedsUnsafeForTest('carol', { ...cur, [key(i)]: entry(i) });
     }));
     out.control = Object.keys((await w.__h.getBeaconSeeds('carol')) ?? {}).length;
     return out;
@@ -108,7 +108,7 @@ test('six concurrent updates ALL land; CONTROL: the old blind get -> wait -> set
   expect(r.control).toBeLessThan(6);             // the blind put DOES lose some: the difference is visible
 });
 
-test('a row that EXISTS but cannot be opened: the update THROWS and the row is left byte-for-byte; the old blind setBeaconSeeds overwrites it (the control, the defect)', async ({ page }) => {
+test('a row that EXISTS but cannot be opened: the update THROWS and the row is left byte-for-byte; the old blind setBeaconSeedsUnsafeForTest overwrites it (the control, the defect)', async ({ page }) => {
   await harness(page);
   const r = await page.evaluate(async ([entrySrc, keySrc]) => {
     const w = window as any; const entry = eval(entrySrc), key = eval(keySrc);
@@ -121,9 +121,11 @@ test('a row that EXISTS but cannot be opened: the update THROWS and the row is l
     const out: any = {};
     out.readNull = (await w.__h.getBeaconSeeds('alice')) === null;                // absent and unreadable are conflated here: the reason for the new helper
     out.updateThrows = await w.__h.updateBeaconSeeds('alice', (cur: any) => ({ ...cur, [key(1)]: entry(1) })).then(() => 'wrote', (e: Error) => e.name + ': ' + e.message);
+    out.strictThrows = await w.__h.readBeaconSeeds('alice').then(() => 'read', (e: Error) => e.name);
+    out.absentIsEmpty = JSON.stringify(await w.__h.readBeaconSeeds('nobody-has-seeds'));
     out.untouched = JSON.stringify(await w.__raw.get('beacon_seeds:alice')) === damaged;
     // CONTROL: the blind put over the same state silently overwrites it
-    await w.__h.setBeaconSeeds('alice', { [key(2)]: entry(2) });
+    await w.__h.setBeaconSeedsUnsafeForTest('alice', { [key(2)]: entry(2) });
     out.controlOverwrote = JSON.stringify(await w.__raw.get('beacon_seeds:alice')) !== damaged;
     out.goodWasDifferent = JSON.stringify(good) !== damaged;
     return out;
@@ -131,6 +133,9 @@ test('a row that EXISTS but cannot be opened: the update THROWS and the row is l
   expect(r.goodWasDifferent).toBe(true);
   expect(r.readNull).toBe(true);
   expect(String(r.updateThrows)).toMatch(/OperationError|not readable|not a valid|refusing to overwrite/); // AES-GCM's decrypt failure is a DOMException named OperationError with an empty message
+  expect(String(r.updateThrows)).toMatch(/^BeaconSeedsUnreadable:/);          // the typed error the adapter turns into a visible stuck state
+  expect(r.strictThrows).toBe('BeaconSeedsUnreadable');                        // the strict reader tells absent from unreadable
+  expect(r.absentIsEmpty).toBe('{}');                                          // ...and an ABSENT row is the empty map, the only allowed start
   expect(r.untouched).toBe(true);
   expect(r.controlOverwrote).toBe(true);
 });
@@ -145,9 +150,11 @@ test('a valid row sealed under ANOTHER passphrase is unreadable: the update thro
     const out: any = {};
     w.__h.lockSession();
     out.lockedThrows = await w.__h.updateBeaconSeeds('alice', (c: any) => c).then(() => 'wrote', (e: Error) => e.name + ': ' + e.message);
+    out.strictLocked = await w.__h.readBeaconSeeds('alice').then(() => 'read', (e: Error) => e.name);
     out.lockedUntouched = JSON.stringify(await w.__raw.get('beacon_seeds:alice')) === sealed;
     await w.__h.initSessionKey('a-different-passphrase');
     out.wrongPassThrows = await w.__h.updateBeaconSeeds('alice', (cur: any) => ({ ...cur, [key(1)]: entry(1) })).then(() => 'wrote', (e: Error) => e.name + ': ' + e.message);
+    out.strictWrongPass = await w.__h.readBeaconSeeds('alice').then(() => 'read', (e: Error) => e.name);
     out.wrongPassUntouched = JSON.stringify(await w.__raw.get('beacon_seeds:alice')) === sealed;
     w.__h.lockSession(); await w.__h.initSessionKey('pw');
     out.malformedThrows = await w.__h.updateBeaconSeeds('alice', () => ({ 'not-a-key': { epoch: 'x' } })).then(() => 'wrote', (e: Error) => e.name + ': ' + e.message);
@@ -155,9 +162,11 @@ test('a valid row sealed under ANOTHER passphrase is unreadable: the update thro
     out.backIntact = Object.keys((await w.__h.getBeaconSeeds('alice')) ?? {});
     return out;
   }, [ENTRY, KEY]);
-  expect(String(r.lockedThrows)).toMatch(/locked/i);
+  expect(String(r.lockedThrows)).toMatch(/^BeaconSeedsLocked:.*locked/i);
+  expect(r.strictLocked).toBe('BeaconSeedsLocked');       // a locked session is NOT a damaged map: unlocking is the whole remedy
   expect(r.lockedUntouched).toBe(true);
-  expect(String(r.wrongPassThrows)).toMatch(/OperationError|not readable|not a valid|refusing to overwrite/);
+  expect(String(r.wrongPassThrows)).toMatch(/^BeaconSeedsUnreadable:/);
+  expect(r.strictWrongPass).toBe('BeaconSeedsUnreadable');
   expect(r.wrongPassUntouched).toBe(true);
   expect(String(r.malformedThrows)).toMatch(/malformed/i);
   expect(r.malformedUntouched).toBe(true);

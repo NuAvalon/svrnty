@@ -791,7 +791,35 @@ function beaconSeedsSettingKey(ownerFingerprint: string): string {
   return `beacon_seeds:${ownerFingerprint}`;
 }
 
-/** Read the seed map. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). A caller treats null as "no seeds held". */
+/** The seed map exists but cannot be opened (damaged, sealed under another passphrase, not a valid map). It is NEVER read as empty and NEVER overwritten: every
+ * caller that needs a seed fails closed, and the owner is told (see beacon-secrets.ts, which surfaces it once and offers an explicit repair). */
+export class BeaconSeedsUnreadable extends Error {
+  readonly code = 'unreadable' as const;
+  constructor(message = 'beacon seeds: a stored row cannot be opened; refusing to overwrite it') { super(message); this.name = 'BeaconSeedsUnreadable'; }
+}
+/** The session is locked: nothing can be read or written (fail-closed). Not a damaged map: unlocking is the whole remedy. */
+export class BeaconSeedsLocked extends Error {
+  readonly code = 'locked' as const;
+  constructor(message = 'Session locked — refusing to touch beacon seeds (fail-closed)') { super(message); this.name = 'BeaconSeedsLocked'; }
+}
+
+/**
+ * STRICT read of the seed map: an ABSENT row is the empty map ({}), a row that exists but cannot be opened THROWS BeaconSeedsUnreadable, a locked session
+ * THROWS BeaconSeedsLocked. Use this, never getBeaconSeeds, for anything that decides on what it read: getBeaconSeeds answers null for absent AND unreadable.
+ */
+export async function readBeaconSeeds(ownerFingerprint: string): Promise<BeaconSeeds> {
+  if (!_sessionKey) throw new BeaconSeedsLocked();
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', beaconSeedsSettingKey(ownerFingerprint));
+  if (!row) return {};
+  if (!row.value) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not readable; refusing to overwrite it');
+  let m: unknown;
+  try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value); }
+  catch { throw new BeaconSeedsUnreadable(); }
+  if (!isBeaconSeeds(m)) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not a valid seed map; refusing to overwrite it');
+  return m;
+}
+
+/** Read the seed map. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). null is AMBIGUOUS (absent vs unreadable): do NOT decide on it, and do not write after it; use readBeaconSeeds (strict) or updateBeaconSeeds. No application code calls this (a static test pins that). */
 export async function getBeaconSeeds(ownerFingerprint: string): Promise<BeaconSeeds | null> {
   if (!_sessionKey) return null;
   try {
@@ -806,8 +834,12 @@ export async function getBeaconSeeds(ownerFingerprint: string): Promise<BeaconSe
   }
 }
 
-/** Persist the seed map, encrypted at rest (fail-closed: throws if locked, never writes a plaintext seed). */
-export async function setBeaconSeeds(ownerFingerprint: string, map: BeaconSeeds): Promise<void> {
+/**
+ * TEST CONTROL ONLY. A BLIND put of the whole map: two tabs lose each other's updates, and a caller that read "no seeds" from the ambiguous getBeaconSeeds
+ * overwrites every held one-time seed. No application code may call it (a static test pins that): use updateBeaconSeeds. It stays, renamed, only so the
+ * browser spec can show what the blind version does (its control). It still encrypts before it writes and refuses when locked.
+ */
+export async function setBeaconSeedsUnsafeForTest(ownerFingerprint: string, map: BeaconSeeds): Promise<void> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store beacon seeds unencrypted (fail-closed)');
   if (!isBeaconSeeds(map)) throw new Error('refusing to store a malformed beacon seed map');
   const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, map);
@@ -823,15 +855,17 @@ export async function setBeaconSeeds(ownerFingerprint: string, map: BeaconSeeds)
  * `mutate` gets the current map (a fresh object) and returns the next one; it must not touch storage. Returns the committed map.
  */
 export async function updateBeaconSeeds(ownerFingerprint: string, mutate: (cur: BeaconSeeds) => BeaconSeeds): Promise<BeaconSeeds> {
-  if (!_sessionKey) throw new Error('Session locked — refusing to update beacon seeds (fail-closed)');
+  if (!_sessionKey) throw new BeaconSeedsLocked('Session locked — refusing to update beacon seeds (fail-closed)');
   const key = beaconSeedsSettingKey(ownerFingerprint);
   for (let attempt = 0; attempt < 8; attempt++) {
     const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', key);
     let cur: BeaconSeeds = {};
     if (row) {
-      if (!row.value) throw new Error('beacon seeds: a stored row is not readable; refusing to overwrite it');
-      const m = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value);
-      if (!isBeaconSeeds(m)) throw new Error('beacon seeds: a stored row is not a valid seed map; refusing to overwrite it');
+      if (!row.value) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not readable; refusing to overwrite it');
+      let m: unknown;
+      try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value); }
+      catch { throw new BeaconSeedsUnreadable(); }
+      if (!isBeaconSeeds(m)) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not a valid seed map; refusing to overwrite it');
       cur = m;
     }
     const next = mutate({ ...cur });
