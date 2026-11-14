@@ -265,3 +265,53 @@ test('LT6 latch rows are sealed with an AAD that binds owner, source and pair, a
   assert.equal(await bob.kindOf('p1'), null, 'bob has no latch on alice\'s pair id');
   for (const raw of m.data.values()) assert.ok(!raw.includes('removed') && !raw.includes('"kind"'), 'no plaintext kind in the stored string');
 });
+
+/** A sealer whose session can be locked: while locked, seal AND open throw, as the real session-key sealer does with no key. */
+function lockableSealer() {
+  const { s: inner } = fakeSealer();
+  const st = { locked: false };
+  const wrap: Sealer = {
+    async seal(aad, value) { if (st.locked) throw new Error('session locked'); return inner.seal(aad, value); },
+    async open(aad, blob) { if (st.locked) throw new Error('session locked'); return inner.open(aad, blob); },
+  };
+  return { wrap, inner, st };
+}
+
+test('LT7 a Block over a row the latch cannot OPEN never reports success: locked, setLatched over a frozen row THROWS and writes nothing; after unlock the row is still frozen', async () => {
+  const { kv, data, f } = fakeKV();
+  const { wrap, inner, st } = lockableSealer();
+  const latch = createBeaconLatch(kv, wrap, 'alice');
+  const key = 'beacon_latch:alice:local:p1';
+  const frozen = await inner.seal('beacon-latch:alice:local:p1', { v: 1, kind: 'frozen' });
+  data.set(key, frozen);
+  st.locked = true;
+  const before = f.swaps;
+  await assert.rejects(latch.setLatched('p1', 'local'), /locked/, 'a Block while locked over an unopenable row must fail, never return ok');
+  assert.equal(f.swaps, before, 'it attempted no write');
+  assert.equal(data.get(key), frozen, 'the stored row is untouched');
+  assert.equal(await latch.kindOf('p1', 'local'), 'removed', 'while locked a READ is still the fail-closed answer');
+  st.locked = false;
+  assert.equal(await latch.kindOf('p1', 'local'), 'frozen', 'after unlock the row still says frozen: the Block did not pretend to land');
+  await latch.setLatched('p1', 'local');
+  assert.equal(await latch.kindOf('p1', 'local'), 'removed', 'an unlocked set upgrades it');
+});
+
+test('LT8 a row that cannot be understood (garbage, unknown kind, unknown version, bound to another source) is REPLACED by a fresh removed row when the session is open; it is not mistaken for already-removed', async () => {
+  const aad = 'beacon-latch:alice:local:p1';
+  const key = 'beacon_latch:alice:local:p1';
+  const plants: Array<[string, (s: Sealer) => Promise<string>]> = [
+    ['garbage', async () => '%%%not-a-blob%%%'],
+    ['unknown kind', (s) => s.seal(aad, { v: 1, kind: 'weird' })],
+    ['unknown version', (s) => s.seal(aad, { v: 2, kind: 'frozen' })],
+    ['sealed for another source', (s) => s.seal('beacon-latch:alice:remote:p1', { v: 1, kind: 'frozen' })],
+  ];
+  for (const [label, plant] of plants) {
+    const { data, f, s, latch } = make();
+    data.set(key, await plant(s));
+    const before = f.swaps;
+    await latch.setLatched('p1', 'local');
+    assert.equal(f.swaps, before + 1, `${label}: a write was made`);
+    assert.deepEqual(await s.open(aad, data.get(key)!), { v: 1, kind: 'removed' }, `${label}: the row now OPENS and says removed (not merely "reads as removed because it is garbage")`);
+    assert.equal(await latch.kindOf('p1', 'local'), 'removed', label);
+  }
+});

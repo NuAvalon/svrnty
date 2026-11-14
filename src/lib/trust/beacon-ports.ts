@@ -94,6 +94,8 @@ export function createBeaconStore(kv: BeaconKV, sealer: Sealer, owner: string): 
       const sealed = await sealer.seal(aadOf(pairId), next);
       return kv.swap(keyOf(pairId), raw, sealed);
     },
+    // BOUND (availability, not a leak): ONE pair row that cannot be opened makes pairs() throw, so the renewal pass stops for ALL pairs until it is dealt with.
+    // That is fail-closed (no request is made); it is never read as absent and never skipped.
     async pairs() {
       const keys = (await kv.keys(prefix)).filter((k) => k.startsWith(prefix)).sort();
       const out: PairRecord[] = [];
@@ -116,14 +118,23 @@ export function createBeaconLatch(kv: BeaconKV, sealer: Sealer, owner: string): 
   const aadOf = (source: Source, pairId: string) => `beacon-latch:${owner}:${source}:${pairId}`;
   const row = (kind: Kind) => ({ v: 1, kind });
 
-  /** null = no latch. 'removed' also for anything unreadable, unknown or failing: the most restrictive answer. */
+  /** What an OPENED row says, or null when it cannot be opened or understood (locked session, garbage, unknown kind or version, wrong binding). Unlike kindFor, a failed
+   * open is NOT 'removed' here: setLatched must never take "I could not open it" for "it is already removed". */
+  async function openedKind(raw: string, pairId: string, source: Source): Promise<Kind | null> {
+    try {
+      const v = (await sealer.open(aadOf(source, pairId), raw)) as { v?: unknown; kind?: unknown } | null;
+      return v && typeof v === 'object' && v.v === 1 && (v.kind === 'removed' || v.kind === 'frozen') ? v.kind : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** null = no latch. 'removed' also for anything unreadable, unknown or failing: the most restrictive answer (for READS; setLatched uses openedKind). */
   async function kindFor(pairId: string, source: Source): Promise<Kind | null> {
     try {
       const raw = await kv.get(keyOf(source, pairId));
       if (raw === undefined) return null;
-      const v = (await sealer.open(aadOf(source, pairId), raw)) as { v?: unknown; kind?: unknown } | null;
-      if (v && typeof v === 'object' && v.v === 1 && (v.kind === 'removed' || v.kind === 'frozen')) return v.kind;
-      return 'removed';
+      return (await openedKind(raw, pairId, source)) ?? 'removed';
     } catch {
       return 'removed';
     }
@@ -144,7 +155,10 @@ export function createBeaconLatch(kv: BeaconKV, sealer: Sealer, owner: string): 
       const key = keyOf(source, pairId);
       for (let i = 0; i < MAX_SWAP_ATTEMPTS; i++) {
         const cur = await kv.get(key);
-        if (cur !== undefined && (await kindFor(pairId, source)) === 'removed') return; // already removed: idempotent, and 'frozen' is upgraded below
+        // "Already removed" is decided on the OPENED value of the very row the swap below compares against, never on a doubt: a row that cannot be opened (a locked
+        // session sees a 'frozen' row as unopenable) is NOT known to be removed. It falls through to the write, which throws while locked (never a success that wrote
+        // nothing, which would leave a Block as a Freeze after unlock) and replaces a garbage row with a fresh 'removed' (overwriting is restrictive-safe).
+        if (cur !== undefined && (await openedKind(cur, pairId, source)) === 'removed') return; // already removed: idempotent, and 'frozen' is upgraded below
         if (await kv.swap(key, cur, await sealer.seal(aadOf(source, pairId), row('removed')))) return;
       }
       throw new Error('beacon latch: could not write the latch');
