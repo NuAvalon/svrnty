@@ -17,7 +17,7 @@ let bundle = '';
 test.beforeAll(async () => {
   const out = await build({
     stdin: {
-      contents: `import { updateBeaconSeeds, readBeaconSeeds, getBeaconSeeds, setBeaconSeedsUnsafeForTest, initSessionKey, lockSession } from '@/lib/identity/client-store';\n(window as any).__h = { updateBeaconSeeds, readBeaconSeeds, getBeaconSeeds, setBeaconSeedsUnsafeForTest, initSessionKey, lockSession };`,
+      contents: `import { updateBeaconSeeds, readBeaconSeeds, destroyBeaconSeedsAndStartOver, getBeaconSeeds, setBeaconSeedsUnsafeForTest, initSessionKey, lockSession } from '@/lib/identity/client-store';\n(window as any).__h = { updateBeaconSeeds, readBeaconSeeds, destroyBeaconSeedsAndStartOver, getBeaconSeeds, setBeaconSeedsUnsafeForTest, initSessionKey, lockSession };`,
       resolveDir: process.cwd(),
       loader: 'ts',
     },
@@ -171,4 +171,46 @@ test('a valid row sealed under ANOTHER passphrase is unreadable: the update thro
   expect(String(r.malformedThrows)).toMatch(/malformed/i);
   expect(r.malformedUntouched).toBe(true);
   expect(r.backIntact).toEqual(['1000:2000']);      // the right passphrase reads the original back, unharmed
+});
+
+type SeedsH = {
+  initSessionKey(p: string): Promise<void>;
+  lockSession(): void;
+  updateBeaconSeeds(owner: string, f: (c: Record<string, unknown>) => Record<string, unknown>): Promise<unknown>;
+  readBeaconSeeds(owner: string): Promise<unknown>;
+  destroyBeaconSeedsAndStartOver(owner: string): Promise<void>;
+};
+type RawH = { get(k: string): Promise<unknown>; put(k: string, v: unknown): Promise<unknown> };
+
+test('the explicit repair: an unreadable map stays untouched until destroyBeaconSeedsAndStartOver, which empties it (and says it destroys the held seeds); afterwards updates work; a locked session refuses it', async ({ page }) => {
+  await harness(page);
+  const r = await page.evaluate(async ([entrySrc, keySrc]) => {
+    const w = window as unknown as { __h: SeedsH; __raw: RawH };
+    const entry = eval(entrySrc) as (i: number) => unknown, key = eval(keySrc) as (i: number) => string;
+    const nameOf = (p: Promise<unknown>, ok: string) => p.then(() => ok, (e: Error) => e.name);
+    await w.__h.initSessionKey('pw');
+    await w.__h.updateBeaconSeeds('alice', (cur) => ({ ...cur, [key(0)]: entry(0) }));
+    await w.__raw.put('beacon_seeds:alice', { iv: 'AAAAAAAAAAAAAAAA', ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', enc_version: 2 });
+    const damaged = JSON.stringify(await w.__raw.get('beacon_seeds:alice'));
+    const out: Record<string, unknown> = {};
+    out.stuckBefore = await nameOf(w.__h.readBeaconSeeds('alice'), 'read');
+    out.updateRefused = await nameOf(w.__h.updateBeaconSeeds('alice', (c) => ({ ...c, [key(1)]: entry(1) })), 'wrote');
+    out.stillDamaged = JSON.stringify(await w.__raw.get('beacon_seeds:alice')) === damaged;
+    w.__h.lockSession();
+    out.lockedRefused = await nameOf(w.__h.destroyBeaconSeedsAndStartOver('alice'), 'reset');
+    out.lockedUntouched = JSON.stringify(await w.__raw.get('beacon_seeds:alice')) === damaged;
+    await w.__h.initSessionKey('pw');
+    await w.__h.destroyBeaconSeedsAndStartOver('alice');
+    out.afterRepair = JSON.stringify(await w.__h.readBeaconSeeds('alice'));
+    await w.__h.updateBeaconSeeds('alice', (c) => ({ ...c, [key(2)]: entry(2) }));
+    out.afterUpdate = Object.keys((await w.__h.readBeaconSeeds('alice')) as Record<string, unknown>);
+    return out;
+  }, [ENTRY, KEY]);
+  expect(r.stuckBefore).toBe('BeaconSeedsUnreadable');
+  expect(r.updateRefused).toBe('BeaconSeedsUnreadable');   // never overwritten by an ordinary update
+  expect(r.stillDamaged).toBe(true);
+  expect(r.lockedRefused).toBe('BeaconSeedsLocked');       // the repair is not possible while locked, and writes nothing
+  expect(r.lockedUntouched).toBe(true);
+  expect(r.afterRepair).toBe('{}');                        // the repair empties the map: it destroys the held seeds
+  expect(r.afterUpdate).toEqual(['1002:2002']);            // and the store works again
 });

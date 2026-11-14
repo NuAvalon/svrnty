@@ -835,6 +835,18 @@ export async function getBeaconSeeds(ownerFingerprint: string): Promise<BeaconSe
 }
 
 /**
+ * THE EXPLICIT REPAIR for an unreadable seed map: replaces whatever is stored (readable or not) with an empty map. It DESTROYS every held one-time seed, which
+ * is why nothing calls it automatically: the owner chooses it, after being told what it destroys (see beacon-secrets.ts). Consequence of the loss, so the
+ * copy stays honest: a deposit whose seed is gone can no longer be polled or withdrawn by this client; it lapses at the end of its epoch (plus the grace
+ * window), and the next renewal makes a new one. Refuses when locked.
+ */
+export async function destroyBeaconSeedsAndStartOver(ownerFingerprint: string): Promise<void> {
+  if (!_sessionKey) throw new BeaconSeedsLocked('Session locked — refusing to reset beacon seeds (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, {});
+  await txPut('settings', { key: beaconSeedsSettingKey(ownerFingerprint), value: payload });
+}
+
+/**
  * TEST CONTROL ONLY. A BLIND put of the whole map: two tabs lose each other's updates, and a caller that read "no seeds" from the ambiguous getBeaconSeeds
  * overwrites every held one-time seed. No application code may call it (a static test pins that): use updateBeaconSeeds. It stays, renamed, only so the
  * browser spec can show what the blind version does (its control). It still encrypts before it writes and refuses when locked.
