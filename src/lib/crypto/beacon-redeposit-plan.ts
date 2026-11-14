@@ -26,9 +26,11 @@ export interface Plan {
 }
 
 export const depositKey = (trustId: string, epoch: number) => `${trustId}:${epoch}`;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the wire module is untyped .mjs
 export const currentEpoch = (nowMs: number) => Math.floor(nowMs / 1000 / (wire as any).EPOCH_SECONDS);
 
 async function fraction(seed: Uint8Array, trustId: string, epoch: number): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis has no typed crypto on every target
   const subtle: SubtleCrypto | undefined = (globalThis as any).crypto?.subtle;
   if (!subtle) throw new Error('no WebCrypto available');
   const key = await subtle.importKey('raw', seed, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -46,6 +48,7 @@ export async function planDeposits(i: PlanInput): Promise<Plan> {
     seen.add(t);
   }
   const epoch = currentEpoch(i.nowMs);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the wire module is untyped .mjs
   const epochStartMs = epoch * (wire as any).EPOCH_SECONDS * 1000;
   const due: DueDeposit[] = [];
   let next: number | null = null;
@@ -56,6 +59,7 @@ export async function planDeposits(i: PlanInput): Promise<Plan> {
     if (at <= i.nowMs) due.push({ trustId, epoch, dueAtMs: at });
     else if (next === null || at < next) next = at;
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the wire module is untyped .mjs
   if (next === null && i.trusts.length > 0) next = (epoch + 1) * (wire as any).EPOCH_SECONDS * 1000;
   return { due, nextAtMs: next };
 }

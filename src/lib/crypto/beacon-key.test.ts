@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- test doubles and deliberately wrong inputs */
 // src/lib/crypto/beacon-key.test.ts
 // #588 T4, first piece: the beacon KEY (generate, pack, and the receiver's checks on a key that arrives on a card). Trust stays DARK; nothing imports this.
 // Receiver rules in order (T4 note v0.2 §3): canonical decode, on curve, not the identity, not small order, l*Y = O, not my own. A failure

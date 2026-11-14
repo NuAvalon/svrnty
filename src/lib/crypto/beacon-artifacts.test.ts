@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- test doubles and deliberately wrong inputs */
 // src/lib/crypto/beacon-artifacts.test.ts
 // #588 piece F (pin guards): the client must refuse proving files that are not byte-for-byte the pinned ones, BEFORE they reach the prover.
 // Fail closed: a missing pin (no ceremony yet) refuses; the throwaway/prototype keys are just "a hash that is not the pin". Run:

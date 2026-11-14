@@ -30,6 +30,7 @@ const MAX_ZKEY_BYTES = 96 * 1024 * 1024;  // the final zkey for 6,574 constraint
 const HEX64 = /^[0-9a-f]{64}$/;
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis has no typed crypto on every target
   const subtle: SubtleCrypto | undefined = (globalThis as any).crypto?.subtle;
   if (!subtle) throw new Error('no WebCrypto available');
   const d = new Uint8Array(await subtle.digest('SHA-256', bytes));
