@@ -15,7 +15,7 @@ test('R1 the errors that really mean a wrong password map to the wrong-password 
     assert.deepEqual(classifyRestoreFailure(e), { code: 'wrong-password', message: RESTORE_MESSAGES.wrongPassword });
     assert.deepEqual(classifyRestoreFailure(e, { v4Vault: true }), { code: 'wrong-password', message: RESTORE_MESSAGES.wrongPasswordVaultV4 });
   }
-  assert.match(RESTORE_MESSAGES.wrongPassword, /^Incorrect encryption password\./);
+  assert.match(RESTORE_MESSAGES.wrongPassword, /^That password didn't open this file\./);
   assert.match(RESTORE_MESSAGES.wrongPasswordVaultV4, /recovery code/);
 });
 
@@ -47,9 +47,11 @@ test('R3 each typed failure has its own sentence: needs-device-passphrase, unsup
   assert.deepEqual(classifyRestoreFailure(lookalike('vault-unsupported', 'Unsupported vault format: x v9')), { code: 'unsupported-format', message: RESTORE_MESSAGES.unsupportedFormat });
   const un = classifyRestoreFailure(new RestoreFormatUnrecognized());
   assert.equal(un.code, 'unrecognized-format');
-  assert.match(un.message, /^Unrecognized backup format\./);
-  const env = classifyRestoreFailure(new EnvelopeRefused('unknown-kdf', 'This file uses a password method this version does not read.'));
-  assert.deepEqual(env, { code: 'envelope-refused', message: 'This file uses a password method this version does not read.' });
+  assert.equal(un.message, RESTORE_MESSAGES.unrecognizedFormat);
+  assert.doesNotMatch(un.message, /contacts export|sovereign/i, 'it must not name a contacts export as restorable');
+  // an envelope the app will not run vs a file that is not an envelope: two sentences, by the envelope's own code, never its text
+  for (const c of ['unknown-kdf', 'unsafe-params'] as const) assert.deepEqual(classifyRestoreFailure(new EnvelopeRefused(c, 'This file asks for settings this version will not run.')), { code: 'envelope-refused', message: RESTORE_MESSAGES.unsupportedFormat }, c);
+  for (const c of ['bad-field', 'not-an-envelope'] as const) assert.deepEqual(classifyRestoreFailure(new EnvelopeRefused(c, 'This file is missing its salt.')), { code: 'envelope-refused', message: RESTORE_MESSAGES.unrecognizedFormat }, c);
 });
 
 // ---------- the screen and the throwers use it ----------
@@ -73,4 +75,20 @@ test('R5 [static] the errors the screen has to tell apart are typed where they a
   assert.ok(!/throw new Error\('Set or enter your device passphrase/.test(store) && /throw new PlaintextImportNeedsSession\(\)/.test(store));
   assert.match(read('../sync/vault.ts'), /Could not open vault — wrong passphrase or the file was altered/, 'the message text is unchanged');
   assert.match(read('./client-store.ts'), /Set or enter your device passphrase before importing a plaintext backup/, 'and so is this one');
+});
+
+test('R6 RULE: the screen never gets an error\'s own text. Every failure maps to one of the RESTORE_MESSAGES constants, whatever the error says', () => {
+  const sentences = new Set<string>(Object.values(RESTORE_MESSAGES));
+  const marker = 'ZZ-DISTINCT-ERROR-TEXT-ZZ';
+  const errors: unknown[] = [
+    new Error(marker), lookalike('wrong-password', marker), lookalike('vault-could-not-open', marker), lookalike('needs-device-passphrase', marker),
+    lookalike('vault-unsupported', marker), lookalike('restore-format-unrecognized', marker), new RestoreFormatUnrecognized(),
+    new EnvelopeRefused('unknown-kdf', marker), new EnvelopeRefused('unsafe-params', marker), new EnvelopeRefused('bad-field', marker), new EnvelopeRefused('not-an-envelope', marker),
+    new DOMException(marker, 'OperationError'), undefined, null, 'a string', 42, {},
+  ];
+  for (const e of errors) for (const ctx of [{}, { v4Vault: true }]) {
+    const f = classifyRestoreFailure(e, ctx);
+    assert.ok(sentences.has(f.message), `a constant, for ${String((e as { code?: unknown })?.code ?? (e as { name?: unknown })?.name ?? e)}`);
+    assert.ok(!f.message.includes(marker), 'the error text is never shown');
+  }
 });

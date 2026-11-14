@@ -8,11 +8,11 @@ import { RESTORE_MESSAGES } from '../src/lib/identity/restore-errors';
  * What the restore screen says when a restore fails, through the real screens.
  *
  *  1. An old-format FULL backup (the app's own backup object, encrypted the old way with node:crypto) opens fine but cannot be saved on a fresh device without
- *     a device passphrase. The screen must say THAT, not "Incorrect encryption password": the owner typed the password right.
- *  2. A genuinely WRONG password still says "Incorrect encryption password" (the fix must not over-correct).
+ *     a device passphrase. The screen must say THAT, not that the password was wrong: the owner typed the password right.
+ *  2. A genuinely WRONG password still says the password did not open the file (the fix must not over-correct).
  *  3. A file with a password method this version does not read shows its own sentence, not the wrong-password one.
  *
- * Before the fix, 1 and 3 both showed "Incorrect encryption password" (the handler tested the error's TEXT for the words password/passphrase/decrypt).
+ * Before the fix, 1 and 3 both showed the wrong-password sentence (the handler tested the error's TEXT for the words password/passphrase/decrypt).
  * Needs a PRODUCTION build (`next build && next start`). The harness that reads the app's backup needs the page's script policy off (bypassCSP).
  */
 
@@ -57,7 +57,7 @@ async function restoreAndReadError(browser: Browser, file: string, password: str
   await page.setInputFiles('[data-testid="restore-file-input"]', file);
   await page.getByPlaceholder('Encryption password from export').fill(password);
   await page.getByRole('button', { name: /^(open vault|restore identity)$/i }).click();
-  const error = page.getByText(/Incorrect encryption password|could not be saved on this device|does not read|could not be restored/i).first();
+  const error = page.getByText(/didn't open this file|has no password yet|can't read|Something went wrong|isn't a backup/i).first();
   await expect(error).toBeVisible({ timeout: 60_000 });
   const text = (await error.innerText()).trim();
   await ctx.close();
@@ -115,7 +115,7 @@ test('3. a file with a password method this version does not read shows its own 
   writeFileSync(file, JSON.stringify({ ...env, kdf: 'scrypt-n14' }));
   const shown = await restoreAndReadError(browser, file, FILE_PW);
   console.log(`[restore-honesty] unknown password method: "${shown}"`);
-  expect(shown).toBe('This file uses a password method this version does not read.');
+  expect(shown).toBe(RESTORE_MESSAGES.unsupportedFormat);
   expect(shown).not.toMatch(/incorrect/i);
 });
 

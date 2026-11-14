@@ -11,7 +11,7 @@
 /** The restore screen could not recognise the file's shape at all. */
 export class RestoreFormatUnrecognized extends Error {
   readonly code = 'restore-format-unrecognized' as const;
-  constructor() { super('Unrecognized backup format. Expected a sovereign backup, contacts export, or identity file.'); this.name = 'RestoreFormatUnrecognized'; }
+  constructor() { super("This app can't open this file. It isn't a backup it recognizes."); this.name = 'RestoreFormatUnrecognized'; }
 }
 
 export type RestoreFailureCode =
@@ -27,31 +27,39 @@ export interface RestoreFailure { code: RestoreFailureCode; message: string }
 const codeOf = (e: unknown): string | undefined => (e && typeof e === 'object' ? (e as { code?: unknown }).code as string | undefined : undefined);
 const nameOf = (e: unknown): string | undefined => (e && typeof e === 'object' ? (e as { name?: unknown }).name as string | undefined : undefined);
 
-/** The sentences. The first two are the screen's existing wording; the others are drafts for the copy owner (they say what happened, in plain words). */
+/** The sentences (copy owner's wording, ledger row 174). Every sentence the restore screen shows for a failure is one of these constants, never an error's own text. */
 export const RESTORE_MESSAGES = Object.freeze({
-  wrongPasswordVaultV4: 'Incorrect passphrase. Try again, or recover with your recovery code below.',
-  wrongPassword: 'Incorrect encryption password. Use the password you set when you exported this copy.',
-  needsDevicePassphrase: 'This backup opened, but it could not be saved on this device: a device passphrase has to be set first.',
+  wrongPasswordVaultV4: "That passphrase didn't open this vault. Try again, or use your recovery code below.",
+  wrongPassword: "That password didn't open this file. Use the password you set when you exported it.",
+  needsDevicePassphrase: 'This backup opened, but this device has no password yet, so nothing was saved.',
   keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
-  unsupportedFormat: 'This file is in a format this version does not read.',
-  unknown: 'This backup could not be restored.',
+  unsupportedFormat: "This backup uses a format this version of the app can't read.",
+  unrecognizedFormat: "This app can't open this file. It isn't a backup it recognizes.",
+  unknown: "Something went wrong and the restore didn't finish.",
 });
 
 /**
- * Classify a restore failure. `ctx.v4Vault`: the file is a v4 vault (its own wording offers the recovery code). Decided by identity only:
+ * Classify a restore failure. `ctx.v4Vault`: the file is a v4 vault (its own wording offers the recovery code). Decided by identity only, and the message is ALWAYS
+ * one of RESTORE_MESSAGES: no code path hands an error's own text to the screen.
  *  - the two TYPED wrong-password errors: EnvelopeWrongPassword (the file's own AES-GCM check, code 'wrong-password') and VaultCouldNotOpen. A BARE OperationError is
  *    not one: WebCrypto raises it from any failed decrypt, including steps after the file opened, and says nothing about the password the person typed;
- *  - EnvelopeRefused carries its own fixed sentence (a file this version will not try: it names no secret and echoes nothing from the file);
+ *  - EnvelopeRefused by its code: a method or settings this version will not run (unknown-kdf, unsafe-params) is an unsupported format; a file that is not an
+ *    envelope or lacks a field (not-an-envelope, bad-field) is a file the app does not recognise;
  *  - the typed needs-device-passphrase, unsupported-format and unrecognized-format errors each have their own sentence;
- *  - anything else is 'unknown': one generic sentence, never the error's own text.
+ *  - anything else is 'unknown': one generic sentence.
  */
 export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } = {}): RestoreFailure {
   if (codeOf(err) === 'wrong-password' || codeOf(err) === 'vault-could-not-open') {
     return { code: 'wrong-password', message: ctx.v4Vault ? RESTORE_MESSAGES.wrongPasswordVaultV4 : RESTORE_MESSAGES.wrongPassword };
   }
-  if (nameOf(err) === 'EnvelopeRefused') return { code: 'envelope-refused', message: (err as Error).message };
+  if (nameOf(err) === 'EnvelopeRefused') {
+    const c = codeOf(err);
+    return c === 'unknown-kdf' || c === 'unsafe-params'
+      ? { code: 'envelope-refused', message: RESTORE_MESSAGES.unsupportedFormat }
+      : { code: 'envelope-refused', message: RESTORE_MESSAGES.unrecognizedFormat };
+  }
   if (codeOf(err) === 'needs-device-passphrase') return { code: 'needs-device-passphrase', message: RESTORE_MESSAGES.needsDevicePassphrase };
   if (codeOf(err) === 'vault-unsupported') return { code: 'unsupported-format', message: RESTORE_MESSAGES.unsupportedFormat };
-  if (codeOf(err) === 'restore-format-unrecognized') return { code: 'unrecognized-format', message: (err as Error).message };
+  if (codeOf(err) === 'restore-format-unrecognized') return { code: 'unrecognized-format', message: RESTORE_MESSAGES.unrecognizedFormat };
   return { code: 'unknown', message: RESTORE_MESSAGES.unknown };
 }
