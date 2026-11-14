@@ -18,6 +18,8 @@ import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type Delivery
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
+import { createBeaconStore, createBeaconLatch, type BeaconKV, type Sealer } from '../trust/beacon-ports';
+import type { BeaconStorePort, LatchPort } from '../crypto/beacon-client';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
@@ -2439,4 +2441,64 @@ export async function removeGateArrival(ownerFp: string, peerFp: string): Promis
   delete map[ownerFp][peerFp];
   if (Object.keys(map[ownerFp]).length === 0) delete map[ownerFp];
   await saveGateMap(map);
+}
+
+// ── #822 (a) S1b: the IndexedDB glue under the beacon ports (DARK; nothing calls createBeaconPorts yet) ───────────────────────────────────────────
+// beacon-ports.ts holds the rules (sealed, compare-and-swap, fail-closed) over two injected things; this block is those two things on the real database:
+//  - the KV is rows of the `settings` store ({key, value: <string>}). A write is commitIfUnchanged, so the compare and the write happen in ONE
+//    transaction; the row is compared by its JSON (no top-level enc_version), and `expected` is built in the same property order as the put.
+//  - the sealer is the same AAD-bound AES path as the records above, keyed by the session key. A locked session THROWS (the store then cannot read or
+//    write, and the latch reads 'removed'); a stored blob that does not open is an error, never "absent".
+// Rows are `beacon_pair:<owner>:<pairId>` and `beacon_latch:<owner>:<pairId>:<kind>`; nothing else in this file enumerates the settings store.
+async function txKeysWithPrefix(storeName: string, prefix: string): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const request = tx.objectStore(storeName).getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    request.onsuccess = () => resolve((request.result as IDBValidKey[]).filter((k): k is string => typeof k === 'string'));
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => { db.close(); reject(tx.error ?? new Error('transaction aborted')); };
+  });
+}
+
+function beaconSettingsKV(): BeaconKV {
+  return {
+    async get(key) {
+      const row = await txGet<{ key: string; value: unknown }>('settings', key);
+      if (!row) return undefined;
+      if (typeof row.value !== 'string') throw new Error('beacon kv: a stored row is not readable');
+      return row.value;
+    },
+    async swap(key, expected, next) {
+      return commitIfUnchanged(
+        await openDB(),
+        [{ store: 'settings', key, expected: expected === undefined ? null : { key, value: expected } }],
+        [next === undefined ? { store: 'settings', delete: key } : { store: 'settings', value: { key, value: next } }],
+      );
+    },
+    keys: (prefix) => txKeysWithPrefix('settings', prefix),
+  };
+}
+
+function beaconSessionSealer(ownerFingerprint: string): Sealer {
+  return {
+    async seal(aad, value) {
+      if (!_sessionKey) throw new Error('Session locked — refusing to store a beacon record unencrypted (fail-closed)');
+      return JSON.stringify(await encryptContactRecord(_sessionKey, aad, ownerFingerprint, value));
+    },
+    async open(aad, blob) {
+      if (!_sessionKey) throw new Error('beacon record unreadable: session locked');
+      const payload = JSON.parse(blob) as { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null;
+      if (!payload || typeof payload.iv !== 'string' || typeof payload.ciphertext !== 'string') throw new Error('beacon record unreadable: malformed');
+      return decryptContactRecord<unknown>(_sessionKey, aad, ownerFingerprint, { iv: payload.iv, ciphertext: payload.ciphertext, enc_version: payload.enc_version });
+    },
+  };
+}
+
+/** The two persistence ports createBeaconClient needs, over the app's IndexedDB, scoped to one owner. DARK: no caller yet. */
+export function createBeaconPorts(ownerFingerprint: string): { store: BeaconStorePort; latch: LatchPort } {
+  const kv = beaconSettingsKV();
+  const sealer = beaconSessionSealer(ownerFingerprint);
+  return { store: createBeaconStore(kv, sealer, ownerFingerprint), latch: createBeaconLatch(kv, sealer, ownerFingerprint) };
 }

@@ -1,6 +1,6 @@
 // src/lib/trust/beacon-ports.ts — #822 (a) S1a: the persistence ports the beacon client needs (the pair-record store with compare-and-swap, and the latch).
 /**
- * DARK: nothing imports this module. It adapts two ports of createBeaconClient (BeaconStorePort, LatchPort) over two INJECTED things, so the logic is
+ * DARK: only client-store.ts imports this module (createBeaconPorts, which nothing calls yet). It adapts two ports of createBeaconClient (BeaconStorePort, LatchPort) over two INJECTED things, so the logic is
  * unit-tested without IndexedDB and the real implementations (a settings-row KV over the app's IndexedDB, a sealer over the session key) are glue:
  *  - BeaconKV: get / swap / keys over opaque strings. `swap` is the one atomic write (compare the stored string with what was read, then replace or delete).
  *  - Sealer: encrypts a value under an AAD, opens it again, and THROWS on any doubt (tag, shape, wrong AAD).
