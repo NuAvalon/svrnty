@@ -350,6 +350,20 @@ function refuseLegacyOrUnknown(bytes: Uint8Array): never {
  * OUTSIDE the passphrase layer so recover-after-loss works (see the v4 note up
  * top). packVault always writes v4; unpackVault still reads v3 for migration.
  */
+/**
+ * The vault could not be opened with this passphrase (the AES-GCM check failed): a wrong passphrase, or a file that was altered. The ONLY vault error that
+ * means "wrong passphrase"; callers decide on `code`, never on the message text.
+ */
+export class VaultCouldNotOpen extends Error {
+  readonly code = 'vault-could-not-open' as const;
+  constructor() { super('Could not open vault — wrong passphrase or the file was altered'); this.name = 'VaultCouldNotOpen'; }
+}
+/** The file's format or version is one this build does not read. Not a password problem. */
+export class VaultUnsupportedFormat extends Error {
+  readonly code = 'vault-unsupported' as const;
+  constructor(message: string) { super(message); this.name = 'VaultUnsupportedFormat'; }
+}
+
 export async function packVault(contents: VaultContents, passphrase: string): Promise<ArrayBuffer> {
   assertPassphraseStrength(passphrase); // F3 — reject weak passphrases on write
 
@@ -438,7 +452,7 @@ export function readVaultHeader(data: ArrayBuffer): VaultHeader {
   const header = JSON.parse(new TextDecoder().decode(headerBytes));
 
   if (header.format !== 'svrnty-vault' || (header.version !== 3 && header.version !== 4)) {
-    throw new Error(`Unsupported vault format: ${header.format} v${header.version}`);
+    throw new VaultUnsupportedFormat(`Unsupported vault format: ${header.format} v${header.version}`);
   }
 
   return header as VaultHeader;
@@ -471,7 +485,7 @@ export async function unpackVault(
 
   const expectedVersion = isV4 ? 4 : 3;
   if (header.format !== 'svrnty-vault' || header.version !== expectedVersion) {
-    throw new Error(`Unsupported vault format: ${header.format} v${header.version}`);
+    throw new VaultUnsupportedFormat(`Unsupported vault format: ${header.format} v${header.version}`);
   }
 
   // F1: clamp/reject hostile KDF params BEFORE deriveKey — import is the
@@ -504,7 +518,7 @@ export async function unpackVault(
   } catch {
     // Wrong passphrase, corrupted body, or tampered header. Never surface a
     // safe word here — there is nothing authenticated to show.
-    throw new Error('Could not open vault — wrong passphrase or the file was altered');
+    throw new VaultCouldNotOpen();
   } finally {
     key.fill(0);
   }

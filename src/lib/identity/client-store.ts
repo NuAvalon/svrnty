@@ -1940,6 +1940,15 @@ export async function assertPlaintextBackupIdentityBinds(backup: SovereignBackup
   return fingerprint;
 }
 
+/**
+ * importAll cannot store imported keys without an unlocked passphrase session (they are encrypted at rest, never stored in the clear). Not a wrong-password
+ * error: the file may have opened perfectly. Callers decide on `code`, never on the message text.
+ */
+export class PlaintextImportNeedsSession extends Error {
+  readonly code = 'needs-device-passphrase' as const;
+  constructor() { super('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.'); this.name = 'PlaintextImportNeedsSession'; }
+}
+
 /** Persist plaintext contacts via addContact. Unbindable rows skip and are counted. */
 export async function importPlaintextContacts(
   ownerFingerprint: string,
@@ -1964,7 +1973,7 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   // (the key stores are fail-closed). Block cleanly BEFORE any write — no partial import, no
   // plaintext-at-rest window.
   if (!isSessionUnlocked()) {
-    throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
+    throw new PlaintextImportNeedsSession();
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
   await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');

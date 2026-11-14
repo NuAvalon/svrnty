@@ -6,6 +6,7 @@ import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
+import { classifyRestoreFailure, RestoreFormatUnrecognized } from '@/lib/identity/restore-errors';
 import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { isRestoreDurableRefusal, RESTORE_DURABLE_MESSAGE } from '@/lib/identity/restore-durable';
@@ -847,7 +848,7 @@ export function SoverentityFrontend({
           setIdentity(wrappedIdentity);
           onIdentityUpdate?.(wrappedIdentity);
         } else {
-          throw new Error('Unrecognized backup format. Expected a sovereign backup, contacts export, or identity file.');
+          throw new RestoreFormatUnrecognized();
         }
       } else {
         // .svrnty vault path — daily passphrase unlock (v3 + v4)
@@ -889,18 +890,11 @@ export function SoverentityFrontend({
         setRestoreError(msg);
         return;
       }
-      const looksLikeDecryptFail =
-        /decrypt|OperationError|passphrase|password|could not open vault/i.test(msg) ||
-        (err instanceof DOMException && err.name === 'OperationError');
-      // Claim-honesty: wrong passphrase on binary vault must NOT auto-offer seed
-      // recovery in the error string for v3. v4 can offer the alternate path in UI.
-      setRestoreError(
-        looksLikeDecryptFail
-          ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
-            ? 'Incorrect passphrase. Try again, or recover with your recovery code below.'
-            : 'Incorrect encryption password. Use the password you set when you exported this copy.'
-          : msg || 'Failed to restore'
-      );
+      // Decided by the error's type and code, never by its message text (restore-errors.ts): a message that merely mentions a passphrase must not read as
+      // "Incorrect encryption password".
+      const failure = classifyRestoreFailure(err, { v4Vault: vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4 });
+      if (failure.code === 'unknown') console.error('Restore failed with an unclassified error:', err); // the owner sees one generic sentence; the real error is here for diagnosis
+      setRestoreError(failure.message);
     } finally {
       setRestoreLoading(false);
     }
