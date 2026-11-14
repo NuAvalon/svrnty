@@ -28,11 +28,11 @@ import {
   toBase64,
   fromBase64,
   randomBytes,
-  deriveKeyArgon2id,
   aesGcmEncrypt,
   aesGcmDecrypt,
   assertParamsWithinLimits,
 } from './kdf';
+import { deriveKeyArgon2idOffThread } from './kdf-offthread';
 
 const FORMAT_VERSION = '1.0';
 
@@ -80,7 +80,7 @@ export async function encryptBackup(
   const iv = randomBytes(IV_LENGTH);
 
   // Derive AES key via the single shared Argon2id path.
-  const keyBytes = deriveKeyArgon2id(passphrase, salt, {
+  const keyBytes = await deriveKeyArgon2idOffThread(passphrase, salt, {
     time_cost: ARGON2_TIME_COST,
     memory_cost: ARGON2_MEMORY_COST,
     parallelism: ARGON2_PARALLELISM,
@@ -133,7 +133,7 @@ export async function decryptBackup(
   const iv = fromBase64(file.encrypted.iv);
   const ciphertext = fromBase64(file.encrypted.ciphertext);
 
-  const keyBytes = deriveKeyArgon2id(passphrase, salt, {
+  const keyBytes = await deriveKeyArgon2idOffThread(passphrase, salt, {
     time_cost: file.kdf.time_cost,
     memory_cost: file.kdf.memory_cost,
     parallelism: file.kdf.parallelism,
