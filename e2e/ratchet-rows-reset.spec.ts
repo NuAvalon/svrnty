@@ -20,8 +20,10 @@ test.use({ bypassCSP: true });
 const PASS = 'e2e-passphrase-1234';
 const NAME = 'Bob';
 
+// circomlibjs is external: client-store reaches it only through a dynamic import() on the dark beacon path, which the app's own bundler loads lazily; esbuild
+// must resolve it at build time and it needs Node built-ins a browser bundle lacks. This harness never calls it.
 function harnessSource(): string {
-  return execFileSync('node_modules/.bin/esbuild', ['e2e/helpers/ratchet-rows-harness.ts', '--bundle', '--format=iife', '--platform=browser', '--alias:@=./src'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  return execFileSync('node_modules/.bin/esbuild', ['e2e/helpers/ratchet-rows-harness.ts', '--bundle', '--format=iife', '--platform=browser', '--alias:@=./src', '--external:circomlibjs'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
 
 async function genesisReceiver(page: Page, name: string) {
