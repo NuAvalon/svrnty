@@ -814,6 +814,35 @@ export async function setBeaconSeeds(ownerFingerprint: string, map: BeaconSeeds)
   await txPut('settings', { key: beaconSeedsSettingKey(ownerFingerprint), value: payload });
 }
 
+/**
+ * ATOMIC read-modify-write of the seed map. setBeaconSeeds is a blind put (two tabs lose updates) and getBeaconSeeds answers null for BOTH "absent" and "present but unreadable",
+ * so a caller that reads null as "no seeds yet" and writes would destroy every held one-time seed. This is the only safe way to change the map:
+ *  - ABSENT row: an empty map is the starting point (the one allowed case).
+ *  - a row that exists but cannot be opened, or is not a valid seed map: THROWS and writes nothing. It is never read as empty and never overwritten.
+ *  - the write commits only if the row is still exactly the one that was read (commitIfUnchanged compares inside one transaction); a lost race re-reads and retries.
+ * `mutate` gets the current map (a fresh object) and returns the next one; it must not touch storage. Returns the committed map.
+ */
+export async function updateBeaconSeeds(ownerFingerprint: string, mutate: (cur: BeaconSeeds) => BeaconSeeds): Promise<BeaconSeeds> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to update beacon seeds (fail-closed)');
+  const key = beaconSeedsSettingKey(ownerFingerprint);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', key);
+    let cur: BeaconSeeds = {};
+    if (row) {
+      if (!row.value) throw new Error('beacon seeds: a stored row is not readable; refusing to overwrite it');
+      const m = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value);
+      if (!isBeaconSeeds(m)) throw new Error('beacon seeds: a stored row is not a valid seed map; refusing to overwrite it');
+      cur = m;
+    }
+    const next = mutate({ ...cur });
+    if (!isBeaconSeeds(next)) throw new Error('refusing to store a malformed beacon seed map');
+    const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, next);
+    const won = await commitIfUnchanged(await openDB(), [{ store: 'settings', key, expected: row ?? null }], [{ store: 'settings', value: { key, value: payload } }]);
+    if (won) return next;
+  }
+  throw new Error('beacon seeds: could not commit the update');
+}
+
 // ── #588 D1/D2: the identity's beacon key record (x + generation + jitter secret) — IDENTITY STATE, DARK ─────────────────────
 // ONE value per identity, lazily created the first time trust is needed (never at genesis), encrypted at rest on the same AAD-bound path as the seeds,
 // carried in the backup as keys.beacon (optional, additive), STRICTLY validated on restore, and never overwritten once held.
