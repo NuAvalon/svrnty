@@ -29,13 +29,16 @@ const req = (pass: string, salt = SALT, params: unknown = P1) => ({
  * A worker that behaves like a real one where it matters here: messages are structured-cloned, a TRANSFERRED buffer is detached in the sender, and the
  * reply comes back asynchronously. `behave` decides what it does with the request.
  */
-function fakeWorker(behave: (data: unknown, reply: (res: unknown, transfer?: Transferable[]) => void, w: Argon2WorkerLike) => void) {
+function fakeWorker(behave: (data: unknown, reply: (res: unknown, transfer?: Transferable[]) => void, w: Argon2WorkerLike) => void, opts: { ready?: boolean } = {}) {
   const log = { posted: [] as ArrayBuffer[][], terminated: 0 };
+  const sendReady = opts.ready !== false;
   const w: Argon2WorkerLike = {
     onmessage: null, onerror: null, onmessageerror: null,
     postMessage(msg, transfer = []) {
       log.posted.push(transfer as ArrayBuffer[]);
       const cloned = structuredClone(msg, { transfer });
+      // a real worker says it started as soon as its script loads, before it handles the request
+      if (sendReady) setImmediate(() => w.onmessage?.({ data: { ready: true } }));
       setImmediate(() => behave(cloned, (res, tr = []) => { const c = structuredClone(res, { transfer: tr }); w.onmessage?.({ data: c }); }, w));
     },
     terminate() { log.terminated++; },
@@ -92,6 +95,19 @@ test('K3 the worker refuses hostile parameters itself (the clamp does not depend
   }
 });
 
+test('K12 the worker wipes the derived key it holds once the copy has been handed over', () => {
+  const made: Uint8Array[] = [];
+  const spy: typeof import('./kdf').deriveKeyArgon2idBytes = (pass, salt, params) => { const k = deriveKeyArgon2id(PASS, salt, params); made.push(k); return k; };
+  const res = handleArgon2Request(req(PASS), spy);
+  assert.ok(res.ok);
+  assert.equal(hex(new Uint8Array((res as { key: ArrayBuffer }).key)), KAT_1, 'what is handed over is the derived key');
+  assert.equal(made.length, 1);
+  assert.ok(made[0].every((b) => b === 0), 'the worker\'s own array is zeroed');
+  // and a derivation that throws leaves nothing to hold
+  const boom = () => { throw new Error('KDF memory_cost 1 KiB exceeds limit'); };
+  assert.deepEqual(handleArgon2Request(req(PASS), boom as never), { ok: false, reason: 'KDF memory_cost 1 KiB exceeds limit' });
+});
+
 // ---------- the page's side ----------
 test('K4 through a worker: the key is the known answer; the passphrase and salt buffers are TRANSFERRED (detached here); the worker is terminated once', async () => {
   const { w, log } = fakeWorker(realLogic);
@@ -126,18 +142,33 @@ test('K6 a worker that answers with a refusal or with garbage rejects with a fix
   }
 });
 
-test('K7 when the worker cannot start (an error event, a factory that throws, no factory) the SAME derivation runs on this thread: the known answer, not a failure', async () => {
-  const dead = fakeWorker((_d, _r, w) => w.onerror?.({}));
+test('K7 when the worker cannot START (an error event before it said ready, a factory that throws, no factory) the SAME derivation runs on this thread: the known answer, not a failure', async () => {
   const within = <T,>(p: Promise<T>, ms = 3000) => {
     let timer: ReturnType<typeof setTimeout>;
     const clock = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timed out: the call never settled')), ms); });
     return Promise.race([p, clock]).finally(() => clearTimeout(timer));
   };
-  assert.equal(hex(await within(deriveKeyArgon2idOffThread(PASS, SALT, P1, () => dead.w))), KAT_1, 'error event');
+  const dead = fakeWorker((_d, _r, w) => w.onerror?.({}), { ready: false });
+  assert.equal(hex(await within(deriveKeyArgon2idOffThread(PASS, SALT, P1, () => dead.w))), KAT_1, 'error event before ready');
   assert.equal(dead.log.terminated, 1);
   assert.equal(hex(await deriveKeyArgon2idOffThread(PASS, SALT, P1, () => { throw new Error('blocked by policy'); })), KAT_1, 'factory throws');
   assert.equal(hex(await deriveKeyArgon2idOffThread(PASS, SALT, P1, () => null)), KAT_1, 'no worker available');
   assert.equal(hex(await deriveKeyArgon2idOffThread(PASS, SALT, P1)), KAT_1, 'default factory in node has no Worker global');
+});
+
+test('K7b a worker that STARTED and then died (an error event after ready: out of memory, say) is a FAILURE with a fixed reason: nothing is re-run on this thread, and it is terminated', async () => {
+  let derivedOnPage = false;
+  const origNow = TextEncoder.prototype.encode;
+  // the page-thread fallback encodes the passphrase itself (deriveKeyArgon2id); the worker path encodes it exactly once. A second encode of the passphrase = a re-run here.
+  let encodes = 0;
+  TextEncoder.prototype.encode = function (this: TextEncoder, input?: string) { if (input === PASS) encodes++; return origNow.call(this, input); };
+  try {
+    const died = fakeWorker((_d, _r, w) => w.onerror?.({}));   // ready first (the default), then the error
+    await assert.rejects(deriveKeyArgon2idOffThread(PASS, SALT, P1, () => died.w), new RegExp(ARGON2_FAILED));
+    assert.equal(died.log.terminated, 1);
+    derivedOnPage = encodes > 1;
+  } finally { TextEncoder.prototype.encode = origNow; }
+  assert.equal(derivedOnPage, false, 'the derivation was not run again on this thread');
 });
 
 test('K4b the page wipes its own copy of the passphrase bytes after handing them over', async () => {
@@ -194,5 +225,6 @@ test('K10 the two modules that derive from a passphrase use the off-thread path,
   }
   const w = readFileSync(join(SRC, 'lib/crypto/argon2.worker.ts'), 'utf8');
   assert.match(w, /handleArgon2Request/);
+  assert.match(w, /postMessage\(ARGON2_READY\)/, 'the worker says it started as soon as it loads');
   assert.ok(!/argon2id\s*\(/.test(w.replace(/handleArgon2Request/g, '')), 'no derivation logic in the worker entry itself');
 });

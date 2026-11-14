@@ -10,11 +10,11 @@
 //    in cannot be wiped (strings are immutable), which is true of every caller of the synchronous path too.
 //  - One worker per derivation, terminated when it answers or fails: nothing keeps key material or 64 MiB alive between uses.
 //  - Where no worker can be had (no Worker global, as in node tests; or the browser refuses to start one) the SAME derivation runs on the calling
-//    thread. That keeps a backup possible; it also means a policy that blocks the worker shows up as a freeze, which the browser test for this
+//    thread, and ONLY then (a worker that started and died is a failure, not a retry on the page). That keeps a backup possible; it also means a policy that blocks the worker shows up as a freeze, which the browser test for this
 //    file measures, not as a failure.
 
 import { assertParamsWithinLimits, deriveKeyArgon2id } from './kdf';
-import { ARGON2_FAILED, type Argon2Request, type Argon2Response } from './argon2-worker-core';
+import { ARGON2_FAILED, type Argon2Request, type Argon2Response, type Argon2Ready } from './argon2-worker-core';
 
 export interface Argon2WorkerLike {
   onmessage: ((ev: { data: unknown }) => void) | null;
@@ -60,13 +60,17 @@ export async function deriveKeyArgon2idOffThread(
       try { resolve(deriveKeyArgon2id(passphrase, salt, params)); } catch (e) { reject(e); }
     });
 
+    let started = false;
     w.onmessage = (ev) => {
-      const res = ev.data as Argon2Response | undefined;
-      if (res && res.ok === true && res.key instanceof ArrayBuffer) finish(() => resolve(new Uint8Array(res.key)));
+      // Whatever a worker sends is untrusted shape: property reads only (never `in`, which throws on a primitive).
+      const res = ev.data as Partial<Argon2Response & Argon2Ready> | null | undefined;
+      if (res && res.ready === true) { started = true; return; }
+      if (res && res.ok === true && res.key instanceof ArrayBuffer) { const key = res.key; finish(() => resolve(new Uint8Array(key))); }
       else finish(() => reject(new Error(res && res.ok === false && typeof res.reason === 'string' ? res.reason : ARGON2_FAILED)));
     };
-    // The worker could not load or start (e.g. the page's policy refused it): same derivation, this thread.
-    w.onerror = onThisThread;
+    // An error BEFORE the worker said it started means it could not load or start (e.g. the page's policy refused it): same derivation, this thread. An
+    // error AFTER it started means it ran and died (an out-of-memory worker, say): never re-run 64 MiB on the page, which could take the tab with it.
+    w.onerror = () => { if (!started) onThisThread(); else finish(() => reject(new Error(ARGON2_FAILED))); };
     w.onmessageerror = () => finish(() => reject(new Error(ARGON2_FAILED)));
 
     // Copies that are exactly the bytes (a view onto a larger buffer would send the whole buffer); the original passphrase bytes are wiped here, and the

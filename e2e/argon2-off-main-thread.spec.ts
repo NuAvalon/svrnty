@@ -48,7 +48,11 @@ const PROBE = () => {
       const span: [number, number | null] = [performance.now(), null];
       p.spans.push(span);
       const end = () => { if (span[1] === null) span[1] = performance.now(); };
-      this.addEventListener('message', end); this.addEventListener('error', end);
+      // a worker's first message is its "ready" note; the derivation is over at its answer (a message that carries `ok`), an error, or when the page terminates it
+      this.addEventListener('message', (e) => { const d = (e as MessageEvent).data; if (d && typeof d === 'object' && 'ok' in d) end(); });
+      this.addEventListener('error', end);
+      const terminate = this.terminate.bind(this);
+      this.terminate = () => { end(); terminate(); };
     }
   } as typeof Worker;
 };
