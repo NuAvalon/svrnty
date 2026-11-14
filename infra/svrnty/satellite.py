@@ -1689,7 +1689,6 @@ async def export_satellite(fingerprint: str, x_signature: Optional[str] = Header
             zf.writestr('crypto_utils.py', crypto_src)
             zf.writestr('registration.py', registration_src)
             # registration UI (COPY'd by Dockerfile.registration)
-            zf.writestr('landing.html', (src_dir / "landing.html").read_text())
             zf.writestr('profile.html', (src_dir / "profile.html").read_text())
             zf.writestr('about.html', (src_dir / "about.html").read_text())
 
