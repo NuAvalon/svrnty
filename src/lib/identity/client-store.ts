@@ -21,6 +21,7 @@ import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './b
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
+import { assertFingerprintUnchanged } from './contact-identity';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -1381,7 +1382,9 @@ export function mergeContactUpdate(existing: ContactRecord, updates: ContactUpda
  * The gates a finished contact record must pass before it is stored. They run on every attempt of a write, on the record that attempt
  * decided from. Throws to refuse.
  */
-async function finalizeContactUpdate(existing: ContactRecord, next: ContactRecord): Promise<ContactRecord> {
+export async function finalizeContactUpdate(existing: ContactRecord, next: ContactRecord): Promise<ContactRecord> {
+  // #724: a row's fingerprint is its identity; trust + visibility hang off the row, so an update may never replace it.
+  assertFingerprintUnchanged(existing.fingerprint, next.fingerprint);
   const pk = (next.public_key || '').trim();
   // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
   if (!pk) {
