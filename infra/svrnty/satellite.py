@@ -1283,43 +1283,13 @@ async def register_identity(req: RegisterRequest):
                     detail="already registered (idempotent re-announce)"
                 )
 
-            # SECURITY: a genuine key rotation requires a signature from the EXISTING
-            # key. Without this, anyone who knows a fingerprint could replace the key.
-            if not req.signature:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Key rotation requires signature from existing key"
-                )
-            if not verify_request_signature(req.fingerprint, req.signature, db):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Invalid signature — prove you own the existing key before rotating"
-                )
-            old_key = existing["public_key"] if "public_key" in existing.keys() else None
-            db.execute(
-                """UPDATE identities SET public_key = ?, signing_pk = ?, encryption_pk = ?,
-                   pq_kem_pk = ?, pq_sig_pk = ?, crypto_version = ?,
-                   display_name = ?, name = ?, satellite_url = ?, safeword = ?, last_seen = ?
-                   WHERE fingerprint = ?""",
-                (req.public_key, req.public_key, req.encryption_pk,
-                 req.pq_kem_pk, req.pq_sig_pk, req.crypto_version or "classical",
-                 req.display_name, req.display_name, req.satellite_url, req.safeword,
-                 now_iso(), req.fingerprint)
+            # Key rotation through /register is disabled: an existing identity's keys are never changed here. No
+            # client sends a key change to this endpoint; an identical re-announce is handled above (409). Rotation
+            # returns only with a signature bound to the new keys plus a replay guard, in its own reviewed change.
+            raise HTTPException(
+                status_code=403,
+                detail="Key rotation through /register is disabled"
             )
-            # Log rotation in append-only rotation_log
-            announcement = json.dumps({
-                "type": "key_rotation",
-                "fingerprint": req.fingerprint,
-                "reason": "voluntary",
-                "timestamp": now_iso(),
-            })
-            db.execute(
-                """INSERT INTO rotation_log
-                   (old_fingerprint, new_fingerprint, reason, announcement, signature)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (req.fingerprint, req.fingerprint, "voluntary", announcement, req.signature)
-            )
-            audit(db, "key_rotation", req.fingerprint)
         else:
             # SECURITY (C-1): Verify fingerprint is derived from public keys.
             # Three valid formats:
