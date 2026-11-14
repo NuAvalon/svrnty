@@ -54,7 +54,7 @@ async function restoreAndReadError(browser: Browser, file: string, password: str
   const page = await ctx.newPage();
   await page.goto('/');
   await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await page.setInputFiles('input[accept=".svrnty,.json"]', file);
+  await page.setInputFiles('[data-testid="restore-file-input"]', file);
   await page.getByPlaceholder('Encryption password from export').fill(password);
   await page.getByRole('button', { name: /^(open vault|restore identity)$/i }).click();
   const error = page.getByText(/Incorrect encryption password|could not be saved on this device|does not read|could not be restored/i).first();
@@ -132,11 +132,28 @@ test('4. a KEY-ONLY file restored on a fresh device says what it did and what it
   const page = await ctx.newPage();
   await page.goto('/');
   await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await page.setInputFiles('input[accept=".svrnty,.json"]', file);
+  await page.setInputFiles('[data-testid="restore-file-input"]', file);
   await page.getByPlaceholder('Encryption password from export').fill(FILE_PW);
   await page.getByRole('button', { name: /^(open vault|restore identity)$/i }).click();
   await page.waitForTimeout(8_000);
   console.log(`[restore-honesty] key-only restore, screen after 8 s:\n${(await page.locator('body').innerText()).replace(/\n{2,}/g, '\n')}`);
   await expect(page.getByText(KEY_ONLY_SENTENCE)).toBeVisible({ timeout: 15_000 });
+  await ctx.close();
+});
+
+test('5. the app\'s own key export (named *.svrnty-keys) is accepted by the picker and opens as a key backup', async ({ browser }, testInfo) => {
+  const b = backup as { identity?: { identity?: { fingerprint?: string } }; keys?: { privateKey?: string; passphrase?: string } };
+  const fingerprint = b.identity?.identity?.fingerprint;
+  const file = testInfo.outputPath(`svrnty-keys-2026-11-14.svrnty-keys`);
+  writeFileSync(file, JSON.stringify(oldFormat(JSON.stringify({ fingerprint, privateKey: b.keys!.privateKey, passphrase: b.keys!.passphrase ?? '' }), FILE_PW, { type: 'svrnty-keys', version: '1.0', fingerprint })));
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
+  // the picker offers the file: its extension is in the accept list
+  expect(await page.locator('[data-testid="restore-file-input"]').getAttribute('accept')).toContain('.svrnty-keys');
+  await page.setInputFiles('[data-testid="restore-file-input"]', file);
+  // opened as a key backup (the password screen), not refused as a vault it cannot read
+  await expect(page.getByText(/encrypted key backup detected/i)).toBeVisible({ timeout: 15_000 });
   await ctx.close();
 });

@@ -78,7 +78,7 @@ async function openRestore(browser: Browser, file: string, password: string) {
   const page = await ctx.newPage();
   await page.goto('/');
   await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await page.setInputFiles('input[accept=".svrnty,.json"]', asJson(file));
+  await page.setInputFiles('[data-testid="restore-file-input"]', asJson(file));
   await page.getByPlaceholder('Encryption password from export').fill(password);
   return { ctx, page };
 }

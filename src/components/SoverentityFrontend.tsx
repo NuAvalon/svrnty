@@ -566,8 +566,10 @@ export function SoverentityFrontend({
     setRestoreOutcome(null);
 
     try {
-      // JSON-based backups (.json or .svrnty that are JSON inside)
-      if (file.name.endsWith('.json') || file.name.endsWith('.svrnty')) {
+      // JSON-based backups, decided by what the file CONTAINS, not by its name: the app's own key export is named *.svrnty-keys, and a renamed copy of
+      // any backup must still open. A binary .svrnty vault does not start with "{", so it still goes to the vault reader below.
+      const head = new TextDecoder().decode(new Uint8Array(await file.slice(0, 64).arrayBuffer())).trimStart();
+      if (head.startsWith('{') || file.name.endsWith('.json')) {
         const text = await file.text();
         let data: any;
         try { data = JSON.parse(text); } catch { data = null; }
@@ -1202,7 +1204,8 @@ export function SoverentityFrontend({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".svrnty,.json"
+            accept=".svrnty,.svrnty-keys,.json"
+            data-testid="restore-file-input"
             onChange={handleFileSelect}
             style={{ display: 'none' }}
           />

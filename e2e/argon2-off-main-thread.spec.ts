@@ -158,7 +158,7 @@ async function restore(browser: Browser) {
   const seen = watch(page);
   await page.goto('/');
   await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await page.setInputFiles('input[accept=".svrnty,.json"]', vaultPath);
+  await page.setInputFiles('[data-testid="restore-file-input"]', vaultPath);
   await page.getByPlaceholder('Encryption password from export').fill(EXPORT_PW);
   seen.workers.length = 0;
   await start(page);
