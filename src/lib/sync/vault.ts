@@ -86,6 +86,7 @@
 // extractRecoveryVault refuses it with an actionable "re-export to enable seed
 // recovery" message. Users must re-export once to gain passphrase-free recovery.
 
+import { RestoreThrow } from '../crypto/coded-error';
 import {
   type Argon2Params,
   defaultArgon2Params,
@@ -332,12 +333,13 @@ function serializeRecoveryEnvelope(recovery: unknown | null): Uint8Array {
  */
 function refuseLegacyOrUnknown(bytes: Uint8Array): never {
   if (magicMatches(bytes, MAGIC_V2)) {
-    throw new Error(
+    throw new RestoreThrow(
+      'vault-legacy-v2',
       'This is a legacy v2 vault, no longer supported. Open your identity and ' +
         'export a fresh vault to upgrade it to the current format.',
     );
   }
-  throw new Error('Not a valid .svrnty vault file');
+  throw new RestoreThrow('vault-not-a-vault', 'Not a valid .svrnty vault file');
 }
 
 // --- Vault Serialization ---
@@ -449,7 +451,13 @@ export function readVaultHeader(data: ArrayBuffer): VaultHeader {
   const headerLen = readHeaderLen(bytes);
   const headerStart = MAGIC_LEN + HEADER_LEN_SIZE;
   const headerBytes = bytes.slice(headerStart, headerStart + headerLen);
-  const header = JSON.parse(new TextDecoder().decode(headerBytes));
+  // The platform's JSON error is not shown to anyone: a header that does not parse is a file that is not a vault this app can read.
+  let header: { format?: unknown; version?: unknown };
+  try {
+    header = JSON.parse(new TextDecoder().decode(headerBytes));
+  } catch {
+    throw new RestoreThrow('vault-not-a-vault', 'Not a valid .svrnty vault file — unreadable header');
+  }
 
   if (header.format !== 'svrnty-vault' || (header.version !== 3 && header.version !== 4)) {
     throw new VaultUnsupportedFormat(`Unsupported vault format: ${header.format} v${header.version}`);
@@ -542,7 +550,8 @@ export function extractRecoveryVault(data: ArrayBuffer): KeyVault {
   const bytes = new Uint8Array(data);
 
   if (magicMatches(bytes, MAGIC_V3)) {
-    throw new Error(
+    throw new RestoreThrow(
+      'vault-v3-no-recovery',
       'This backup predates seed recovery (v3). It can be restored only with ' +
         'its passphrase. Open your identity and re-export to enable ' +
         'passphrase-free recovery.',
@@ -556,22 +565,23 @@ export function extractRecoveryVault(data: ArrayBuffer): KeyVault {
   // Bounds-check every step — a truncated/hostile file must fail closed, never
   // read past the buffer or return a partial envelope.
   if (bytes.length < MAGIC_LEN + HEADER_LEN_SIZE) {
-    throw new Error('Corrupted .svrnty file — truncated header');
+    throw new RestoreThrow('vault-truncated', 'Corrupted .svrnty file — truncated header');
   }
   const headerLen = readHeaderLen(bytes);
   const bodyLenOffset = MAGIC_LEN + HEADER_LEN_SIZE + headerLen;
   if (bytes.length < bodyLenOffset + BODY_LEN_SIZE) {
-    throw new Error('Corrupted .svrnty file — truncated body length');
+    throw new RestoreThrow('vault-truncated', 'Corrupted .svrnty file — truncated body length');
   }
   const bodyLen = readUint32BE(bytes, bodyLenOffset);
   const recoveryStart = bodyLenOffset + BODY_LEN_SIZE + bodyLen;
   if (bytes.length < recoveryStart) {
-    throw new Error('Corrupted .svrnty file — truncated body');
+    throw new RestoreThrow('vault-truncated', 'Corrupted .svrnty file — truncated body');
   }
 
   const recoveryBytes = bytes.slice(recoveryStart);
   if (recoveryBytes.length === 0) {
-    throw new Error(
+    throw new RestoreThrow(
+      'vault-no-recovery',
       'This backup has no recovery vault — seed/guardian recovery was not set ' +
         'up for this identity.',
     );
@@ -581,10 +591,10 @@ export function extractRecoveryVault(data: ArrayBuffer): KeyVault {
   try {
     parsed = JSON.parse(new TextDecoder().decode(recoveryBytes));
   } catch {
-    throw new Error('The recovery vault in this backup is unreadable (corrupted).');
+    throw new RestoreThrow('vault-recovery-unreadable', 'The recovery vault in this backup is unreadable (corrupted).');
   }
   if (!isKeyVaultLike(parsed)) {
-    throw new Error('The recovery vault in this backup is malformed.');
+    throw new RestoreThrow('vault-recovery-unreadable', 'The recovery vault in this backup is malformed.');
   }
   return parsed;
 }

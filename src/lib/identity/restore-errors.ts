@@ -41,6 +41,14 @@ export type RestoreFailureCode =
   | 'stopped-partway'
   | 'stopped-nothing-saved'
   | 'may-have-saved'
+  | 'wrong-recovery-code'
+  | 'malformed-recovery-code'
+  | 'file-truncated'
+  | 'backup-unreadable'
+  | 'older-identity-format'
+  | 'legacy-v2'
+  | 'v3-no-recovery'
+  | 'no-recovery-vault'
   | 'unknown';
 
 export interface RestoreFailure { code: RestoreFailureCode; message: string }
@@ -64,6 +72,16 @@ export const RESTORE_MESSAGES = Object.freeze({
   keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
   unsupportedFormat: "This backup uses a format this version of the app can't read.",
   unrecognizedFormat: "This app can't open this file. It isn't a backup it recognizes.",
+  // The recovery-code (seed) restore: decided by the thrower's code (coded-error.ts), copy rows 181-183.
+  wrongRecoveryCode: "That recovery code doesn't match this backup.",
+  malformedRecoveryCode: "That recovery code isn't in the right form. Check it and enter it again.",
+  fileTruncated: "This file ends too early to be a complete backup, so it can't be restored. If you have another copy, try that one.",
+  backupPartUnreadable: "Part of this backup can't be read, so it can't be restored. If you have another copy, try that one.",
+  olderIdentityFormat: "This backup uses an older identity format that this version of the app can't restore.",
+  legacyV2: 'This backup uses an old format this app no longer opens. If your identity is still open on another device, make a new backup there.',
+  // These two name the button of the passphrase path on the same screen; restore-errors.test.ts pins the label so they change together.
+  v3NoRecovery: "This backup was made before recovery codes existed, so it can't be restored with a recovery code. Use its passphrase with Restore identity instead.",
+  noRecoveryVault: "Recovery codes weren't set up for this backup, so it can't be restored with a recovery code. Use its passphrase with Restore identity instead.",
   unknown: "Something went wrong and the restore didn't finish.",
 });
 
@@ -75,6 +93,8 @@ export const RESTORE_MESSAGES = Object.freeze({
  *  - EnvelopeRefused by its code: a method or settings this version will not run (unknown-kdf, unsafe-params) is an unsupported format; a file that is not an
  *    envelope or lacks a field (not-an-envelope, bad-field) is a file the app does not recognise;
  *  - the typed needs-device-passphrase, unsupported-format and unrecognized-format errors each have their own sentence;
+ *  - the recovery-code restore's own codes (coded-error.ts) each have their own sentence (a platform SyntaxError is NOT classified here: the one place a header
+ *    fails to parse, readVaultHeader, rethrows it as a coded error);
  *  - anything else is 'unknown': one generic sentence.
  */
 export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } = {}): RestoreFailure {
@@ -94,6 +114,16 @@ export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } 
   if (codeOf(err) === 'needs-device-passphrase') return { code: 'needs-device-passphrase', message: RESTORE_MESSAGES.needsDevicePassphrase };
   if (codeOf(err) === 'vault-unsupported') return { code: 'unsupported-format', message: RESTORE_MESSAGES.unsupportedFormat };
   if (codeOf(err) === 'restore-format-unrecognized') return { code: 'unrecognized-format', message: RESTORE_MESSAGES.unrecognizedFormat };
+  const thrown = codeOf(err);
+  if (thrown === 'recovery-code-wrong') return { code: 'wrong-recovery-code', message: RESTORE_MESSAGES.wrongRecoveryCode };
+  if (thrown === 'recovery-code-malformed') return { code: 'malformed-recovery-code', message: RESTORE_MESSAGES.malformedRecoveryCode };
+  if (thrown === 'vault-truncated') return { code: 'file-truncated', message: RESTORE_MESSAGES.fileTruncated };
+  if (thrown === 'vault-recovery-unreadable') return { code: 'backup-unreadable', message: RESTORE_MESSAGES.backupPartUnreadable };
+  if (thrown === 'vault-not-a-vault') return { code: 'unrecognized-format', message: RESTORE_MESSAGES.unrecognizedFormat };
+  if (thrown === 'identity-older-format') return { code: 'older-identity-format', message: RESTORE_MESSAGES.olderIdentityFormat };
+  if (thrown === 'vault-legacy-v2') return { code: 'legacy-v2', message: RESTORE_MESSAGES.legacyV2 };
+  if (thrown === 'vault-v3-no-recovery') return { code: 'v3-no-recovery', message: RESTORE_MESSAGES.v3NoRecovery };
+  if (thrown === 'vault-no-recovery') return { code: 'no-recovery-vault', message: RESTORE_MESSAGES.noRecoveryVault };
   return { code: 'unknown', message: RESTORE_MESSAGES.unknown };
 }
 
