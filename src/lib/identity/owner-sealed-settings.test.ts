@@ -42,13 +42,16 @@ test('S2 the list has no duplicate name, id or key, and its ids are the reserved
   assert.equal(new Set(listed.map((l) => l.name)).size, listed.length, 'names are unique');
   assert.equal(new Set(listed.map((l) => l.recordId)).size, listed.length, 'record ids are unique');
   assert.equal(new Set(listed.map((l) => l.settingKey)).size, listed.length, 'setting keys are unique');
-  assert.deepEqual(listed.map((l) => l.name), ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key']);
+  assert.deepEqual(listed.map((l) => l.name), ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed']);
   for (const l of listed) assert.match(store, new RegExp(`const ${l.recordId} = '[a-z0-9]+:[a-z-]+';`), `${l.recordId} is a reserved id constant`);
 });
 
-test('S3 the contact-row path is the only other sealed write, and it uses the row id, not a reserved one', () => {
+test('S3 the sealed writes that are NOT a listed record are exactly two: the contact row (its own id) and the beacon ports\' sealer (a caller-chosen AAD for the pair and latch rows)', () => {
   const m = [...store.matchAll(/encryptContactRecord\(\s*_sessionKey\s*,\s*([a-z][A-Za-z0-9_]*)\s*,/g)].map((x) => x[1]);
-  assert.deepEqual(m, ['id'], 'one lowercase-id call site: the contact row');
+  assert.deepEqual(m, ['id', 'aad'], 'the contact row, then the beacon sealer: a third lowercase-id site must be classified and covered by the restore check before it is added here');
+  const a = store.indexOf('function beaconSessionSealer(');
+  assert.ok(a >= 0, 'the sealer exists');
+  assert.match(store.slice(a, store.indexOf('\n}\n', a)), /encryptContactRecord\(\s*_sessionKey\s*,\s*aad\s*,/, 'the aad site is the beacon sealer');
 });
 
 test('S4 every encryptContactRecord( call in src/ is one S1 or S3 recognises (a call with another key variable, or a lowercase id, cannot slip past them)', () => {
@@ -63,4 +66,30 @@ test('S4 every encryptContactRecord( call in src/ is one S1 or S3 recognises (a 
   }
   assert.ok(all >= 7, `the calls are found (found ${all})`);
   assert.equal(all, s1 + s3, `${all} encryptContactRecord( calls in src/ but S1 and S3 recognise ${s1 + s3}: a sealed record written another way is not covered by the list`);
+});
+
+// ---- the restore's passphrase check also opens EVERY beacon pair and latch row (collections, not single records) ----
+const codeOnlyText = (text: string) => text.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+const checkBody = (() => {
+  const a = store.indexOf('export async function passphraseOpensEveryHeldKeyRecord');
+  assert.ok(a >= 0, 'the check exists');
+  return codeOnlyText(store.slice(a, store.indexOf('\n}\n', a)));
+})();
+
+test('S5 the passphrase check opens EVERY row of both beacon collections with the ports\' own AAD, refuses a row it cannot map or open, and counts these rows by themselves (a device with latch rows and NO contacts is still checked)', () => {
+  assert.match(checkBody, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\)/, 'both collections are enumerated');
+  assert.match(checkBody, /for \(const key of await txKeysWithPrefix\('settings', prefix\)\) \{/, 'EVERY key of the collection (no slice, no first-only)');
+  assert.match(checkBody, /beaconRowAad\(fingerprint, key\)/, 'the AAD comes from the ports\' one definition');
+  assert.match(checkBody, /if \(encryptedContacts\.length > 0 \|\| heldSealed\.length > 0 \|\| heldBeacon\.length > 0\) \{/, 'a device holding ONLY beacon rows enters the check (no contacts, no listed record)');
+  assert.match(checkBody, /for \(const held of heldBeacon\) \{\s*if \(held\.aad === null \|\| typeof held\.raw !== 'string'\) return false;/, 'a row that cannot be mapped or is not a string refuses');
+  assert.match(checkBody, /decryptContactRecord\(key, held\.aad, fingerprint,/, 'EVERY row is opened under the candidate key (not one per collection)');
+});
+
+test('S6 the beacon row AAD has ONE definition, in beacon-ports.ts: client-store builds none of its own', () => {
+  assert.doesNotMatch(codeOnlyText(store), /beacon-(pair|latch):/, 'no AAD template in client-store.ts');
+  const ports = codeOnlyText(readFileSync(new URL('../trust/beacon-ports.ts', import.meta.url), 'utf8'));
+  assert.equal(ports.split('`beacon-pair:${').length - 1, 1, 'one pair AAD builder');
+  assert.equal(ports.split('`beacon-latch:${').length - 1, 1, 'one latch AAD builder');
+  assert.match(ports, /const aadOf = \(pairId: string\) => pairAad\(owner, pairId\);/, 'the store uses the shared builder');
+  assert.match(ports, /const aadOf = \(source: Source, pairId: string\) => latchAad\(owner, source, pairId\);/, 'the latch uses the shared builder');
 });

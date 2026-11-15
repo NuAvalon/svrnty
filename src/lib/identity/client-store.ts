@@ -19,7 +19,7 @@ import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type Delivery
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
-import { createBeaconStore, createBeaconLatch, type BeaconKV, type Sealer } from '../trust/beacon-ports';
+import { createBeaconStore, createBeaconLatch, beaconRowPrefixes, beaconRowAad, type BeaconKV, type Sealer } from '../trust/beacon-ports';
 import { isBeaconConfirmed, withConfirmed, createConfirmedPort, type BeaconConfirmed } from '../trust/beacon-confirmed';
 import { beaconPairId } from '../trust/beacon-pair-id';
 import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/beacon-client';
@@ -1040,6 +1040,17 @@ export async function importBeaconKeyRecord(ownerFingerprint: string, candidate:
  * EVERY owner-sealed record in `settings`: a payload under the session key, a reserved id, and the owner as authenticated data. This list is the one place
  * that names them: the restore's passphrase check opens each one that is present, and its before/after snapshot compares each one. A new sealed record MUST be
  * added here; a static test fails when an encryptContactRecord(_sessionKey, <ID>, ...) call site uses an id that is not listed.
+ *
+ * THE BEACON ROWS, CLASSIFIED for the go-live gate. None of them is in the backup, so on a fresh device each starts empty. CACHE = rebuilt or re-earned with nothing
+ * weakened. TIGHTENING = it records a stop, so losing it silently loosens. Read from the code; no restore-a-removed-pair test pins this yet (that is the gate's job).
+ *  - latch rows (beacon_latch:<owner>:local|remote:<pair>, sealed with a caller-chosen AAD, not listed above because they are a collection): TIGHTENING. A 'removed' latch is the
+ *    Remove / Block stop, and a Remove made while the switch is off is recorded here too (the local latch, beacon-wire.ts). Every row is opened by the restore check below.
+ *  - pair rows (beacon_pair:<owner>:<pair>, same collection rule): MIXED, so treat as TIGHTENING. pendingWithdraws (a deposit still owed a withdrawal), spentEpochs (an epoch
+ *    whose slot was withdrawn is never deposited again) and the deletion tombstones are stops; refusedEpochs, firstMatchEpoch and observedMatch are caches or facts, not stops.
+ *  - 'beacon-seeds': not a tightening itself but the secret that SIGNS a later withdraw. Without it a deposit already made cannot be withdrawn from this device; after a
+ *    restore the client re-deposits (beacon-seeds.ts). Whether the relay still holds such a deposit, and for how long, is not checked here.
+ *  - 'beacon-key': this device's own key material, neither. The restore path imports it only when none is held (importBeaconKeyRecord).
+ *  - 'beacon-confirmed': a permission, not a stop. Absent means no request is made for the pair, so losing it is safe (the pair has to be confirmed again).
  */
 export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: string; settingKey: (ownerFingerprint: string) => string }> = [
   { name: 'suppression', recordId: SUPPRESSION_RECORD_ID, settingKey: suppressionSettingKey },
@@ -1048,6 +1059,7 @@ export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: stri
   { name: 'lens-book', recordId: LENS_BOOK_RECORD_ID, settingKey: lensBookSettingKey },
   { name: 'beacon-seeds', recordId: BEACON_SEEDS_RECORD_ID, settingKey: beaconSeedsSettingKey },
   { name: 'beacon-key', recordId: BEACON_KEY_RECORD_ID, settingKey: beaconKeySettingKey },
+  { name: 'beacon-confirmed', recordId: BEACON_CONFIRMED_RECORD_ID, settingKey: beaconConfirmedSettingKey },
 ];
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
@@ -1164,7 +1176,7 @@ export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
 }
 
 /**
- * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, and every OWNER_SEALED_SETTINGS record)?
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, every OWNER_SEALED_SETTINGS record, and EVERY beacon pair and latch row)?
  * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
  * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
  * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
@@ -1195,7 +1207,18 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
     const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
     if (row?.value) heldSealed.push({ recordId: sealed.recordId, value: row.value });
   }
-  if (encryptedContacts.length > 0 || heldSealed.length > 0) {
+  // The beacon pair and latch rows (beacon-ports.ts) are in the passphrase domain too, and they are COLLECTIONS, so each row is opened, not one per collection. Why it
+  // matters: a pair id is derived from the passphrase, so a restore that changes the passphrase-derived keys on a device holding latch rows would orphan every row (the
+  // lookups find nothing, read "no latch", and a Block would silently stop applying). A row that exists but cannot be mapped to its AAD or opened refuses the restore.
+  // These rows count by themselves: a device with latch rows and NO contacts (a Remove deletes the contact and keeps the latch) is still checked.
+  const heldBeacon: Array<{ aad: string | null; raw: unknown }> = [];
+  for (const prefix of beaconRowPrefixes(fingerprint)) {
+    for (const key of await txKeysWithPrefix('settings', prefix)) {
+      const row = await txGet<{ key: string; value?: unknown }>('settings', key);
+      if (row) heldBeacon.push({ aad: beaconRowAad(fingerprint, key), raw: row.value });
+    }
+  }
+  if (encryptedContacts.length > 0 || heldSealed.length > 0 || heldBeacon.length > 0) {
     const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
     if (!setting?.value) return false;
     try {
@@ -1209,6 +1232,13 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
       for (const held of heldSealed) {
         if (typeof held.value.iv !== 'string' || typeof held.value.ciphertext !== 'string') return false;
         await decryptContactRecord(key, held.recordId, fingerprint, { enc_version: held.value.enc_version, iv: held.value.iv, ciphertext: held.value.ciphertext });
+        opened++;
+      }
+      for (const held of heldBeacon) {
+        if (held.aad === null || typeof held.raw !== 'string') return false;
+        const payload = JSON.parse(held.raw) as { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null;
+        if (!payload || typeof payload.iv !== 'string' || typeof payload.ciphertext !== 'string') return false;
+        await decryptContactRecord(key, held.aad, fingerprint, { enc_version: payload.enc_version, iv: payload.iv, ciphertext: payload.ciphertext });
         opened++;
       }
     } catch {

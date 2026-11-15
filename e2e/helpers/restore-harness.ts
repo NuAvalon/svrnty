@@ -4,7 +4,8 @@
 import {
   initSessionKey, lockSession, exportAll, addContact, storeKey, storeVault, verifyPassphrase,
   loadIdentity, loadKey, loadPQKeys, loadDeviceMailbox, getAllContacts, storeIdentity, storeDeviceMailbox, writeDeliveryDefault,
-  setSuppressionRecord, setHeldAffirmatives, writeLensGrantBook, setBeaconSeeds, ensureBeaconKeyRecord,
+  setSuppressionRecord, setHeldAffirmatives, writeLensGrantBook, setBeaconSeedsUnsafeForTest, ensureBeaconKeyRecord,
+  markBeaconPairConfirmed, createBeaconPorts,
 } from '@/lib/identity/client-store';
 import { serializeMailboxKeypair } from '@/lib/crypto/mailbox-keys';
 import { emptySuppression } from '@/lib/trust/suppression';
@@ -44,9 +45,31 @@ window.__rh = {
     if (name === 'suppression') await setSuppressionRecord(fp, emptySuppression());
     else if (name === 'held-affirms') await setHeldAffirmatives(fp, {});
     else if (name === 'lens-book') await writeLensGrantBook(fp, '{}');
-    else if (name === 'beacon-seeds') await setBeaconSeeds(fp, {});
+    else if (name === 'beacon-seeds') await setBeaconSeedsUnsafeForTest(fp, {});
     else if (name === 'beacon-key') await ensureBeaconKeyRecord(fp);
+    // The ONLY test caller of the confirm writer: a confirmed row is the record under test here, and no product code path may write one.
+    else if (name === 'beacon-confirmed') await markBeaconPairConfirmed(fp, '4c'.repeat(32), 1);
     else throw new Error(`unknown sealed record ${name}`);
+    lockSession(); return true;
+  },
+  /** The key under `pwA`, and ONE beacon row (a pair record, or a local / remote latch) written by the app's own ports under `pwB`. pwA === pwB makes it the one-domain control. */
+  async seedKeyAndBeaconRow(fp: string, keys: { privateKey: string; passphrase: string }, pwA: string, pwB: string, kind: 'pair' | 'latch-local' | 'latch-remote') {
+    await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase);
+    await initSessionKey(pwB);
+    const ports = createBeaconPorts(fp);
+    const pairId = 'a1'.repeat(32);
+    if (kind === 'pair') {
+      const wrote = await ports.store.cas(pairId, 0, { pairId, observedMatch: false, spentEpochs: [], refusedEpochs: [], rows: [], pendingWithdraws: [], version: 1 });
+      if (!wrote) throw new Error('the pair row was not written');
+    } else await ports.latch.setLatched(pairId, kind === 'latch-local' ? 'local' : 'remote');
+    lockSession(); return true;
+  },
+  /** The key and a LOCAL latch row under `pwA`, and a second, REMOTE latch row under `pwB`: two rows of ONE collection, the first (in key order) openable under the key's passphrase. */
+  async seedKeyAndTwoLatchRows(fp: string, keys: { privateKey: string; passphrase: string }, pwA: string, pwB: string) {
+    await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase);
+    await createBeaconPorts(fp).latch.setLatched('a1'.repeat(32), 'local');
+    await initSessionKey(pwB);
+    await createBeaconPorts(fp).latch.setLatched('b2'.repeat(32), 'remote');
     lockSession(); return true;
   },
   async verify(fp: string, pw: string) { return verifyPassphrase(fp, pw); },

@@ -95,6 +95,7 @@ const rel = (p: string) => p.replace(/\\/g, '/').split('/src/').pop();
 const namersOf = (files: { path: string; text: string }[], re: RegExp) => files.filter((f) => re.test(codeOnly(f.text))).map((f) => rel(f.path)).sort();
 
 test('C8 NO SOURCE CONFIRMS A PAIR: only the store names the confirm writer, so no import path, no screen, no ceremony and not the WIRE can confirm (the guard FIRES on a synthetic caller, CONTROL)', () => {
+  // src/ only: e2e/helpers/restore-harness.ts holds the ONLY test caller (it seeds a confirmed row to prove the restore's passphrase check opens it); no product file imports it.
   const RE = /\bmarkBeaconPairConfirmed\b/;
   assert.deepEqual(namersOf([{ path: '/x/src/components/JoinerCeremony.tsx', text: 'await markBeaconPairConfirmed(o, f, 3);' }, { path: '/x/src/c.ts', text: '// markBeaconPairConfirmed is for a bound ceremony' }], RE), ['components/JoinerCeremony.tsx']);
   assert.deepEqual(namersOf(SRC, RE), ['lib/identity/client-store.ts']);

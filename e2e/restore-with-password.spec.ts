@@ -323,7 +323,7 @@ test('n. a device with NO contacts whose receipts default is under another passp
 });
 
 // Every owner-sealed settings record other than the receipts default (cases l, n, m): held ALONE under one passphrase beside the key under another, a restore under either is refused.
-for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds', 'beacon-key']) {
+for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed']) {
   test(`o. owner-sealed record "${sealed}" under another passphrase than the key: a restore under either passphrase is refused, and nothing changes`, async ({ browser }, testInfo) => {
     const { ctx, page } = await newPage(browser);
     await rh(page, 'seedKeyAndSealed', fp, backup.keys, UNLOCK_PW, OTHER_PW, sealed);
@@ -343,6 +343,63 @@ for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds'
     await ctx.close();
   });
 }
+
+// The beacon pair and latch rows are COLLECTIONS under the same passphrase domain: a restore that changed the passphrase-derived keys on a device holding them would orphan every row
+// (the pair id is derived from the passphrase), and a Block would silently stop applying. Each kind, held ALONE (no contact row) under one passphrase beside the key under another: refused.
+const BEACON_KINDS = ['pair', 'latch-local', 'latch-remote'] as const;
+for (const kind of BEACON_KINDS) {
+  test(`p. beacon row "${kind}" under another passphrase than the key (and no contact at all): a restore under either passphrase is refused, and nothing changes`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedKeyAndBeaconRow', fp, backup.keys, UNLOCK_PW, OTHER_PW, kind);
+    await page.reload();
+    const keysBefore = await ownerSettingKeys(page, fp);
+    expect(keysBefore.filter((k) => k.startsWith('beacon_')).length, `the ${kind} row is on the device`).toBe(1);
+    const stBefore = await deviceState(page);
+    expect(stBefore.contacts, 'no contact row: the beacon row alone makes the two domains').toBe(0);
+    for (const pw of [UNLOCK_PW, OTHER_PW]) {
+      const file = writeFull(testInfo, `full-p-${kind}-${pw.slice(0, 4)}.json`, noVault(), pw);
+      await page.reload();
+      expect(await restoreWith(page, file, pw), `${kind}: restore under ${pw.slice(0, 4)}…`).toBe('error');
+      await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+      expect(await deviceState(page)).toEqual(stBefore);
+      expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+    }
+    await ctx.close();
+  });
+
+  // CONTROL: the same device with the beacon row under the SAME passphrase as the key is NOT refused, so the refusal above is the domain check and not the mere presence of a beacon row; and the restore leaves the row alone.
+  test(`r. CONTROL: beacon row "${kind}" under the SAME passphrase as the key: the restore under it is accepted and the row is untouched`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedKeyAndBeaconRow', fp, backup.keys, UNLOCK_PW, UNLOCK_PW, kind);
+    await page.reload();
+    const keysBefore = (await ownerSettingKeys(page, fp)).filter((k) => k.startsWith('beacon_'));
+    expect(keysBefore.length, `the ${kind} row is on the device`).toBe(1);
+    const file = writeFull(testInfo, `full-r-${kind}.json`, noVault(), UNLOCK_PW);
+    await page.reload(); await page.addScriptTag({ content: HARNESS });
+    expect(await restoreWith(page, file, UNLOCK_PW), `${kind}: restore under the one passphrase`).toBe('restored');
+    expect((await ownerSettingKeys(page, fp)).filter((k) => k.startsWith('beacon_')), 'the restore did not touch the beacon row').toEqual(keysBefore);
+    await ctx.close();
+  });
+}
+
+// EVERY row, not one per collection: two latch rows, the first in key order under the key's passphrase and the second under another. A check that stops at the first row of the collection accepts this device.
+test('s. two latch rows, the first under the key\'s passphrase and the second under another: a restore under either passphrase is refused, and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedKeyAndTwoLatchRows', fp, backup.keys, UNLOCK_PW, OTHER_PW);
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  expect(keysBefore.filter((k) => k.startsWith('beacon_latch:')).length, 'both latch rows are on the device').toBe(2);
+  const stBefore = await deviceState(page);
+  for (const pw of [UNLOCK_PW, OTHER_PW]) {
+    const file = writeFull(testInfo, `full-s-${pw.slice(0, 4)}.json`, noVault(), pw);
+    await page.reload();
+    expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
+    await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    expect(await deviceState(page)).toEqual(stBefore);
+    expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+  }
+  await ctx.close();
+});
 
 test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);

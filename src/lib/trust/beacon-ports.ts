@@ -40,6 +40,40 @@ const need = (what: string, v: string): string => {
 
 const PAIR_PREFIX = 'beacon_pair:';
 const LATCH_PREFIX = 'beacon_latch:';
+
+// The ONE definition of the AAD each row is sealed under. The store, the latch and the restore's passphrase check (via beaconRowAad) all use these, so a row the
+// ports can open is a row the check can open, and the two cannot drift.
+const pairAad = (owner: string, pairId: string) => `beacon-pair:${owner}:${pairId}`;
+const latchAad = (owner: string, source: string, pairId: string) => `beacon-latch:${owner}:${source}:${pairId}`;
+
+/** The settings-key prefixes under which ONE owner's beacon rows live: the pair rows, then the latch rows. Empty for an owner this module would refuse to write for. */
+export function beaconRowPrefixes(owner: string): string[] {
+  return typeof owner === 'string' && ID.test(owner) ? [`${PAIR_PREFIX}${owner}:`, `${LATCH_PREFIX}${owner}:`] : [];
+}
+
+/**
+ * The AAD a stored row is sealed under, from its settings key, or null when the key is not one of THIS owner's pair or latch rows in the shape this module writes
+ * (another owner's key, an unknown source, an id outside the allowed set). The restore's passphrase check opens EVERY row under beaconRowPrefixes with this and
+ * refuses when one cannot be opened OR cannot be mapped: a row left under another passphrase would be orphaned by a restore that changes the keys (the pair id is
+ * derived from the passphrase), and a Block would silently stop applying.
+ */
+export function beaconRowAad(owner: string, key: string): string | null {
+  const [pair, latch] = beaconRowPrefixes(owner);
+  if (!pair || typeof key !== 'string') return null;
+  if (key.startsWith(pair)) {
+    const pairId = key.slice(pair.length);
+    return ID.test(pairId) ? pairAad(owner, pairId) : null;
+  }
+  if (key.startsWith(latch)) {
+    const rest = key.slice(latch.length);
+    const cut = rest.indexOf(':');
+    if (cut < 0) return null;
+    const source = rest.slice(0, cut);
+    const pairId = rest.slice(cut + 1);
+    return (source === 'local' || source === 'remote') && ID.test(pairId) ? latchAad(owner, source, pairId) : null;
+  }
+  return null;
+}
 const MAX_SWAP_ATTEMPTS = 8;
 
 const strs = (v: unknown): boolean => Array.isArray(v) && v.every((x) => typeof x === 'string');
@@ -65,7 +99,7 @@ export function createBeaconStore(kv: BeaconKV, sealer: Sealer, owner: string): 
   need('owner', owner);
   const prefix = `${PAIR_PREFIX}${owner}:`;
   const keyOf = (pairId: string) => prefix + need('pairId', pairId);
-  const aadOf = (pairId: string) => `beacon-pair:${owner}:${pairId}`;
+  const aadOf = (pairId: string) => pairAad(owner, pairId);
 
   /** The stored raw string and its opened record, or both undefined when absent. THROWS when something is there but cannot be read. */
   async function read(pairId: string): Promise<{ raw?: string; rec?: PairRecord }> {
@@ -115,7 +149,7 @@ type Source = 'local' | 'remote';
 export function createBeaconLatch(kv: BeaconKV, sealer: Sealer, owner: string): LatchPort {
   need('owner', owner);
   const keyOf = (source: Source, pairId: string) => `${LATCH_PREFIX}${owner}:${source}:${need('pairId', pairId)}`;
-  const aadOf = (source: Source, pairId: string) => `beacon-latch:${owner}:${source}:${pairId}`;
+  const aadOf = (source: Source, pairId: string) => latchAad(owner, source, pairId);
   const row = (kind: Kind) => ({ v: 1, kind });
 
   /** What an OPENED row says, or null when it cannot be opened or understood (locked session, garbage, unknown kind or version, wrong binding). Unlike kindFor, a failed

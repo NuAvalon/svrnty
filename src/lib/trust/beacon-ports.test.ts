@@ -4,7 +4,7 @@
 // another pair or owner does not open" is tested by behaviour. The real IndexedDB KV and the session-key sealer are glue, proven separately.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createBeaconStore, createBeaconLatch, isPairRecord, type BeaconKV, type Sealer } from './beacon-ports';
+import { createBeaconStore, createBeaconLatch, isPairRecord, beaconRowAad, beaconRowPrefixes, type BeaconKV, type Sealer } from './beacon-ports';
 import type { PairRecord } from '../crypto/beacon-client';
 
 /** `seed` turns on a deterministic jitter: every get yields a seeded number of ticks, so concurrent callers interleave differently per seed (a lockstep fake can never expose a check-then-act race). */
@@ -314,4 +314,46 @@ test('LT8 a row that cannot be understood (garbage, unknown kind, unknown versio
     assert.deepEqual(await s.open(aad, data.get(key)!), { v: 1, kind: 'removed' }, `${label}: the row now OPENS and says removed (not merely "reads as removed because it is garbage")`);
     assert.equal(await latch.kindOf('p1', 'local'), 'removed', label);
   }
+});
+
+// ---------- the row AAD the restore's passphrase check opens with (one definition, shared with the store and the latch) ----------
+test('RA1 beaconRowAad maps EVERY key the real store and latch write to exactly the AAD they sealed it under, and the stored blob opens under it (so the restore check can open any row the ports can)', async () => {
+  for (const owner of ['alice', 'a.b-c_1', '9f'.repeat(32)]) {
+    const { store, latch, data, s, seen } = make(owner);
+    assert.equal(await store.cas('p1', 0, rec('p1', 1)), true);
+    assert.equal(await store.cas('p.2-x', 0, rec('p.2-x', 1)), true);
+    await latch.setLatched('p1', 'local');
+    await latch.setLatched('p1', 'remote');
+    await latch.setLatched('p.2-x', 'local');
+    assert.equal(data.size, 5, `${owner}: two pair rows and three latch rows`);
+    const mapped = [...data.keys()].map((k) => beaconRowAad(owner, k));
+    assert.ok(mapped.every((a) => typeof a === 'string'), `${owner}: every key maps`);
+    assert.deepEqual([...new Set(mapped)].sort(), [...new Set(seen)].sort(), `${owner}: the mapped AADs are exactly the sealed AADs`);
+    for (const [k, blob] of data) await s.open(beaconRowAad(owner, k)!, blob); // throws on a wrong AAD: the sealer binds it for real
+  }
+});
+
+test('RA2 beaconRowPrefixes: both prefixes for a valid owner, every key the ports write starts with one of them, and nothing for an owner the ports would refuse', async () => {
+  const { store, latch, data } = make('alice');
+  await store.cas('p1', 0, rec('p1', 1));
+  await latch.setLatched('p1', 'local');
+  const prefixes = beaconRowPrefixes('alice');
+  assert.deepEqual(prefixes, ['beacon_pair:alice:', 'beacon_latch:alice:']);
+  for (const k of data.keys()) assert.equal(prefixes.filter((p) => k.startsWith(p)).length, 1, `${k} is under exactly one prefix`);
+  for (const bad of ['', 'a:b', 'x'.repeat(129), 'sp ace', undefined as unknown as string, 7 as unknown as string]) assert.deepEqual(beaconRowPrefixes(bad), [], `no prefix for owner ${String(bad).slice(0, 12)}`);
+});
+
+test('RA3 beaconRowAad answers null for anything that is not one of THIS owner\'s rows in the shape the ports write (another owner, a prefix look-alike, an unknown source, a missing source, a bad id, a foreign key, a non-string)', () => {
+  const ok = (k: string) => assert.equal(typeof beaconRowAad('alice', k), 'string', k);
+  const no = (k: unknown) => assert.equal(beaconRowAad('alice', k as string), null, String(k));
+  ok('beacon_pair:alice:p1'); ok('beacon_latch:alice:local:p1'); ok('beacon_latch:alice:remote:p1');
+  no('beacon_pair:bob:p1'); no('beacon_latch:bob:local:p1');          // another owner
+  no('beacon_pair:alice2:p1'); no('beacon_latch:alice2:local:p1');    // an owner whose name starts with ours: the ':' ends the prefix
+  no('beacon_latch:alice:frozen:p1'); no('beacon_latch:alice:Local:p1'); // an unknown source
+  no('beacon_latch:alice:p1');                                        // a missing source
+  no('beacon_pair:alice:'); no('beacon_pair:alice:a:b'); no('beacon_pair:alice:sp ace'); no(`beacon_pair:alice:${'x'.repeat(129)}`); no('beacon_latch:alice:local:'); no('beacon_latch:alice:local:a:b');
+  no('beacon_seeds:alice'); no('settings'); no(''); no(undefined); no(7);
+  assert.equal(beaconRowAad('bad:owner', 'beacon_pair:bad:owner:p1'), null, 'an owner the ports refuse never maps');
+  assert.notEqual(beaconRowAad('alice', 'beacon_pair:alice:p1'), beaconRowAad('alice', 'beacon_latch:alice:local:p1'), 'a pair row and a latch row never share an AAD');
+  assert.notEqual(beaconRowAad('alice', 'beacon_latch:alice:local:p1'), beaconRowAad('alice', 'beacon_latch:alice:remote:p1'), 'the two latch sources never share an AAD');
 });
