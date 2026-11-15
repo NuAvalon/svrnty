@@ -5,7 +5,9 @@
 // state: it is never exported and never restored, so a restored device starts with nothing confirmed, by construction.
 //
 // THE RULE (decideConfirm). Confirm only when ALL hold:
-//  - the exchange was produced LIVE in this session: the in-person / QR ceremony. NEVER an Import Contacts paste, a pasted card or any file: those can carry an OLD card
+//  - the exchange was produced LIVE in this session. NO SOURCE PROVES THAT YET: the Grow-link ceremony is not bound to the session (its link is not single-use, serves the
+//    same card for 7 days to anyone holding it, and carries no joiner nonce), so today NOTHING calls this rule and the confirmed set stays empty. Until a binding exists
+//    (a joiner nonce the giver signs over, or an in-person short code) no request can be made for any pair. Previously, the intended source was the in-person / QR ceremony. NEVER an Import Contacts paste, a pasted card or any file: those can carry an OLD card
 //    replayed from a seized device, and if its key equals the stale key we hold, keep-equal would confirm the stale key;
 //  - the card carried a beacon key that passed the card check, and the intake verdict was add, backfill, or keep with the SAME key at the SAME generation
 //    (not deferred, loud, none, own-key-unreadable, nor a keep that was counted as rollback or held-malformed).

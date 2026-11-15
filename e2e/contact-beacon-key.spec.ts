@@ -1,5 +1,6 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { webcrypto } from 'node:crypto';
 import { unpackVault } from '../src/lib/sync/vault';
 import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
 import { signIdentityCard } from '../src/lib/identity/identity-card-sign';
@@ -125,6 +126,81 @@ test('PRODUCTION CSP (today): a card with a beacon key is still added, the key i
   const zed = await nodeIdentity('Zedcontact');
   await pasteCard(A, await zed.signed({ key: KEY_A, gen: G(3) }), /added successfully|added/i);
   expect(await storedBeacon(A, /zedcontact/i, testInfo, 'p0'), 'the contact was added, but a production CSP cannot run the curve check, so no beacon key is stored').toEqual({ key: undefined, gen: undefined });
+  expect(beaconRequests, 'and nothing was sent to a beacon route').toEqual([]);
+  await ctx.close();
+});
+
+// ---------- the empty confirmed set, observed in a real browser ----------
+// A Grow link built in Node exactly as the app builds one (AES-256-GCM, the key only in the URL fragment, the blob POSTed to the relay), so the ceremony can be driven with a
+// card that carries a beacon key; the app's own card builder never includes one.
+async function craftLink(page: Page, signedCard: string): Promise<string> {
+  const subtle = webcrypto.subtle;
+  const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(signedCard)));
+  const packed = new Uint8Array(12 + ct.length); packed.set(iv, 0); packed.set(ct, 12);
+  const res = await page.request.post('/api/relay', { data: { encrypted: Buffer.from(packed).toString('base64url') } });
+  expect(res.ok(), 'the relay accepted the blob').toBeTruthy();
+  const { code } = await res.json() as { code: string };
+  const fragment = Buffer.from(await subtle.exportKey('raw', key)).toString('base64url');
+  return `${new URL(page.url()).origin}/c/${code}#${fragment}`;
+}
+async function openGrow(page: Page) {
+  const pill = page.getByTestId('nav-grow');
+  if (await pill.isVisible().catch(() => false)) { await pill.click(); return; }
+  await page.getByTestId('top-nav-menu-btn').click();
+  await page.getByTestId('nav-grow-menu').click();
+}
+async function joinExisting(page: Page, link: string) {
+  await openGrow(page);
+  const dialog = page.getByTestId('grow-surface');
+  await dialog.getByRole('tab', { name: 'Scan / paste' }).click();
+  await dialog.getByLabel(/paste your invite link/i).fill(link);
+  await dialog.getByRole('button', { name: /^join$/i }).click();
+  await expect(page.getByTestId('join-add-to-gate')).toBeVisible({ timeout: 60_000 });
+  await page.getByTestId('join-add-to-gate').click();
+  await expect(page.getByText(/already connected/i).first()).toBeVisible({ timeout: 60_000 });
+  // the done screen's only way out reloads the app, which locks the session: unlock again (the same step the gate spec takes), so the next helper can reach the tabs
+  await page.goto('/');
+  await page.getByPlaceholder('Enter passphrase').fill(PW);
+  await page.getByPlaceholder('Enter passphrase').press('Enter');
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 60_000 });
+}
+/** every key of the settings store (names only: the rows stay sealed) */
+async function settingsKeys(page: Page): Promise<string[]> {
+  return page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+    const open = indexedDB.open('svrnty');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const req = db.transaction('settings', 'readonly').objectStore('settings').getAllKeys();
+      req.onerror = () => { db.close(); reject(req.error); };
+      req.onsuccess = () => { db.close(); resolve((req.result as unknown[]).map(String)); };
+    };
+  }));
+}
+
+test('NO SOURCE CONFIRMS A PAIR (runtime): a held contact + a MATCHING card through the real Grow ceremony AND the real paste import: the key is kept, NO confirmed row exists, and no beacon request is made', async ({ browser }, testInfo) => {
+  test.skip(!!process.env.E2E_PROD, 'needs WebAssembly (the curve check) so the key is accepted: run on next dev');
+  test.setTimeout(480_000);
+  const KEY_A = await beaconPublicKey(BigInt('111111'));
+  const ctx = await browser.newContext(); const A = await ctx.newPage();
+  const beaconRequests: string[] = [];
+  A.on('request', (r) => { if (/\/beacon\//.test(r.url())) beaconRequests.push(r.url()); });
+  await genesis(A, 'Alice Runtime');
+  const zed = await nodeIdentity('Zedcontact');
+  await pasteCard(A, await zed.signed(), /added successfully|added/i);                                 // Zed is now a HELD contact with no beacon key
+  // 1. the real ceremony, existing-contact branch, a card carrying the key: it back-fills (the ceremony's key branch, in a browser for the first time)
+  await joinExisting(A, await craftLink(A, await zed.signed({ key: KEY_A, gen: G(3) })));
+  expect(await storedBeacon(A, /zedcontact/i, testInfo, 'r1'), 'the ceremony back-fills the key').toEqual({ key: KEY_A, gen: G(3) });
+  // 2. a MATCHING card (same key, same generation) through the ceremony and through the paste import: the case that would confirm if any source could
+  await joinExisting(A, await craftLink(A, await zed.signed({ key: KEY_A, gen: G(3) })));
+  await pasteCard(A, await zed.signed({ key: KEY_A, gen: G(3) }), /already have/i);
+  expect(await storedBeacon(A, /zedcontact/i, testInfo, 'r2'), 'a matching card changes nothing').toEqual({ key: KEY_A, gen: G(3) });
+  // 3. the empty set: NO confirmed row exists, and the reader is not simply broken (CONTROL: the settings store is readable and holds other rows)
+  const keys = await settingsKeys(A);
+  expect(keys.length, 'CONTROL: the settings store is readable and not empty').toBeGreaterThan(0);
+  expect(keys.filter((k) => k.startsWith('beacon_confirmed:')), 'no source confirmed a pair: there is no confirmed row').toEqual([]);
   expect(beaconRequests, 'and nothing was sent to a beacon route').toEqual([]);
   await ctx.close();
 });

@@ -94,17 +94,18 @@ const codeOnly = (t: string) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)
 const rel = (p: string) => p.replace(/\\/g, '/').split('/src/').pop();
 const namersOf = (files: { path: string; text: string }[], re: RegExp) => files.filter((f) => re.test(codeOnly(f.text))).map((f) => rel(f.path)).sort();
 
-test('C8 only the store and the live ceremony name the confirm writer: an import path, the contact screen and the WIRE have no way to confirm a pair (the guard FIRES on a synthetic caller, CONTROL)', () => {
+test('C8 NO SOURCE CONFIRMS A PAIR: only the store names the confirm writer, so no import path, no screen, no ceremony and not the WIRE can confirm (the guard FIRES on a synthetic caller, CONTROL)', () => {
   const RE = /\bmarkBeaconPairConfirmed\b/;
-  assert.deepEqual(namersOf([{ path: '/x/src/components/ContactManagement.tsx', text: 'await markBeaconPairConfirmed(o, f, 3);' }, { path: '/x/src/c.ts', text: '// markBeaconPairConfirmed is for the ceremony' }], RE), ['components/ContactManagement.tsx']);
-  assert.deepEqual(namersOf(SRC, RE), ['components/JoinerCeremony.tsx', 'lib/identity/client-store.ts']);
+  assert.deepEqual(namersOf([{ path: '/x/src/components/JoinerCeremony.tsx', text: 'await markBeaconPairConfirmed(o, f, 3);' }, { path: '/x/src/c.ts', text: '// markBeaconPairConfirmed is for a bound ceremony' }], RE), ['components/JoinerCeremony.tsx']);
+  assert.deepEqual(namersOf(SRC, RE), ['lib/identity/client-store.ts']);
 });
 
-test('C9 the only non-test callers of decideConfirm are the live ceremony, and none passes the import source as confirming', () => {
-  assert.deepEqual(namersOf(SRC, /\bdecideConfirm\(/), ['components/JoinerCeremony.tsx', 'lib/trust/beacon-confirmed.ts']);
-  const joiner = SRC.find((f) => rel(f.path) === 'components/JoinerCeremony.tsx')!;
-  assert.match(codeOnly(joiner.text), /decideConfirm\([^)]*'live-ceremony'/);
-  assert.doesNotMatch(codeOnly(joiner.text), /decideConfirm\([^)]*'import'/);
+test('C9 nothing outside the rule\'s own module NAMES the confirm rule yet (not a call, not an alias, not a callback): a ceremony card is not bound to the session, so the confirmed set stays empty (the guard FIRES on a synthetic caller and on an alias, CONTROL)', () => {
+  const RE = /\bdecideConfirm\b/;
+  assert.deepEqual(namersOf([{ path: '/x/src/components/JoinerCeremony.tsx', text: 'const d = decideConfirm(v, c, "live-ceremony", h, k);' }, { path: '/x/src/components/ContactManagement.tsx', text: 'const f = decideConfirm;' }, { path: '/x/src/c.ts', text: '// decideConfirm is for a bound ceremony' }], RE), ['components/ContactManagement.tsx', 'components/JoinerCeremony.tsx']);
+  assert.deepEqual(namersOf(SRC.filter((f) => rel(f.path) !== 'lib/trust/beacon-confirmed.ts'), RE), [], 'no file outside the rule\'s own module names it');
+  const wire = SRC.find((f) => rel(f.path) === 'lib/trust/beacon-wire.ts')!;
+  assert.doesNotMatch(codeOnly(wire.text), /beacon-confirmed|decideConfirm|markBeaconPairConfirmed/, 'the wire has no write path to the confirmed set');
 });
 
 test('C10 the confirmed row is in NEITHER backup direction: not in the SovereignBackup type, not built by exportAll, not touched by importAll (the guard FIRES on a synthetic body, CONTROL)', () => {
@@ -121,12 +122,3 @@ test('C10 the confirmed row is in NEITHER backup direction: not in the Sovereign
   for (const [name, body] of Object.entries(bodies)) { assert.ok(body.length > 50, `found ${name}`); assert.equal(touches(body), false, `${name} must not carry the confirmed pairs`); }
 });
 
-test('C11 the ceremony marks a pair ONLY when the decision says confirm, and a failure to mark never stops the ceremony (guarded and swallowed)', () => {
-  const joiner = SRC.find((f) => rel(f.path) === 'components/JoinerCeremony.tsx')!;
-  const code = codeOnly(joiner.text);
-  const at = code.indexOf('markBeaconPairConfirmed(ownerFp');
-  assert.ok(at > 0, 'the call exists');
-  const before = code.slice(Math.max(0, at - 260), at);
-  assert.match(before, /if \(confirmDecision\.confirm && confirmDecision\.generation !== undefined\) \{\s*try \{\s*await $/, 'guarded by the decision, inside a try');
-  assert.match(code.slice(at, at + 200), /\}\s*catch \{/, 'a failure to mark is swallowed: the pair stays unconfirmed, nothing is shown');
-});
