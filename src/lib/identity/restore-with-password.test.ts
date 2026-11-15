@@ -75,7 +75,7 @@ test('passphraseOpensEveryHeldKeyRecord: the contact rows are in the check, open
   assert.match(s, /decryptContactRecord\(key, rec\.id, rec\.owner_fingerprint,/, 'every encrypted contact row is decrypted, with its id and owner as AAD');
   assert.match(s, /decryptContactRecord[\s\S]*?\} catch \{\s*return false;/, 'a contact row that does not open refuses the restore');
   assert.match(s, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{/, 'every owner-sealed settings record is read, from the one list (no per-record code)');
-  assert.match(s, /if \(encryptedContacts\.length > 0 \|\| heldSealed\.length > 0\) \{/, 'the check runs when ONLY a sealed record is held, with no contacts');
+  assert.match(s, /if \(encryptedContacts\.length > 0 \|\| heldSealed\.length > 0 \|\| heldBeacon\.length > 0\) \{/, 'the check runs when ONLY a sealed record or a beacon row is held, with no contacts');
   assert.match(s, /decryptContactRecord\(key, held\.recordId, fingerprint,/, 'each is decrypted under the settings salt with its reserved id and the owner as AAD');
   assert.match(s, /typeof held\.value\.iv !== 'string' \|\| typeof held\.value\.ciphertext !== 'string'\) return false/, 'a malformed sealed record refuses the restore');
   assert.match(s, /\n\s+for \(const held of heldSealed\) \{\n/, 'and the held records are decrypted unconditionally (not behind a constant)');
