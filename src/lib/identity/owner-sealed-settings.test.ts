@@ -49,3 +49,17 @@ test('S3 the contact-row path is the only other sealed write, and it uses the ro
   const m = [...store.matchAll(/encryptContactRecord\(\s*_sessionKey\s*,\s*([a-z][A-Za-z0-9_]*)\s*,/g)].map((x) => x[1]);
   assert.deepEqual(m, ['id'], 'one lowercase-id call site: the contact row');
 });
+
+test('S4 every encryptContactRecord( call in src/ is one S1 or S3 recognises (a call with another key variable, or a lowercase id, cannot slip past them)', () => {
+  let all = 0, s1 = 0, s3 = 0;
+  for (const file of sources(root)) {
+    // code only: a comment that names the function is not a call
+    const text = readFileSync(file, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    // every call, minus the function's own definition
+    all += [...text.matchAll(/\bencryptContactRecord\(/g)].length - [...text.matchAll(/function\s+encryptContactRecord\(/g)].length;
+    s1 += [...text.matchAll(/encryptContactRecord\(\s*_sessionKey\s*,\s*([A-Z][A-Z0-9_]*)\s*,/g)].length;
+    s3 += [...text.matchAll(/encryptContactRecord\(\s*_sessionKey\s*,\s*([a-z][A-Za-z0-9_]*)\s*,/g)].length;
+  }
+  assert.ok(all >= 7, `the calls are found (found ${all})`);
+  assert.equal(all, s1 + s3, `${all} encryptContactRecord( calls in src/ but S1 and S3 recognise ${s1 + s3}: a sealed record written another way is not covered by the list`);
+});
