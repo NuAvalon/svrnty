@@ -75,6 +75,8 @@ test('passphraseOpensEveryHeldKeyRecord: the contact rows are in the check, open
   assert.match(s, /decryptContactRecord\(key, rec\.id, rec\.owner_fingerprint,/, 'every encrypted contact row is decrypted, with its id and owner as AAD');
   assert.match(s, /decryptContactRecord[\s\S]*?\} catch \{\s*return false;/, 'a contact row that does not open refuses the restore');
   assert.match(s, /deliverySettingKey\(fingerprint\)/, 'the receipts default is read too');
+  assert.match(s, /if \(encryptedContacts\.length > 0 \|\| deliveryValue\) \{/, 'the check runs when ONLY a receipts default is held, with no contacts');
+  assert.match(s, /\n\s+if \(deliveryValue\) \{\n/, 'and the receipts default is decrypted unconditionally once present (not behind a constant)');
   assert.match(s, /decryptContactRecord\(key, DELIVERY_RECORD_ID, fingerprint,/, 'and decrypted under the settings salt with its reserved id and the owner as AAD');
   assert.match(s, /typeof deliveryValue\.iv !== 'string' \|\| typeof deliveryValue\.ciphertext !== 'string'\) return false/, 'a malformed receipts default refuses the restore');
 });

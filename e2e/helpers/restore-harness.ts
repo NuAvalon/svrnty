@@ -29,9 +29,9 @@ window.__rh = {
     await initSessionKey(pw); await storeIdentity(fp, identity); await storeKey(fp, keys.privateKey, keys.passphrase); await storeDeviceMailbox(fp, mailbox);
     lockSession(); return true;
   },
-  /** The key and a contact under `pwA`, the owner's receipts default under `pwB` (same device salt): the receipts record is the one that does not open. */
+  /** The key (and a contact, when `row` is given) under `pwA`, the owner's receipts default under `pwB` (same device salt): the receipts record is the one that does not open. */
   async seedKeyContactDelivery(fp: string, keys: { privateKey: string; passphrase: string }, pwA: string, pwB: string, row: any) {
-    await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase); await addContact(fp, row);
+    await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase); if (row) await addContact(fp, row);
     await initSessionKey(pwB); await writeDeliveryDefault(fp, { v: 1, value: 'unknown' });
     lockSession(); return true;
   },

@@ -299,6 +299,23 @@ test('l. a device whose receipts default is under another passphrase than its ke
   await ctx.close();
 });
 
+test('n. a device with NO contacts whose receipts default is under another passphrase than its key refuses a restore under either passphrase, and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedKeyContactDelivery', fp, backup.keys, UNLOCK_PW, OTHER_PW, null);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  expect(stBefore.contacts, 'there is no contact row, so the receipts default alone puts the device in two passphrase domains').toBe(0);
+  expect(await hasSetting(page, `delivery_receipts:${fp}`)).toBe(true);
+  for (const pw of [UNLOCK_PW, OTHER_PW]) {
+    const file = writeFull(testInfo, `full-n-${pw.slice(0, 4)}.json`, noVault(), pw);
+    await page.reload();
+    expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
+    await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    expect(await deviceState(page)).toEqual(stBefore);
+  }
+  await ctx.close();
+});
+
 test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);
   expect(backup.device_mailbox, 'the backup carries the device mailbox').toBeTruthy();
