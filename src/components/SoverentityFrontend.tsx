@@ -5,6 +5,7 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
+import { openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
 import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
 import { isRestoreDurableRefusal, RESTORE_DURABLE_MESSAGE } from '@/lib/identity/restore-durable';
@@ -687,6 +688,10 @@ export function SoverentityFrontend({
       setRestoreLoading(true);
       setRestoreError(null);
 
+      // Set when the file was protected with the older password method: the owner is told, after the restore, to export a new copy.
+      let legacyOpened = false;
+      const withLegacyNotice = (note: string | null) => (legacyOpened ? [note, LEGACY_PASSWORD_METHOD_NOTICE].filter(Boolean).join(' ') : note);
+
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
@@ -699,30 +704,10 @@ export function SoverentityFrontend({
             setRestoreError('Enter the encryption password you set when exporting this copy.');
             return;
           }
-          const fromBase64 = (b64: string) => {
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            return bytes;
-          };
-          const enc = new TextEncoder();
-          const salt = fromBase64(data.salt);
-          const iv = fromBase64(data.iv);
-          const encrypted = fromBase64(data.data);
-          const keyMaterial = await crypto.subtle.importKey(
-            'raw', enc.encode(vaultPassphrase), 'PBKDF2', false, ['deriveKey']
-          );
-          const derivedKey = await crypto.subtle.deriveKey(
-            { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-            keyMaterial,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['decrypt']
-          );
-          const decrypted = new Uint8Array(
-            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
-          );
-          const backup = JSON.parse(new TextDecoder().decode(decrypted));
+          // The file's own tag picks the derivation: Argon2id, or the older method for a backup already held (read only).
+          const opened = await openWithPassword(data, vaultPassphrase);
+          legacyOpened = opened.legacy;
+          const backup = JSON.parse(new TextDecoder().decode(opened.plaintext));
 
           // L8: when a KeyVault is present, soul-seed is the second factor.
           if (backup.vault) {
@@ -752,7 +737,9 @@ export function SoverentityFrontend({
 
           const fullReport = await importAll(backup);
           if (fullReport.kept + fullReport.skipped > 0) {
-            setPlaintextImportNote(formatPlaintextImportReport(fullReport));
+            setPlaintextImportNote(withLegacyNotice(formatPlaintextImportReport(fullReport)));
+          } else if (legacyOpened) {
+            setPlaintextImportNote(LEGACY_PASSWORD_METHOD_NOTICE);
           }
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
@@ -826,31 +813,10 @@ export function SoverentityFrontend({
             setRestoreError('This is an encrypted key backup. Enter your password above to decrypt it.');
             return;
           }
-          // Decrypt the key data
-          const fromBase64 = (b64: string) => {
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            return bytes;
-          };
-          const enc = new TextEncoder();
-          const salt = fromBase64(data.salt);
-          const iv = fromBase64(data.iv);
-          const encrypted = fromBase64(data.data);
-          const keyMaterial = await crypto.subtle.importKey(
-            'raw', enc.encode(vaultPassphrase), 'PBKDF2', false, ['deriveKey']
-          );
-          const derivedKey = await crypto.subtle.deriveKey(
-            { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-            keyMaterial,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['decrypt']
-          );
-          const decrypted = new Uint8Array(
-            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
-          );
-          const keyData = JSON.parse(new TextDecoder().decode(decrypted));
+          // Decrypt the key data: the file's own tag picks the derivation (Argon2id, or the older method, read only).
+          const opened = await openWithPassword(data, vaultPassphrase);
+          legacyOpened = opened.legacy;
+          const keyData = JSON.parse(new TextDecoder().decode(opened.plaintext));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
           await assertRestoreKeepsOwnerDomain(fp, vaultPassphrase, 'keeps-open-session');
@@ -870,6 +836,7 @@ export function SoverentityFrontend({
             setIdentity(existingIdentity);
             onIdentityUpdate?.(existingIdentity);
           }
+          if (legacyOpened) setPlaintextImportNote(LEGACY_PASSWORD_METHOD_NOTICE);
         } else if (data.fingerprint && (data.public_key || data.identity)) {
           // Raw identity object — wrap and import
           const fp = data.fingerprint;
