@@ -6,7 +6,8 @@ import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
-import { classifyRestoreFailure, RestoreFormatUnrecognized, RestoreStoppedPartway, RESTORE_MESSAGES, contactsReportLines } from '@/lib/identity/restore-errors';
+import { restoreWritesOf } from '@/lib/identity/restore-writes';
+import { classifyRestoreFailure, RestoreFormatUnrecognized, RestoreStoppedPartway, RestoreStoppedNothingSaved, RestoreMayHaveSaved, RESTORE_MESSAGES, contactsReportLines } from '@/lib/identity/restore-errors';
 import type { SovereignBackup } from '@/lib/identity/client-store';
 import { DEVICE_PASSWORD_MIN, assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
@@ -707,14 +708,12 @@ export function SoverentityFrontend({
         setDevicePwPrompt({ backup, legacyOpened: !!opts.legacyOpened, hasFilePassword: !!opts.filePassword });
         return false;
       }
-      // An unclassified failure: READ BACK whether anything for this owner is on the device before saying so (a refusal happens before any write, so it is left alone).
-      const fpOwner = backup.identity?.identity?.fingerprint;
-      if (fpOwner && !isRestoreDomainRefusal(err) && classifyRestoreFailure(err).code === 'unknown') {
-        const { deviceHasAnyRecordFor } = await import('@/lib/identity/client-store');
-        if (await deviceHasAnyRecordFor(fpOwner)) {
-          console.error('Restore stopped partway:', err);
-          throw new RestoreStoppedPartway();
-        }
+      // An unclassified failure after the restore began writing: say what the device holds by COMPARING it with its state just before the first write
+      // (equal = nothing saved, different = part saved, unreadable = may have been saved). A failure before that point carries no verdict and keeps the generic sentence.
+      const writes = restoreWritesOf(err);
+      if (writes && !isRestoreDomainRefusal(err) && classifyRestoreFailure(err).code === 'unknown') {
+        console.error('Restore stopped:', writes, err);
+        throw writes === 'none' ? new RestoreStoppedNothingSaved() : writes === 'some' ? new RestoreStoppedPartway() : new RestoreMayHaveSaved();
       }
       throw err;
     }

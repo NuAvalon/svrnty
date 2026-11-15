@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyRestoreFailure, RestoreFormatUnrecognized, RESTORE_MESSAGES, contactsReportLines } from './restore-errors';
+import { classifyRestoreFailure, RestoreFormatUnrecognized, RestoreStoppedPartway, RestoreStoppedNothingSaved, RestoreMayHaveSaved, RESTORE_MESSAGES, contactsReportLines } from './restore-errors';
 import { EnvelopeRefused } from '../crypto/password-envelope';
 
 const lookalike = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -52,6 +52,16 @@ test('R3 each typed failure has its own sentence: needs-device-passphrase, unsup
   // an envelope the app will not run vs a file that is not an envelope: two sentences, by the envelope's own code, never its text
   for (const c of ['unknown-kdf', 'unsafe-params'] as const) assert.deepEqual(classifyRestoreFailure(new EnvelopeRefused(c, 'This file asks for settings this version will not run.')), { code: 'envelope-refused', message: RESTORE_MESSAGES.unsupportedFormat }, c);
   for (const c of ['bad-field', 'not-an-envelope'] as const) assert.deepEqual(classifyRestoreFailure(new EnvelopeRefused(c, 'This file is missing its salt.')), { code: 'envelope-refused', message: RESTORE_MESSAGES.unrecognizedFormat }, c);
+});
+
+test('R2 a stopped restore says what the device holds by the comparison: nothing saved, part saved, or may have been saved (and never "nothing changed" when it could not be read)', () => {
+  assert.deepEqual(classifyRestoreFailure(new RestoreStoppedNothingSaved()), { code: 'stopped-nothing-saved', message: RESTORE_MESSAGES.stoppedNothingSaved });
+  assert.deepEqual(classifyRestoreFailure(new RestoreStoppedPartway()), { code: 'stopped-partway', message: RESTORE_MESSAGES.stoppedPartway });
+  assert.deepEqual(classifyRestoreFailure(new RestoreMayHaveSaved()), { code: 'may-have-saved', message: RESTORE_MESSAGES.mayHaveBeenSaved });
+  assert.equal(RESTORE_MESSAGES.stoppedNothingSaved, 'The restore stopped before anything was saved. Nothing on this device was changed. Run the restore again with the same file.');
+  assert.match(RESTORE_MESSAGES.mayHaveBeenSaved, /^Part of it may have been saved on this device\./);
+  assert.doesNotMatch(RESTORE_MESSAGES.mayHaveBeenSaved, /nothing (on this device )?was changed|before anything was saved/i, 'an unreadable comparison never claims nothing changed');
+  assert.doesNotMatch(RESTORE_MESSAGES.stoppedPartway, /nothing (on this device )?was changed/i);
 });
 
 // ---------- the screen and the throwers use it ----------

@@ -53,8 +53,8 @@ export async function keyRecordOpens(record: unknown, key: CryptoKey, encVersion
 
 const LEAD = 'This device already has this identity, protected by a different passphrase than the one this restore would use. Restoring would hide the contacts already here, so nothing was changed.';
 const WAY_FORWARD: Record<RestoreKeyUse, string> = {
-  'keeps-open-session': "Unlock with this device's passphrase first, or restore in a new browser profile.",
-  'always-derives': "Use this device's current passphrase here instead, or restore in a new browser profile.",
+  'keeps-open-session': "Unlock with this device's passphrase first, or restore in a new browser profile. Your current profile is left as it is.",
+  'always-derives': "Use this device's current passphrase here instead, or restore in a new browser profile. Your current profile is left as it is.",
 };
 
 export class RestoreDomainRefused extends Error {

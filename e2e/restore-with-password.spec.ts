@@ -105,7 +105,7 @@ async function openRestoreScreen(page: Page, file: string) {
   await page.setInputFiles('[data-testid="restore-file-input"]', file);
 }
 const PROMPT = (p: Page) => p.getByTestId('device-password-prompt');
-const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway/i;
+const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway|stopped before anything was saved|may have been saved/i;
 /** After pressing the restore button: wait for the first thing that settles the attempt. */
 async function settle(page: Page): Promise<'restored' | 'prompt' | 'error'> {
   const restored = page.getByRole('tab', { name: 'Contacts', exact: true });
@@ -206,6 +206,7 @@ test('d. the device already holds the owner under another passphrase: refused, n
   const file = writeFull(testInfo, 'full-d.json', noVault(), OTHER_PW);
   expect(await restoreWith(page, file, OTHER_PW)).toBe('error');
   await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  await expect(page.getByText(/Your current profile is left as it is\./)).toBeVisible();
   expect(await rawKeyRecord(page, fp)).toBe(before);
   const st = await deviceState(page);
   console.log('[restore-pw] d. before/after:', JSON.stringify(stBefore), JSON.stringify(st));
@@ -234,6 +235,7 @@ test('e2. a MIXED device (keys under A, a vault under B) refuses a restore under
     await page.reload();
     expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
     await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    await expect(page.getByText(/Your current profile is left as it is\./)).toBeVisible();
     expect(await deviceState(page)).toEqual(stBefore);
   }
   await ctx.close();
@@ -250,8 +252,26 @@ test('j. a MIXED device (key under A, a contact under B) refuses a restore under
     await page.reload();
     expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
     await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    await expect(page.getByText(/Your current profile is left as it is\./)).toBeVisible();
     expect(await deviceState(page)).toEqual(stBefore);
   }
+  await ctx.close();
+});
+
+test('k. a device that ALREADY held the owner, failing at the first write, says nothing was saved (not "part of it was saved"), and the same file then restores', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seed', fp, backup.keys, UNLOCK_PW);
+  await page.reload();
+  await page.evaluate(() => sessionStorage.setItem('failAt', '1'));
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-k.json', noVault(), UNLOCK_PW);
+  expect(await restoreWith(page, file, UNLOCK_PW)).toBe('error');
+  await expect(page.getByText(RESTORE_MESSAGES.stoppedNothingSaved)).toBeVisible();
+  await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toHaveCount(0);
+  expect(await deviceState(page), 'the device really is unchanged').toEqual(stBefore);
+  await page.evaluate(() => sessionStorage.removeItem('failAt'));
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  expect(await restoreWith(page, file, UNLOCK_PW), 're-run with the same file').toBe('restored');
   await ctx.close();
 });
 
@@ -345,9 +365,15 @@ test('f. a restore that stops after ANY write, run again with the same file, end
     const partial = await deviceState(page);
     // EVERY stop is a failed restore (never "restored"): identity, keys, pq keys, shards, device mailbox, and each of the four contacts.
     expect(first, `a stop at write ${n} must not read as restored`).toBe('error');
-    // and the screen says what the device holds by READ-BACK: write 1 died before any owner row (generic line); from write 2 on, part of it is saved
-    if (n === 1) await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toHaveCount(0);
-    else await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toBeVisible();
+    // and the screen says what the device holds by COMPARING it with its state before the first write: write 1 died before any owner row (nothing saved);
+    // from write 2 on, part of it is saved
+    if (n === 1) {
+      await expect(page.getByText(RESTORE_MESSAGES.stoppedNothingSaved)).toBeVisible();
+      await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toHaveCount(0);
+    } else {
+      await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toBeVisible();
+      await expect(page.getByText(RESTORE_MESSAGES.stoppedNothingSaved)).toHaveCount(0);
+    }
     // run it again: same file, no failure injected, a fresh page (the session is gone)
     await page.evaluate(() => sessionStorage.removeItem('failAt'));
     await page.reload(); await page.addScriptTag({ content: HARNESS });

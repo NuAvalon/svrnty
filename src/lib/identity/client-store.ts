@@ -5,6 +5,7 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+import { restoreWritesVerdict, tagRestoreWrites, type OwnerSnapshot } from './restore-writes';
 import { canonicalAuthorityPin } from './authority-pin';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
@@ -962,10 +963,22 @@ export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
   return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
 }
 
-/** Is ANY row for this owner on the device: the identity row, or any key/contact row? Presence only, read-back for "part of it was saved". */
-export async function deviceHasAnyRecordFor(fingerprint: string): Promise<boolean> {
-  if (await txGet<unknown>('identities', fingerprint)) return true;
-  return deviceHoldsOwner(fingerprint);
+const digestOf = async (value: unknown): Promise<string> =>
+  toBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value)))));
+
+/** Read-only. Throws when any store cannot be read: the caller treats a snapshot it could not take as "unknown", never as "unchanged". */
+export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnapshot> {
+  const out: OwnerSnapshot = {};
+  const put = async (place: string, rows: unknown[]) => { out[place] = { n: rows.length, d: await digestOf(rows) }; };
+  for (const store of ['identities', ...OWNER_KEY_STORES]) {
+    const row = await txGet<unknown>(store, fingerprint);
+    await put(store, row ? [row] : []);
+  }
+  const contacts = (await txGetByIndex<{ id?: string }>('contacts', 'owner', fingerprint)).slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  await put('contacts', contacts);
+  const manifest = await txGet<unknown>('settings', contactManifestSettingKey(fingerprint));
+  await put('contact-manifest', manifest ? [manifest] : []);
+  return out;
 }
 
 /** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
@@ -2203,8 +2216,18 @@ export async function importAllWithPassword(
   }
   await assertRestoreKeepsOwnerDomain(fingerprint, use ?? '', 'keeps-open-session');
   if (use !== null) await initSessionKey(use);
-  const report = await importAll(backup);
-  return { ...report, deviceUnlock };
+  // The snapshot is taken after the session step (the device salt is an unlock parameter, not one of this owner's records) and BEFORE the first owner-record write.
+  let before: OwnerSnapshot | null = null;
+  try { before = await snapshotOwnerRows(fingerprint); } catch { before = null; }
+  try {
+    const report = await importAll(backup);
+    return { ...report, deviceUnlock };
+  } catch (err) {
+    let after: OwnerSnapshot | null = null;
+    try { after = await snapshotOwnerRows(fingerprint); } catch { after = null; }
+    tagRestoreWrites(err, restoreWritesVerdict(before, after));
+    throw err;
+  }
 }
 
 /**

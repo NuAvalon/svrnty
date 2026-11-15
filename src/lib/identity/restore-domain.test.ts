@@ -51,6 +51,7 @@ test('the refusal is recognisable without instanceof, and says nothing was chang
     assert.ok(isRestoreDomainRefusal(e));
     assert.match(e.message, /nothing was changed/i);
     assert.match(e.message, /new browser profile/i);
+    assert.ok(e.message.endsWith('Your current profile is left as it is.'), 'the remedy line ends with the final sentence, exactly');
   }
   assert.ok(!isRestoreDomainRefusal(new Error('Incorrect passphrase')));
   assert.ok(!isRestoreDomainRefusal(null));
