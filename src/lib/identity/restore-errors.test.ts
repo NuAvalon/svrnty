@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { classifyRestoreFailure, RestoreFormatUnrecognized, RestoreStoppedPartway, RestoreStoppedNothingSaved, RestoreMayHaveSaved, RESTORE_MESSAGES, contactsReportLines } from './restore-errors';
 import { EnvelopeRefused } from '../crypto/password-envelope';
+import { DEVICE_PASSWORD_MIN } from './device-password';
 
 const lookalike = (code: string, message: string) => Object.assign(new Error(message), { code });
 
@@ -116,4 +117,27 @@ test('R6 RULE: the screen never gets an error\'s own text. Every failure maps to
     assert.ok(sentences.has(f.message), `a constant, for ${String((e as { code?: unknown })?.code ?? (e as { name?: unknown })?.name ?? e)}`);
     assert.ok(!f.message.includes(marker), 'the error text is never shown');
   }
+});
+
+test('R9 the choose-a-device-password lines are the copy owner\'s words, built from the ONE constant (no digit written out), and the old wordings are gone', () => {
+  // (3) the no-file-password body, from the pure module
+  assert.equal(
+    RESTORE_MESSAGES.chooseDevicePasswordNoFilePassword,
+    `This backup file doesn't have its own password. Choose a password of at least ${DEVICE_PASSWORD_MIN} characters. It protects your keys on this device.`,
+  );
+  const errSrc = readFileSync(new URL('./restore-errors.ts', import.meta.url), 'utf8');
+  const line = errSrc.split('\n').find((l) => l.includes('chooseDevicePasswordNoFilePassword:'));
+  assert.ok(line, 'the entry exists');
+  assert.ok(line.includes('${DEVICE_PASSWORD_MIN}') && !/\b\d+\b/.test(line.replace('${DEVICE_PASSWORD_MIN}', '')), 'the number comes from the constant: no digit is written out in the entry');
+  assert.doesNotMatch(errSrc, /has no password of its own/, 'the old wording is gone');
+  // (1) and (2): the device-password screen's two lines, in the screen's source
+  const screen = readFileSync(new URL('../../components/SoverentityFrontend.tsx', import.meta.url), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const once = (needle: string) => assert.equal(screen.split(needle).length - 1, 1, needle);
+  once('`Use at least ${DEVICE_PASSWORD_MIN} characters.`');
+  once('"The two passwords don\'t match."');
+  assert.doesNotMatch(screen, /The two passwords do not match/, 'the old wording is gone');
+  // the check and the sentences read ONE constant: the constant is defined once, in the pure module, and client-store only re-exports it
+  const defs = ['restore-errors.ts', 'client-store.ts'].filter((f) => /export const DEVICE_PASSWORD_MIN\s*=/.test(readFileSync(new URL('./' + f, import.meta.url), 'utf8')));
+  assert.deepEqual(defs, [], 'no second definition');
+  assert.match(readFileSync(new URL('./device-password.ts', import.meta.url), 'utf8'), /export const DEVICE_PASSWORD_MIN = 12;/);
 });
