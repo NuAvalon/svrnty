@@ -51,6 +51,7 @@ test('the refusal is recognisable without instanceof, and says nothing was chang
     assert.ok(isRestoreDomainRefusal(e));
     assert.match(e.message, /nothing was changed/i);
     assert.match(e.message, /new browser profile/i);
+    assert.ok(e.message.endsWith('Your current profile is left as it is.'), 'the remedy line ends with the final sentence, exactly');
   }
   assert.ok(!isRestoreDomainRefusal(new Error('Incorrect passphrase')));
   assert.ok(!isRestoreDomainRefusal(null));
@@ -182,7 +183,14 @@ test('the store helper computes facts without writing and fails closed', () => {
   assert.match(guard, /restoreDomainDecision\(/);
   // These two facts ARE the locked-device case. No unit test can see them without an IndexedDB harness; the browser run is the proof.
   assert.match(guard, /sessionOpens: held && unlocked \? await sessionOpensOwner\(fingerprint\) : false/);
-  assert.match(guard, /passphraseOpens: held && passphrase \? await verifyPassphrase\(fingerprint, passphrase\) : false/);
+  assert.match(guard, /passphraseOpens: held && passphrase \? await passphraseOpensEveryHeldKeyRecord\(fingerprint, passphrase\) : false/);
+  // EVERY held key record must open, not just the keys row: a half-finished restore can hold records with no keys row, and a device holding the owner under
+  // two passphrases must refuse a restore under either one.
+  const every = fnBody(s, 'export async function passphraseOpensEveryHeldKeyRecord');
+  assert.match(every, /for \(const store of OWNER_KEY_STORES\)/);
+  assert.match(every, /if \(!\(await keyRecordOpens\(record, key, ENC_VERSION\)\)\) return false;/, 'one record that does not open fails the whole check');
+  assert.match(every, /return opened > 0;/, 'at least one encrypted record must exist');
+  assert.doesNotMatch(every, /txPut|txDelete|initSessionKey/);
   assert.match(guard, /throw new RestoreDomainRefused\(/);
   assert.doesNotMatch(guard, /txPut|txDelete|initSessionKey\(/);
 });
