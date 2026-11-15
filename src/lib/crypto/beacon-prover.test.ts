@@ -5,10 +5,10 @@
 // The proof tests need the throwaway wasm + zkey + vkey (the phone-probe bundle); they SKIP, with the reason printed, if those files are absent.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, hkdfSync } from 'node:crypto';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { deriveSignals, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, defaultRandomBytes, ProverRefused, type DepositKeys } from './beacon-prover';
+import { deriveSignals, deriveConfirmKey, CONFIRM_DOMAIN, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, defaultRandomBytes, ProverRefused, type DepositKeys } from './beacon-prover';
 import * as wire from './beacon-wire.mjs';   // namespace import: the epoch constants are asserted below (Athena adds them to the module)
 const refusedWith = (reason: string) => (e: unknown) => e instanceof ProverRefused && e.reason === reason;
 import { authMessage, parseDeposit, serializeDeposit } from './beacon-wire.mjs';
@@ -286,4 +286,58 @@ test('CSPRNG: defaultRandomBytes, newOneTimeKey and the default re-deposit sampl
     Object.defineProperty(globalThis, 'crypto', { value: real, configurable: true });
   }
   assert.deepEqual(calls, [16, 32, 4], 'each default source must go through crypto.getRandomValues, with these sizes');
+});
+
+// =====================================================================================================================
+// The in-person confirm key: deriveConfirmKey(x, Y, info) = HKDF-SHA256(ikm = Sx||Sy, salt = CONFIRM_DOMAIN, info, 32 B).
+// =====================================================================================================================
+const infoBytes = (s: string) => new TextEncoder().encode(s);
+const toHex = (u: Uint8Array) => Buffer.from(u).toString('hex');
+
+test('CONFIRM KEY: both sides derive the SAME key from their own secret and the other side\'s public key; a different info gives a different key', async () => {
+  const a = keysFor('A'), b = keysFor('B');
+  const ka = await deriveConfirmKey(a.x, a.counterpartY, infoBytes('t1'));
+  const kb = await deriveConfirmKey(b.x, b.counterpartY, infoBytes('t1'));
+  assert.equal(ka.length, 32);
+  assert.equal(toHex(ka), toHex(kb), 'the two sides must meet at one key');
+  assert.notEqual(toHex(ka), toHex(await deriveConfirmKey(a.x, a.counterpartY, infoBytes('t2'))), 'info must change the key');
+});
+
+test('CONFIRM KEY: known answer, recomputed with Node\'s own HKDF from S = x*Y written as Sx||Sy, 32 bytes BIG-endian each (not the compressed card form)', async () => {
+  const bj = await (await import('circomlibjs')).buildBabyjub();
+  const k = keysFor('A');
+  const S = bj.mulPointEscalar([bj.F.e(k.counterpartY[0]), bj.F.e(k.counterpartY[1])], k.x);
+  const be32 = (v: bigint) => v.toString(16).padStart(64, '0');
+  const ikm = Buffer.from(be32(bj.F.toObject(S[0]) as bigint) + be32(bj.F.toObject(S[1]) as bigint), 'hex');
+  assert.equal(ikm.length, 64);
+  const want = Buffer.from(hkdfSync('sha256', ikm, Buffer.from(CONFIRM_DOMAIN), Buffer.from('known-answer'), 32)).toString('hex');
+  assert.equal(toHex(await deriveConfirmKey(k.x, k.counterpartY, infoBytes('known-answer'))), want);
+  assert.equal(CONFIRM_DOMAIN, 'svrnty:822:confirm:v1');
+});
+
+const confirmRefuse = (name: string, reason: string, mutate: (k: DepositKeys) => DepositKeys) =>
+  test(`CONFIRM KEY REFUSES ${name} [${reason}], the same reason code as the deposit path`, async () => {
+    const m = mutate(keysFor('A'));
+    await assert.rejects(() => deriveConfirmKey(m.x, m.counterpartY, infoBytes('t')), refusedWith(reason));
+    await assert.rejects(() => deriveSignals(m), refusedWith(reason));
+  });
+confirmRefuse('a counterpart key that is the identity (0,1)', 'y-identity', (k) => ({ ...k, counterpartY: [BigInt('0'), BigInt('1')] }));
+confirmRefuse('a counterpart key that is off the curve', 'y-off-curve', (k) => ({ ...k, counterpartY: [k.counterpartY[0], k.counterpartY[1] + BigInt('1')] }));
+confirmRefuse('a counterpart coordinate outside the field', 'y-off-curve', (k) => ({ ...k, counterpartY: [P_FIELD, k.counterpartY[1]] }));
+confirmRefuse('a counterpart key of small order (0,-1)', 'y-small-order', (k) => ({ ...k, counterpartY: [BigInt('0'), P_FIELD - BigInt('1')] }));
+confirmRefuse('a counterpart key of order exactly 8', 'y-small-order', (k) => ({ ...k, counterpartY: pt(V.order8Y) }));
+confirmRefuse('a MIXED-ORDER counterpart key', 'y-not-in-subgroup', (k) => ({ ...k, counterpartY: pt(V.mixedOrderY) }));
+confirmRefuse('a counterpart key equal to our OWN beacon key', 'y-self', (k) => ({ ...k, counterpartY: pt(V.A.P) }));
+confirmRefuse('x = 0', 'x-range', (k) => ({ ...k, x: BigInt('0') }));
+confirmRefuse('x >= the subgroup order', 'x-range', (k) => ({ ...k, x: L }));
+
+test('CONFIRM KEY: info that is not bytes is refused; S never leaves the module (no export returns the pair secret, and the key does not contain it)', async () => {
+  const k = keysFor('A');
+  await assert.rejects(() => deriveConfirmKey(k.x, k.counterpartY, 'text' as unknown as Uint8Array), refusedWith('info'));
+  const mod = (await import('./beacon-prover')) as Record<string, unknown>;
+  for (const name of ['derivePairSecret', 'pairSecret', 'derivePairPoint', 'checkedPair']) assert.equal(mod[name], undefined, `${name} must not be exported: S is the pair's slot secret`);
+  const bj = await (await import('circomlibjs')).buildBabyjub();
+  const S = bj.mulPointEscalar([bj.F.e(k.counterpartY[0]), bj.F.e(k.counterpartY[1])], k.x);
+  const sx = (bj.F.toObject(S[0]) as bigint).toString(16).padStart(64, '0');
+  assert.ok(!toHex(await deriveConfirmKey(k.x, k.counterpartY, infoBytes('t'))).includes(sx.slice(0, 16)), 'the key must not contain S');
 });

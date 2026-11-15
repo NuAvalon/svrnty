@@ -30,7 +30,7 @@ interface DerivedDeposit {
 }
 
 /** Every deliberate refusal throws this, with one of a fixed set of reason codes (the tests assert the REASON). Reasons: y-identity, y-off-curve,
- * y-small-order, y-not-in-subgroup, y-self, x-range, epoch-range, pk-length, epoch-too-short, rand-range, op, nonce, signals-mismatch.
+ * y-small-order, y-not-in-subgroup, y-self, x-range, epoch-range, pk-length, epoch-too-short, rand-range, op, nonce, signals-mismatch, info.
  * Messages are fixed strings: they never contain a secret value. The refusal happens UP FRONT, never inside witness generation. */
 export class ProverRefused extends Error {
   constructor(public readonly reason: string) { super(`refused: ${reason}`); this.name = 'ProverRefused'; }
@@ -99,15 +99,34 @@ export async function deriveSignals(k: DepositKeys): Promise<Signals> {
   return (await deriveWitness(k)).signals;
 }
 
-/** INTERNAL (not exported): derive the circuit input and the expected public signals. Refuses, with a reason code and BEFORE any proving file is
- * touched: an out-of-range x or epoch, a one-time key that is not 32 bytes, and a counterpart key that is the identity, off the curve, of small
- * order, not in the prime-order subgroup, or equal to our own. */
-async function deriveWitness(k: DepositKeys): Promise<DerivedDeposit> {
-  // pure range checks first: they need no curve library
-  if (typeof k.x !== 'bigint' || k.x < big('1') || k.x >= L) throw new ProverRefused('x-range');
-  if (typeof k.epoch !== 'bigint' || k.epoch < big('0') || k.epoch >= R) throw new ProverRefused('epoch-range');
-  if (!(k.oneTimePk instanceof Uint8Array) || k.oneTimePk.length !== 32) throw new ProverRefused('pk-length');
-  const [Yx, Yy] = k.counterpartY;
+/** Domain tag of the in-person confirm key. Used as the HKDF salt; never reused by a slot, nullifier or deposit derivation. */
+export const CONFIRM_DOMAIN = 'svrnty:822:confirm:v1';
+export const CONFIRM_KEY_BYTES = 32;
+
+/** The in-person confirm key: HKDF-SHA256(ikm = Sx || Sy, salt = CONFIRM_DOMAIN, info, 32 bytes), where S = x * Y is the pair secret and Sx, Sy are
+ * canonical field integers, 32 bytes big-endian each (64 bytes; NOT the compressed card form). S itself NEVER leaves this module: whoever holds S for a
+ * pair can compute that pair's slots, so the export is the derived key, from which neither S nor any slot can be recovered. Runs the SAME checks as the
+ * deposit path through the same function (checkedPair), so the two paths cannot drift: an out-of-range x, and a counterpart key that is the identity,
+ * off the curve, of small order, not in the prime-order subgroup, or equal to our own, each refuse with the deposit path's reason code. */
+export async function deriveConfirmKey(x: bigint, counterpartY: Point, info: Uint8Array): Promise<Uint8Array> {
+  if (!(info instanceof Uint8Array)) throw new ProverRefused('info');
+  const { O, S } = await checkedPair(x, counterpartY);
+  const ikm = new Uint8Array(64);
+  for (const [off, v] of [[0, O(S[0])], [32, O(S[1])]] as const) {
+    let t = v;
+    for (let i = 31; i >= 0; i--) { ikm[off + i] = Number(t & BigInt('255')); t >>= BigInt('8'); }   // 32 bytes, big-endian
+  }
+  const key = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(CONFIRM_DOMAIN), info }, key, CONFIRM_KEY_BYTES * 8);
+  return new Uint8Array(bits);
+}
+
+/** INTERNAL: the one place a counterpart key is checked and S is computed. Order of refusals (the tests assert each REASON): x-range, then the
+ * counterpart's field range (y-off-curve), then y-identity, y-off-curve, y-small-order, y-not-in-subgroup, y-self, then the cofactor witness
+ * re-check (y-not-in-subgroup). Returns what the deposit derivation needs besides the checks. */
+async function checkedPair(x: bigint, counterpartY: Point) {
+  if (typeof x !== 'bigint' || x < big('1') || x >= L) throw new ProverRefused('x-range');
+  const [Yx, Yy] = counterpartY;
   if (typeof Yx !== 'bigint' || typeof Yy !== 'bigint' || Yx < big('0') || Yy < big('0') || Yx >= R || Yy >= R) throw new ProverRefused('y-off-curve');
 
   const { bj, poseidon } = await loadCurve();
@@ -117,13 +136,25 @@ async function deriveWitness(k: DepositKeys): Promise<DerivedDeposit> {
   if (!bj.inCurve(Y)) throw new ProverRefused('y-off-curve');
   if (isId(bj, bj.mulPointEscalar(Y, EIGHT))) throw new ProverRefused('y-small-order');            // order 1, 2, 4 or 8
   if (!isId(bj, bj.mulPointEscalar(Y, L))) throw new ProverRefused('y-not-in-subgroup');             // a torsion component is present
-  const P = bj.mulPointEscalar(bj.Base8, k.x);
+  const P = bj.mulPointEscalar(bj.Base8, x);
   if (O(P[0]) === Yx && O(P[1]) === Yy) throw new ProverRefused('y-self');
 
-  const S = bj.mulPointEscalar(Y, k.x);
+  const S = bj.mulPointEscalar(Y, x);
   const Q = bj.mulPointEscalar(Y, INV8);                                                              // 8 * Q = Y, Q in the prime-order subgroup
   const q8 = bj.mulPointEscalar(Q, EIGHT);
   if (O(q8[0]) !== Yx || O(q8[1]) !== Yy) throw new ProverRefused('y-not-in-subgroup');
+  return { poseidon, O, Yx, Yy, P, S, Q };
+}
+
+/** INTERNAL (not exported): derive the circuit input and the expected public signals. Refuses, with a reason code and BEFORE any proving file is
+ * touched: an out-of-range x or epoch, a one-time key that is not 32 bytes, and a counterpart key that is the identity, off the curve, of small
+ * order, not in the prime-order subgroup, or equal to our own. */
+async function deriveWitness(k: DepositKeys): Promise<DerivedDeposit> {
+  // pure range checks first: they need no curve library
+  if (typeof k.x !== 'bigint' || k.x < big('1') || k.x >= L) throw new ProverRefused('x-range');
+  if (typeof k.epoch !== 'bigint' || k.epoch < big('0') || k.epoch >= R) throw new ProverRefused('epoch-range');
+  if (!(k.oneTimePk instanceof Uint8Array) || k.oneTimePk.length !== 32) throw new ProverRefused('pk-length');
+  const { poseidon, O, Yx, Yy, P, S, Q } = await checkedPair(k.x, k.counterpartY);
   const px = O(P[0]), py = O(P[1]);
   const pFirst = px < Yx || (px === Yx && py < Yy);                                                   // FULL-WIDTH lexicographic order (x, then y)
   const [minx, miny, maxx, maxy] = pFirst ? [px, py, Yx, Yy] : [Yx, Yy, px, py];

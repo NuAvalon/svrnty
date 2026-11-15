@@ -39,7 +39,7 @@ export function makeCurveLoader(load: () => Promise<any>): () => Promise<any> {
   };
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- circomlibjs ships no types
-const loadCurve = makeCurveLoader(() => import('circomlibjs').then((m: any) => m.buildBabyjub()));
+export const loadCurve = makeCurveLoader(() => import('circomlibjs').then((m: any) => m.buildBabyjub()));
 
 function defaultRandomBytes(n: number): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis has no typed crypto on every target
@@ -83,7 +83,7 @@ function packCanonical(x: bigint, y: bigint): Uint8Array {
 }
 
 /** Strict base64 of exactly 32 bytes: 44 characters, canonical (re-encoding gives the same string), nothing else. */
-function decode32(s: unknown): Uint8Array | null {
+export function decodeBeaconKey(s: unknown): Uint8Array | null {
   if (typeof s !== 'string' || s.length !== 44 || !/^[A-Za-z0-9+/]{43}=$/.test(s)) return null;
   let bin: string;
   try { bin = atob(s); } catch { return null; }
@@ -96,7 +96,7 @@ function decode32(s: unknown): Uint8Array | null {
  * subgroup (l*Y = O), not my own key. NEVER throws and returns a fixed reason word, never the input. A failure drops the KEY only (the card is kept). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the curve object comes from circomlibjs, which ships no types
 export async function checkBeaconPublicKey(b64: unknown, ownPublicKey?: string, loader: () => Promise<any> = loadCurve): Promise<BeaconKeyCheck> {
-  const bytes = decode32(b64);
+  const bytes = decodeBeaconKey(b64);
   if (!bytes) return { ok: false, reason: 'encoding' };
   try {
     return checkOnCurve(await loader(), bytes, b64 as string, ownPublicKey);
