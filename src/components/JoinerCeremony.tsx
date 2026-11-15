@@ -44,6 +44,7 @@ import {
   enqueueGateArrival,
   getGateArrival,
   getAllContacts,
+  readBeaconKeyRecord,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { blockedInBook } from '@/lib/sync/contact-update-gate';
@@ -52,6 +53,9 @@ import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { publicKeyOf as beaconPublicKeyOf } from '@/lib/identity/beacon-key-record';
+import { ownBeaconFrom, knownBeaconOf, decideBeaconIntake } from '@/lib/trust/beacon-contact-key';
+import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
 import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
@@ -82,6 +86,9 @@ interface PeerCard {
   deviceMailbox: DeviceMailboxPublic | null;
   // #787: the card's authority pin, non-null ONLY under a valid signature (branch 4). Kept on an already-known contact that holds none (first write wins).
   authorityPin: string | null;
+  // The parsed card, kept so the beacon key can be checked at PERSIST time: that needs my own key and the key this contact holds, and reading my own key needs
+  // the unlocked session, which this screen only has after the person unlocks.
+  card: unknown;
   alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
@@ -209,7 +216,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         // out-of-band "is this your fingerprint?" ritual would falsely pass while the stored key is an
         // attacker's. Branches 2/3/4 import the classical contact; the pq sub-disposition decides whether
         // the authenticated pq_kem/pq_sig is stored (spec §4). THIS IS THE ANTI-SPOOF GATE — unchanged.
-        const d = await classifyImportedCard(parsed);
+        const d = await classifyImportedCard(parsed); // beacon-key: unused here (checked at persist time, with my own key and the held key)
         if (cancelled) return;
         if (!d.importClassical) {
           setError(
@@ -226,6 +233,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           pq: d.pq,
           deviceMailbox: d.deviceMailbox,
           authorityPin: d.authorityPin,
+          card: parsed,
           alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
         });
         setPhase('card');
@@ -265,13 +273,26 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         ? await getContactByFingerprint(ownerFp, peer.fingerprint)
         : null;
       if (existing) {
+        // The beacon key (the shared decision): checked against my own key and the key this contact holds, now that the session is unlocked.
+        const ownBeacon = await ownBeaconFrom(() => readBeaconKeyRecord(ownerFp), beaconPublicKeyOf);
+        const beaconDisposition = await classifyImportedCard(peer.card, {
+          ownBeaconPublicKey: ownBeacon.state === 'readable' ? ownBeacon.publicKey : undefined,
+          knownBeacon: knownBeaconOf(existing),
+        });
+        const beaconIntake = decideBeaconIntake(existing, beaconDisposition, ownBeacon);
+        if (beaconIntake.verdict === 'loud') {
+          // The same generation with a DIFFERENT beacon key is loud and changes nothing; the sentence carries no key and no generation.
+          setError(beaconKeyConflictMessage(existing.name));
+          return;
+        }
         if (peer.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== peer.authorityPin) {
           // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import)
           setError(authorityPinConflictMessage(peer.name));
           return;
         }
-        if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox) || (peer.authorityPin && !existing.next_authority_commitment)) {
+        if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox) || (peer.authorityPin && !existing.next_authority_commitment) || beaconIntake.verdict === 'backfill') {
           await updateContact(existing.id, {
+            ...beaconIntake.fields,
             ...(peer.pq
               ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
               : {}),
@@ -282,6 +303,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setAlreadyKnown(true);
         setGiverBlocked(!admitContact(existing)); // read here, from the row just loaded: no need to wait for the deposit to know this
       } else {
+        // The beacon key is NOT threaded through the gate pipeline either (a gated joiner is not a contact record yet): a new contact lands WITHOUT one until a
+        // re-share back-fills it. Safe: no key means no request for the pair. Same boundary as the device-mailbox below.
         // NOTE (piece-2 coverage boundary, unchanged): the device-mailbox is NOT threaded through the
         // holding-room gate pipeline (GateArrival → admit) yet — a gated joiner lands WITHOUT a mailbox
         // until a re-exchange back-fills it (safe: emit under-reveals, fail-closed). Threading the gate

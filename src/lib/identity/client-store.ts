@@ -312,6 +312,13 @@ export interface ContactRecord {
   // (classifyImportedCard branch 4), and FIRST WRITE WINS: a later card with a different pin never replaces it (the import raises the loud
   // alarm instead). Nothing reads it yet: it is kept so a later relay move or key rotation can be checked against it.
   next_authority_commitment?: string;
+  // ── the contact's beacon key (mutual-trust wire, DARK) ──────────────────────────────────────
+  // The contact's beacon PUBLIC key and its generation, from a card whose signature VERIFIED (classifyImportedCard branch 4, which also checks the key and
+  // the generation rules). Stored for every contact whatever their trust level: a stored key enables nothing by itself. A held key is never replaced at
+  // intake (a newer generation waits for the release-first path); see beacon-contact-key.ts. Carried ONLY by the encrypted backup: it is on no contact-book
+  // export allowlist, plain or sealed.
+  beacon_public_key?: string;
+  beacon_key_generation?: number;
   trust_level: string;
   added_at: string;
   metadata?: any;

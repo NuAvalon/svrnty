@@ -246,6 +246,25 @@ test('W12b a Remove made while OFF that cannot be recorded FAILS: it never looks
   assert.equal(r.f.calls.length, 0);
 });
 
+// ---------- a key stored on a contact, read the way the wire will read it ----------
+test("W13 a beacon key stored on a CONTACT: the wire reads it through counterpartY; a pair the PEER removed (remote latch) sends NOTHING; CONTROL: the same contact, unlatched, DOES send", async () => {
+  const x = await generateBeaconSecret(), other = await generateBeaconSecret();
+  const ownPub = await beaconPublicKey(x);
+  const contact = { beacon_public_key: await beaconPublicKey(other), beacon_key_generation: 3 };   // what the intake stores: the base64 key and its generation
+  const fromContact = async () => { const c = await checkBeaconPublicKey(contact.beacon_public_key, ownPub); return c.ok ? (c as { ok: true; point: Point }).point : undefined; };
+  const control = await rig({ secretX: async () => x, counterpartY: fromContact });
+  control.f.queue.push(ok('accepted'));
+  assert.equal((await control.wire.client.trustAtTap(PAIR)).kind, 'deposited', 'CONTROL: a stored key is enough to send once the pair is confirmed and unlatched');
+  assert.equal(control.f.calls.length, 1);
+  const latched = await rig({ secretX: async () => x, counterpartY: fromContact });
+  await createBeaconLatch(latched.k.kv, latched.sealer, OWNER).setLatched(PAIR, 'remote');
+  assert.equal((await latched.wire.client.trustAtTap(PAIR)).kind, 'latched');
+  await latched.wire.client.renew(PAIR);
+  await latched.wire.client.pollNow(PAIR);
+  assert.equal(latched.f.calls.length, 0, 'a stored key on a removed pair makes zero requests: the latch decides, the key enables nothing alone');
+  assert.deepEqual(latched.seeds.st.map, {});
+});
+
 // ---------- static guards ----------
 function walk(dir: string, out: { path: string; text: string }[] = []) {
   for (const name of readdirSync(dir)) {

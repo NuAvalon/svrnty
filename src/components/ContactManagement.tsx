@@ -53,9 +53,12 @@ import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact, removeContact,
-  getContact, getContactByFingerprint, loadKey,
+  getContact, getContactByFingerprint, loadKey, readBeaconKeyRecord,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { publicKeyOf as beaconPublicKeyOf } from '@/lib/identity/beacon-key-record';
+import { ownBeaconFrom, knownBeaconOf, decideBeaconIntake } from '@/lib/trust/beacon-contact-key';
+import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
@@ -701,7 +704,14 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
 
       // Fail-closed disposition — copy/paste is an untrusted carrier, so it re-verifies the card
       // exactly like the relay/QR path (spec §4/§5; the ONE shared decision, no drift).
-      const d = await classifyImportedCard(card);
+      // The beacon key on the card is checked against MY OWN key (a card must not reflect it back) and against the key this contact already holds (no rollback,
+      // no conflict). Both are read here and passed in: the strict reader never mints, and an unreadable own key drops the card's beacon key (it is counted, not stored).
+      const ownBeacon = await ownBeaconFrom(() => readBeaconKeyRecord(fingerprint), beaconPublicKeyOf);
+      const heldContact = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
+      const d = await classifyImportedCard(card, {
+        ownBeaconPublicKey: ownBeacon.state === 'readable' ? ownBeacon.publicKey : undefined,
+        knownBeacon: knownBeaconOf(heldContact ?? undefined),
+      });
       if (!d.importClassical) {
         // Branch 1 — fp↔key mismatch / malformed: refuse the card entirely.
         setExchangeResult({ success: false, message: 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.' });
@@ -717,6 +727,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const mailboxField = d.deviceMailbox ? { device_mailbox: d.deviceMailbox } : {};
       // #787: keep the card's authority pin, ONLY under a valid signature (branch 4), and FIRST WRITE WINS (see the back-fill below).
       const pinField = d.authorityPin ? { next_authority_commitment: d.authorityPin } : {};
+      // The beacon key: ONE decision shared with the Grow-link path. It writes only on 'add' / 'backfill'; a held key is never replaced here.
+      const beaconIntake = decideBeaconIntake(heldContact ?? undefined, d, ownBeacon);
 
       const existing = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
       if (existing) {
@@ -728,9 +740,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         } else if (d.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== d.authorityPin) {
           // #787: first write wins. A DIFFERENT pin on a valid card is loud and changes nothing.
           setExchangeResult({ success: false, message: authorityPinConflictMessage(displayName) });
-        } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment)) {
+        } else if (beaconIntake.verdict === 'loud') {
+          // The same generation with a DIFFERENT beacon key is loud and changes nothing; the sentence carries no key and no generation.
+          setExchangeResult({ success: false, message: beaconKeyConflictMessage(existing.name) });
+        } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment) || beaconIntake.verdict === 'backfill') {
           // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held).
-          await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField) });
+          await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField), ...beaconIntake.fields });
           setExchangeResult({ success: true, message: `Updated "${displayName}" — their key material is now stored.` });
         } else {
           setExchangeResult({ success: true, message: `You already have "${displayName}".` });
@@ -746,6 +761,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
           ...pqFields, // present ONLY on branch 4b (authenticated pq); dropped on 2/3/4a/4c
           ...mailboxField, // present ONLY under a valid signature (branch 4); dropped on 1/2/3
           ...pinField, // #787: present ONLY under a valid signature (branch 4) and only if canonical; dropped on 1/2/3
+          ...beaconIntake.fields, // the beacon key and its generation: ONLY under a valid signature, a key that passed the checks and a readable own key
         } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
         // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
         const message =
