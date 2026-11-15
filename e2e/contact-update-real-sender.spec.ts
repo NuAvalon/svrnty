@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { assertRelayAcceptsDeposits } from './helpers/relay-precheck';
 
 /**
  * A contact update sent through the REAL UI by a normal (genesis) identity reaches a real peer and is applied.
@@ -65,8 +66,9 @@ async function cardText(page: Page, name: string): Promise<string> {
   return (await card.innerText()).replace(/\s+/g, ' ');
 }
 
-test('a normal identity changes their email through the real UI; the peer applies it', async ({ browser }) => {
+test('a normal identity changes their email through the real UI; the peer applies it', async ({ browser, baseURL }) => {
   test.setTimeout(240_000);
+  await assertRelayAcceptsDeposits(baseURL);
   const A = await (await browser.newContext()).newPage();
   const B = await (await browser.newContext()).newPage();
   const OLD = 'alice-old@example.test';

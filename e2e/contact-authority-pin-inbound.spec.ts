@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { unpackVault } from '../src/lib/sync/vault';
+import { assertRelayAcceptsDeposits } from './helpers/relay-precheck';
 
 /**
  * Inbound arrivals: someone who joins through MY invite reaches my Gate by a signed joiner response. The pin that joiner's own card carries must
@@ -97,8 +98,9 @@ async function exportVault(page: Page, dest: string) {
 
 
 for (const [label, vp] of [['desktop', { width: 1280, height: 800 }], ['phone', { width: 390, height: 844 }]] as const) {
-  test(`INBOUND GATE · ${label}: the contact the giver admits from a joiner's response retains the pin the joiner's card carries (read from the giver's own vault export)`, async ({ browser }, testInfo) => {
+  test(`INBOUND GATE · ${label}: the contact the giver admits from a joiner's response retains the pin the joiner's card carries (read from the giver's own vault export)`, async ({ browser, baseURL }, testInfo) => {
     test.setTimeout(420_000);
+    await assertRelayAcceptsDeposits(baseURL);
     const g = await browser.newContext({ viewport: vp, extraHTTPHeaders: { 'x-svrnty-client-ip': '10.77.2.1' } });
     const a = await browser.newContext({ viewport: vp, extraHTTPHeaders: { 'x-svrnty-client-ip': '10.77.2.2' } });
     const gp = await g.newPage();
