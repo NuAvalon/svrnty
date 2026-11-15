@@ -184,10 +184,10 @@ const codeOnly = (t: string) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)
 const rel = (p: string) => p.replace(/\\/g, '/').split('/src/').pop();
 const namersOf = (files: { path: string; text: string }[], re: RegExp) => files.filter((f) => re.test(codeOnly(f.text))).map((f) => rel(f.path)).sort();
 
-test('K13 only the card format, the card signer, the store type and the decision module name the contact\'s beacon fields in non-test source: a new consumer fails here until it is reviewed (the guard FIRES on a synthetic one, CONTROL)', () => {
+test('K13 only the card format, the card signer, the store type, the decision module and the confirm rule name the contact\'s beacon fields in non-test source: a new consumer fails here until it is reviewed (the guard FIRES on a synthetic one, CONTROL)', () => {
   const RE = /beacon_public_key|beacon_key_generation/;
   assert.deepEqual(namersOf([{ path: '/x/src/lib/new-consumer.ts', text: 'const k = contact.beacon_public_key;' }, { path: '/x/src/lib/c.ts', text: '// beacon_public_key is the card field' }], RE), ['lib/new-consumer.ts']);
-  assert.deepEqual(namersOf(SRC, RE), ['lib/format/envelope.ts', 'lib/identity/client-store.ts', 'lib/identity/identity-card-sign.ts', 'lib/trust/beacon-contact-key.ts']);
+  assert.deepEqual(namersOf(SRC, RE), ['lib/format/envelope.ts', 'lib/identity/client-store.ts', 'lib/identity/identity-card-sign.ts', 'lib/trust/beacon-confirmed.ts', 'lib/trust/beacon-contact-key.ts']);
 });
 
 test('K14 the intake never writes a held key over a newer one: the decision module has no replace verdict, and only add/backfill carry fields', () => {
@@ -235,9 +235,9 @@ test('K16 every classifyImportedCard call passes BOTH ownBeaconPublicKey and kno
   assert.deepEqual(real, ['components/ContactManagement.tsx', 'components/JoinerCeremony.tsx', 'components/JoinerCeremony.tsx'], 'the three real call sites (a fourth must be reviewed)');
 });
 
-test('K17 nothing outside the decision module reads a disposition\'s .beaconKey: a call marked "unused here" cannot be misused', () => {
+test('K17 nothing outside the decision module and the confirm rule reads a disposition\'s .beaconKey: a call marked "unused here" cannot be misused', () => {
   assert.deepEqual(namersOf([{ path: '/x/src/lib/x.ts', text: 'const k = d.beaconKey;' }], /\.beaconKey\b/), ['lib/x.ts'], 'CONTROL: the guard fires');
-  assert.deepEqual(namersOf(SRC, /\.beaconKey\b/), ['lib/trust/beacon-contact-key.ts']);
+  assert.deepEqual(namersOf(SRC, /\.beaconKey\b/), ['lib/trust/beacon-confirmed.ts', 'lib/trust/beacon-contact-key.ts']);
 });
 
 test('K18 the conflict sentence is the reviewed one, names only the contact, and carries no key, generation or alarming word', () => {

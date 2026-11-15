@@ -19,7 +19,9 @@ import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirma
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
 import { createBeaconStore, createBeaconLatch, type BeaconKV, type Sealer } from '../trust/beacon-ports';
-import type { BeaconStorePort, LatchPort } from '../crypto/beacon-client';
+import { isBeaconConfirmed, withConfirmed, createConfirmedPort, type BeaconConfirmed } from '../trust/beacon-confirmed';
+import { beaconPairId } from '../trust/beacon-pair-id';
+import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/beacon-client';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
@@ -895,6 +897,78 @@ export async function updateBeaconSeeds(ownerFingerprint: string, mutate: (cur: 
     if (won) return next;
   }
   throw new Error('beacon seeds: could not commit the update');
+}
+
+// ── #822 (a) S2b-1: the CONFIRMED pairs (DARK; nothing calls the writer except the live ceremony) ─────────────────────────────────
+// Which pairs this device has confirmed by a LIVE exchange (see beacon-confirmed.ts for the one rule). DEVICE-LOCAL pairing state: sealed like the seeds (a reserved AAD
+// id), owner-local, never on the wire, NEVER in any export and NEVER restored: a restored device starts with nothing confirmed.
+const BEACON_CONFIRMED_RECORD_ID = 'piece822:beacon-confirmed'; // reserved AAD id
+function beaconConfirmedSettingKey(ownerFingerprint: string): string {
+  return `beacon_confirmed:${ownerFingerprint}`;
+}
+/** The confirmed row exists but cannot be opened. It is NEVER read as empty and NEVER overwritten. */
+export class BeaconConfirmedUnreadable extends Error {
+  readonly code = 'unreadable' as const;
+  constructor(message = 'beacon confirmed: a stored row cannot be opened; refusing to overwrite it') { super(message); this.name = 'BeaconConfirmedUnreadable'; }
+}
+/** The session is locked: nothing can be read or written (fail-closed). */
+export class BeaconConfirmedLocked extends Error {
+  readonly code = 'locked' as const;
+  constructor(message = 'Session locked — refusing to touch the confirmed pairs (fail-closed)') { super(message); this.name = 'BeaconConfirmedLocked'; }
+}
+
+/** STRICT read: an ABSENT row is the empty map; a row that exists but cannot be opened THROWS; a locked session THROWS. */
+export async function readBeaconConfirmed(ownerFingerprint: string): Promise<BeaconConfirmed> {
+  if (!_sessionKey) throw new BeaconConfirmedLocked();
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', beaconConfirmedSettingKey(ownerFingerprint));
+  if (!row) return {};
+  if (!row.value) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not readable; refusing to overwrite it');
+  let m: unknown;
+  try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_CONFIRMED_RECORD_ID, ownerFingerprint, row.value); }
+  catch { throw new BeaconConfirmedUnreadable(); }
+  if (!isBeaconConfirmed(m)) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not a valid map; refusing to overwrite it');
+  return m;
+}
+
+/** ATOMIC read-modify-write of the confirmed map (the same shape as updateBeaconSeeds): an absent row starts empty; an unreadable one THROWS and writes nothing. */
+async function updateBeaconConfirmed(ownerFingerprint: string, mutate: (cur: BeaconConfirmed) => BeaconConfirmed): Promise<BeaconConfirmed> {
+  if (!_sessionKey) throw new BeaconConfirmedLocked('Session locked — refusing to update the confirmed pairs (fail-closed)');
+  const key = beaconConfirmedSettingKey(ownerFingerprint);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', key);
+    let cur: BeaconConfirmed = {};
+    if (row) {
+      if (!row.value) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not readable; refusing to overwrite it');
+      let m: unknown;
+      try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_CONFIRMED_RECORD_ID, ownerFingerprint, row.value); }
+      catch { throw new BeaconConfirmedUnreadable(); }
+      if (!isBeaconConfirmed(m)) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not a valid map; refusing to overwrite it');
+      cur = m;
+    }
+    const next = mutate({ ...cur });
+    if (!isBeaconConfirmed(next)) throw new Error('refusing to store a malformed confirmed map');
+    const payload = await encryptContactRecord(_sessionKey, BEACON_CONFIRMED_RECORD_ID, ownerFingerprint, next);
+    const won = await commitIfUnchanged(await openDB(), [{ store: 'settings', key, expected: row ?? null }], [{ store: 'settings', value: { key, value: payload } }]);
+    if (won) return next;
+  }
+  throw new Error('beacon confirmed: could not commit the update');
+}
+
+/** The LOCAL id of the pair with this contact on THIS device (the blinded id every beacon row is keyed by). Needs the unlocked session. */
+export async function beaconPairIdFor(contactFingerprint: string): Promise<string> {
+  if (!_contactKeys) throw new BeaconConfirmedLocked();
+  return beaconPairId(_contactKeys.indexKey, contactFingerprint);
+}
+
+/** The port the beacon client asks "is this pair confirmed?" through: reads the confirmed row; ANY doubt answers false. */
+export function createBeaconConfirmedPort(ownerFingerprint: string): PairConfirmedPort {
+  return createConfirmedPort(() => readBeaconConfirmed(ownerFingerprint));
+}
+
+/** Mark this contact's pair confirmed at this generation. The ONLY writer: called from the live ceremony, never from an import, a file or the wire. */
+export async function markBeaconPairConfirmed(ownerFingerprint: string, contactFingerprint: string, generation: number): Promise<void> {
+  const pairId = await beaconPairIdFor(contactFingerprint);
+  await updateBeaconConfirmed(ownerFingerprint, (cur) => withConfirmed(cur, pairId, generation));
 }
 
 // ── #588 D1/D2: the identity's beacon key record (x + generation + jitter secret) — IDENTITY STATE, DARK ─────────────────────

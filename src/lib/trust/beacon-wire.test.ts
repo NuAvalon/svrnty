@@ -7,6 +7,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createBeaconWireWithGate, BeaconWireOff, type BeaconWireDeps } from './beacon-wire';
 import { createBeaconLatch, type BeaconKV, type Sealer } from './beacon-ports';
+import { createConfirmedPort } from './beacon-confirmed';
 import type { SeedStore } from './beacon-secrets';
 import type { BeaconSeeds } from '../identity/beacon-seeds';
 import { isBeaconSeeds } from '../identity/beacon-seeds';
@@ -18,6 +19,7 @@ const E = 2_900;
 const MID = E * EPOCH_MS + EPOCH_MS / 2; // mid-week: only the current epoch is live
 const OWNER = 'owner-1';
 const PAIR = 'pair-1';
+const PAIR_ID64 = 'c'.repeat(64);
 
 // ---------- fakes, all counting ----------
 function countingKV() {
@@ -263,6 +265,26 @@ test("W13 a beacon key stored on a CONTACT: the wire reads it through counterpar
   await latched.wire.client.pollNow(PAIR);
   assert.equal(latched.f.calls.length, 0, 'a stored key on a removed pair makes zero requests: the latch decides, the key enables nothing alone');
   assert.deepEqual(latched.seeds.st.map, {});
+});
+
+// ---------- the real confirmed port, and a removed pair ----------
+test("W14 a pair that is MARKED confirmed but latched (the peer removed it) still sends NOTHING; CONTROL: the same confirmed pair, unlatched, DOES send; and an UNCONFIRMED pair sends nothing", async () => {
+  const confirmedMap = { [PAIR_ID64]: { generation: 3 } };
+  const port = createConfirmedPort(async () => confirmedMap);
+  // the pair id the client asks about is the id the store used: use the same string for both, 64 hex
+  const ok1 = await rig({ confirmed: port });
+  assert.equal(await port.isConfirmed(PAIR_ID64), true);
+  ok1.f.queue.push(ok('accepted'));
+  assert.equal((await ok1.wire.client.trustAtTap(PAIR_ID64)).kind, 'deposited', 'CONTROL: confirmed + unlatched sends');
+  const latched = await rig({ confirmed: port });
+  await createBeaconLatch(latched.k.kv, latched.sealer, OWNER).setLatched(PAIR_ID64, 'remote');
+  assert.equal((await latched.wire.client.trustAtTap(PAIR_ID64)).kind, 'latched');
+  await latched.wire.client.renew(PAIR_ID64);
+  await latched.wire.client.pollNow(PAIR_ID64);
+  assert.equal(latched.f.calls.length, 0, 'marked confirmed AND latched: zero requests, the latch decides');
+  const unconfirmed = await rig({ confirmed: createConfirmedPort(async () => ({})) });
+  assert.equal((await unconfirmed.wire.client.trustAtTap(PAIR_ID64)).kind, 'unconfirmed');
+  assert.equal(unconfirmed.f.calls.length, 0);
 });
 
 // ---------- static guards ----------

@@ -45,6 +45,7 @@ import {
   getGateArrival,
   getAllContacts,
   readBeaconKeyRecord,
+  markBeaconPairConfirmed,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { blockedInBook } from '@/lib/sync/contact-update-gate';
@@ -55,6 +56,7 @@ import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { publicKeyOf as beaconPublicKeyOf } from '@/lib/identity/beacon-key-record';
 import { ownBeaconFrom, knownBeaconOf, decideBeaconIntake } from '@/lib/trust/beacon-contact-key';
+import { decideConfirm } from '@/lib/trust/beacon-confirmed';
 import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
 import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
@@ -299,6 +301,12 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             ...(peer.deviceMailbox ? { device_mailbox: peer.deviceMailbox } : {}),
             ...(peer.authorityPin && !existing.next_authority_commitment ? { next_authority_commitment: peer.authorityPin } : {}),
           });
+        }
+        // A LIVE exchange is the ONE place a pair can be confirmed (never an import, a pasted card or a file: see beacon-confirmed.ts). The key is stored first (above);
+        // a pair that cannot be marked simply stays unconfirmed, which means no requests, so a failure here is not shown and does not stop the ceremony.
+        const confirmDecision = decideConfirm(beaconIntake.verdict, beaconIntake.counted, 'live-ceremony', existing, beaconDisposition);
+        if (confirmDecision.confirm && confirmDecision.generation !== undefined) {
+          try { await markBeaconPairConfirmed(ownerFp, existing.fingerprint, confirmDecision.generation); } catch { /* stays unconfirmed */ }
         }
         setAlreadyKnown(true);
         setGiverBlocked(!admitContact(existing)); // read here, from the row just loaded: no need to wait for the deposit to know this
