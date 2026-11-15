@@ -48,7 +48,7 @@ async function exportVault(page: Page, dest: string): Promise<string> {
 async function openRestoreWithFile(page: Page, vaultPath: string) {
   await page.goto(APP);
   await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await page.setInputFiles('input[accept=".svrnty,.json"]', vaultPath);
+  await page.setInputFiles('[data-testid="restore-file-input"]', vaultPath);
 }
 
 async function expectAsk(page: Page) {

@@ -9,7 +9,7 @@ import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { argon2id } from '@noble/hashes/argon2.js';
 import {
-  sealWithPassword, openWithPassword, EnvelopeRefused, LEGACY_PBKDF2_ITERATIONS, MIN_EXPORT_PASSWORD_LENGTH, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
+  sealWithPassword, openWithPassword, EnvelopeRefused, EnvelopeWrongPassword, LEGACY_PBKDF2_ITERATIONS, MIN_EXPORT_PASSWORD_LENGTH, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
 } from './password-envelope';
 import { ARGON2_MAX_MEMORY_COST, ARGON2_MAX_TIME_COST } from './kdf';
 
@@ -191,4 +191,14 @@ test('E13 the export dialog\'s three on-screen lines are the copy owner\'s words
   assert.ok(!/(minimum|least)\s+\d|\(\d+\+/i.test(dlg), 'no digit is written out next to the copy: the number comes from the constant');
   // the refusal is only for a missing or too-short password
   assert.match(dlg, /if \(!password \|\| password\.length < MIN_EXPORT_PASSWORD_LENGTH\) \{\s*throw new Error\(`Enter a password of at least/);
+});
+
+test('E-typed a wrong password on EITHER format is the typed EnvelopeWrongPassword (code "wrong-password"); a right one opens; anything else is not retyped', async () => {
+  for (const [name, env] of [['argon2id', ARGON_KAT], ['legacy PBKDF2', LEGACY_KAT]] as const) {
+    await assert.rejects(openWithPassword(clone(env), 'not-the-password'), (e: unknown) => e instanceof EnvelopeWrongPassword && (e as EnvelopeWrongPassword).code === 'wrong-password', `${name}: wrong password`);
+    const ok = await openWithPassword(clone(env), PW);
+    assert.ok(ok.plaintext.length > 0, `${name}: the right password opens`);
+  }
+  // a refusal and a malformed field stay what they were: not a wrong password
+  await assert.rejects(openWithPassword({ ...clone(ARGON_KAT), kdf: 'scrypt' }, PW), (e: unknown) => e instanceof EnvelopeRefused && !(e instanceof EnvelopeWrongPassword));
 });

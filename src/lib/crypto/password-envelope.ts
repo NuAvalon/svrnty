@@ -55,6 +55,21 @@ export class EnvelopeRefused extends Error {
   constructor(code: EnvelopeRefused['code'], message: string) { super(message); this.name = 'EnvelopeRefused'; this.code = code; }
 }
 
+/**
+ * The file's own password check failed: the AES-GCM tag did not verify. Typed at the source so a restore screen can tell THIS from any other failure: a bare
+ * WebCrypto OperationError raised by some later step (reading a record sealed under another key, say) says nothing about the password the person typed.
+ */
+export class EnvelopeWrongPassword extends Error {
+  readonly code = 'wrong-password' as const;
+  constructor() { super('Incorrect encryption password.'); this.name = 'EnvelopeWrongPassword'; }
+}
+
+/** Only WebCrypto's authentication failure (a DOMException named OperationError) is a wrong password; anything else passes through unchanged. */
+function asWrongPassword(e: unknown): never {
+  if (e && typeof e === 'object' && (e as { name?: unknown }).name === 'OperationError') throw new EnvelopeWrongPassword();
+  throw e;
+}
+
 /** What the Argon2id tag authenticates, besides the ciphertext: change the algorithm, the tag or any parameter and the decrypt fails. */
 function aadFor(p: { time_cost: number; memory_cost: number; parallelism: number }): Uint8Array {
   return new TextEncoder().encode(`svrnty-password-envelope-v1|${ENVELOPE_ALGORITHM}|${ENVELOPE_KDF_ARGON2ID}|${p.time_cost}|${p.memory_cost}|${p.parallelism}`);
@@ -105,6 +120,8 @@ export async function openWithPassword(envelope: unknown, password: string): Pro
     const key = await deriveKeyArgon2idOffThread(password, salt, params);
     try {
       return { plaintext: await aesGcmDecrypt(key, iv, data, aadFor(params)), legacy: false };
+    } catch (e) {
+      return asWrongPassword(e);
     } finally {
       key.fill(0);
     }
@@ -120,7 +137,12 @@ export async function openWithPassword(envelope: unknown, password: string): Pro
       false,
       ['decrypt'],
     );
-    const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, data as BufferSource));
+    let plain: Uint8Array;
+    try {
+      plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, data as BufferSource));
+    } catch (e) {
+      return asWrongPassword(e);
+    }
     return { plaintext: plain, legacy: true };
   }
 

@@ -151,8 +151,11 @@ test('plain-backup import: guard right after the identity binds, before the firs
 
 test('the gate shows the refusal as itself, never as a wrong passphrase', () => {
   const src = read('../../components/SoverentityFrontend.tsx');
-  const handler = src.slice(src.indexOf('const looksLikeDecryptFail') - 400, src.indexOf('const looksLikeDecryptFail'));
-  assert.match(handler, /isRestoreDomainRefusal\(err\)/, 'the wrong-passphrase regex matches the word "passphrase": the refusal must be handled first');
+  // The message is now chosen by classifyRestoreFailure (by type and code); the refusal must still be handled BEFORE that call, so it is shown as itself.
+  const classifyAt = src.indexOf('classifyRestoreFailure(err');
+  assert.ok(classifyAt > 0, 'the handler classifies the failure');
+  const handler = src.slice(classifyAt - 400, classifyAt);
+  assert.match(handler, /isRestoreDomainRefusal\(err\)/, 'a restore-domain refusal must be handled before the failure is classified, so it is never shown as a wrong passphrase');
 });
 
 test('the seed-restore handler also shows the refusal as itself', () => {
