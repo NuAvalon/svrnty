@@ -1139,26 +1139,81 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
 
 // ── Restore key-domain guard ──────────────────────────────
 
+/** One record this device holds for an owner, and where the key that opens it comes from. */
+interface HeldRecord {
+  kind: 'key' | 'contact' | 'sealed' | 'beacon';
+  /** 'record-salt': the key is derived with the salt written in the record itself. 'settings-salt': it is the session key (the device's `key_encryption_salt`). */
+  keySource: 'record-salt' | 'settings-salt';
+  /** For 'record-salt' records, that salt. */
+  salt?: string;
+  /** false = still in the old unencrypted form: under no passphrase, so the checks skip it (it still counts as HELD). */
+  encrypted: boolean;
+  /** present and encrypted, but not in a shape that can be opened: the checks refuse. */
+  malformed: boolean;
+  /** Opens it with this key: false or a throw means "does not open". Only called when encrypted and not malformed. */
+  open: (key: CryptoKey) => Promise<boolean>;
+}
+
 /**
- * Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes.
- * That includes every OWNER_SEALED_SETTINGS record and any beacon pair or latch row, so a device whose KEYS were cleared but whose settings rows were not (the state a partial
- * wipe leaves) still counts as holding the owner and gets the passphrase check: a restore that wrote new keys there under another passphrase would orphan every latch (the pair id
- * is derived from the passphrase) and a Block would silently stop applying. BOUND: on such a device a restore now refuses when the passphrase differs or the settings salt is gone,
- * until the latches travel in the backup or are rebuilt fail-closed. NOT the contact manifest: it is a MAC over the book, not a record the check can open, so counting it would
- * hold a device with nothing to open and the restore would refuse under every passphrase, the right one included.
+ * THE ONE DEFINITION of what a device holds for an owner. Three questions are answered from it and from nothing else, so they cannot disagree about what counts:
+ * deviceHoldsOwner (is the set non-empty), passphraseOpensEveryHeldKeyRecord (does this passphrase open every encrypted member) and sessionOpensOwner (does the open
+ * session). A record type added here is seen by all three; one left out is a hole (held, never checked) or a dead end (checked, never openable) for all three.
+ * Members: the key stores, the contact rows, every OWNER_SEALED_SETTINGS record, and every beacon pair and latch row (collections: each row is a member).
+ * NOT a member: the contact book manifest. It is a MAC over the book, not a record that can be opened, and nothing is orphaned by it (every contact write rewrites it);
+ * counting it would hold a device with nothing to open, and the restore would then refuse under every passphrase, the right one included.
+ * Reads only.
+ */
+async function readHeldSet(fingerprint: string): Promise<HeldRecord[]> {
+  const held: HeldRecord[] = [];
+  for (const store of OWNER_KEY_STORES) {
+    const record = await txGet<{ enc_version?: number; salt?: unknown; iv?: unknown; ciphertext?: unknown }>(store, fingerprint);
+    if (!record) continue;
+    const encrypted = record.enc_version === ENC_VERSION;
+    const malformed = encrypted && (typeof record.salt !== 'string' || typeof record.iv !== 'string' || typeof record.ciphertext !== 'string');
+    held.push({ kind: 'key', keySource: 'record-salt', salt: typeof record.salt === 'string' ? record.salt : undefined, encrypted, malformed, open: (key) => keyRecordOpens(record, key, ENC_VERSION) });
+  }
+  // Contacts and every owner-sealed settings record are under the session key (the settings salt), not under a record's own salt. Key rows under B beside a contact or a
+  // sealed record (a blocklist, the receipts default, ...) under A is the two-passphrase state, and a restore that wrote more rows there would read as "stopped partway"
+  // on every re-run, or leave a record unreadable for good.
+  for (const rec of await txGetByIndex<any>('contacts', 'owner', fingerprint)) {
+    if (!rec) continue;
+    const encrypted = !!(rec.enc_version && rec.ciphertext);
+    const malformed = encrypted && (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string');
+    held.push({ kind: 'contact', keySource: 'settings-salt', encrypted, malformed, open: async (key) => { await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext }); return true; } });
+  }
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
+    if (!row) continue;
+    const value = row.value;
+    const encrypted = !!value;
+    const malformed = encrypted && (typeof value!.iv !== 'string' || typeof value!.ciphertext !== 'string');
+    held.push({ kind: 'sealed', keySource: 'settings-salt', encrypted, malformed, open: async (key) => { await decryptContactRecord(key, sealed.recordId, fingerprint, { enc_version: value!.enc_version, iv: value!.iv as string, ciphertext: value!.ciphertext as string }); return true; } });
+  }
+  // The beacon pair and latch rows (beacon-ports.ts) are COLLECTIONS, so each row is a member, not one per collection. A pair id is derived from the passphrase, so a restore
+  // that changed the passphrase-derived keys on a device holding them would orphan every row (the lookups find nothing, read "no latch", and a Block would silently stop
+  // applying). They count by themselves: a device with latch rows and NO contacts (a Remove deletes the contact and keeps the latch) is held.
+  for (const prefix of beaconRowPrefixes(fingerprint)) {
+    for (const key of await txKeysWithPrefix('settings', prefix)) {
+      const row = await txGet<{ key: string; value?: unknown }>('settings', key);
+      if (!row) continue;
+      const aad = beaconRowAad(fingerprint, key);
+      const raw = row.value;
+      let payload: { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null = null;
+      if (aad !== null && typeof raw === 'string') { try { payload = JSON.parse(raw); } catch { payload = null; } }
+      const malformed = aad === null || !payload || typeof payload.iv !== 'string' || typeof payload.ciphertext !== 'string';
+      held.push({ kind: 'beacon', keySource: 'settings-salt', encrypted: true, malformed, open: async (k) => { await decryptContactRecord(k, aad!, fingerprint, { enc_version: payload!.enc_version, iv: payload!.iv as string, ciphertext: payload!.ciphertext as string }); return true; } });
+    }
+  }
+  return held;
+}
+
+/**
+ * Does this device hold anything for this owner? The held set (readHeldSet) is non-empty. Presence only: no decryption, no writes.
+ * So a device whose KEYS were cleared but whose settings rows were not (the state a partial wipe leaves) still counts as holding the owner and gets the passphrase check.
+ * BOUND: on such a device a restore refuses when the passphrase differs or the settings salt is gone, until the latches travel in the backup or are rebuilt fail-closed.
  */
 export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
-  for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
-    if (await txGet<unknown>(store, fingerprint)) return true;
-  }
-  if ((await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0) return true;
-  for (const sealed of OWNER_SEALED_SETTINGS) {
-    if (await txGet<unknown>('settings', sealed.settingKey(fingerprint))) return true;
-  }
-  for (const prefix of beaconRowPrefixes(fingerprint)) {
-    if ((await txKeysWithPrefix('settings', prefix)).length > 0) return true;
-  }
-  return false;
+  return (await readHeldSet(fingerprint)).length > 0;
 }
 
 const digestOf = async (value: unknown): Promise<string> =>
@@ -1192,81 +1247,51 @@ export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnaps
   return out;
 }
 
-/** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
+/**
+ * Does the OPEN session decrypt every encrypted record this device holds for the owner (the held set, with the session key in place of a derived one)? Whether a record
+ * opens is decided by decrypting it, not by comparing salts. A device with no key record is judged on the records it does hold. Non-destructive and fail-closed.
+ */
 export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
-  if (!_sessionKey) return false;
-  return keyRecordOpens(await txGet<unknown>('keys', fingerprint), _sessionKey, ENC_VERSION);
+  const sessionKey = _sessionKey;
+  if (!sessionKey) return false;
+  return openEveryHeldRecord(fingerprint, async () => sessionKey);
 }
 
 /**
- * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, every OWNER_SEALED_SETTINGS record, and EVERY beacon pair and latch row)?
- * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
- * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
- * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (the held set: keys, pq_keys, vaults, shards, device_mailbox, the contact rows, every
+ * OWNER_SEALED_SETTINGS record, and EVERY beacon pair and latch row)? Not "the keys record": a restore that died half way can leave records with no `keys` row, and a
+ * device holding the owner under TWO passphrases must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the
+ * old unencrypted form is under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
  */
 export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, passphrase: string): Promise<boolean> {
   const derived = new Map<string, CryptoKey>(); // records written in one session share a salt: derive once per salt
+  return openEveryHeldRecord(fingerprint, async (salt) => {
+    let key = derived.get(salt);
+    if (!key) { key = await deriveSessionKey(passphrase, fromBase64(salt)); derived.set(salt, key); }
+    return key;
+  });
+}
+
+/** The ONE opening loop over the held set: `keyFor(salt)` is where the key comes from (a passphrase derivation, or the open session). false at the first record that does not open. */
+async function openEveryHeldRecord(fingerprint: string, keyFor: (salt: string) => Promise<CryptoKey>): Promise<boolean> {
+  const held = await readHeldSet(fingerprint);
+  let settingsSalt: string | undefined;
   let opened = 0;
-  for (const store of OWNER_KEY_STORES) {
-    const record = await txGet<{ enc_version?: number; salt?: unknown; iv?: unknown; ciphertext?: unknown }>(store, fingerprint);
-    if (!record) continue;
-    if (record.enc_version !== ENC_VERSION) continue;
-    if (typeof record.salt !== 'string' || typeof record.iv !== 'string' || typeof record.ciphertext !== 'string') return false;
+  for (const rec of held) {
+    if (!rec.encrypted) continue;
+    if (rec.malformed) return false;
+    let salt = rec.salt;
+    if (rec.keySource === 'settings-salt') {
+      if (settingsSalt === undefined) settingsSalt = (await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt'))?.value ?? '';
+      salt = settingsSalt;
+    }
+    if (!salt) return false;
     try {
-      let key = derived.get(record.salt);
-      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(record.salt)); derived.set(record.salt, key); }
-      if (!(await keyRecordOpens(record, key, ENC_VERSION))) return false;
+      if (!(await rec.open(await keyFor(salt)))) return false;
     } catch {
       return false;
     }
     opened++;
-  }
-  // Contacts and every owner-sealed settings record (OWNER_SEALED_SETTINGS) are in the passphrase domain too: their records are under the session key (the settings
-  // salt), not under a record's own salt. Key rows under B beside a contact or a sealed record (a blocklist, the receipts default, ...) under A is the
-  // two-passphrase state, and a restore that wrote more rows there would read as "stopped partway" on every re-run, or leave a record unreadable for good.
-  const encryptedContacts = (await txGetByIndex<any>('contacts', 'owner', fingerprint)).filter((r) => r && r.enc_version && r.ciphertext);
-  const heldSealed: Array<{ recordId: string; value: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }> = [];
-  for (const sealed of OWNER_SEALED_SETTINGS) {
-    const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
-    if (row?.value) heldSealed.push({ recordId: sealed.recordId, value: row.value });
-  }
-  // The beacon pair and latch rows (beacon-ports.ts) are in the passphrase domain too, and they are COLLECTIONS, so each row is opened, not one per collection. Why it
-  // matters: a pair id is derived from the passphrase, so a restore that changes the passphrase-derived keys on a device holding latch rows would orphan every row (the
-  // lookups find nothing, read "no latch", and a Block would silently stop applying). A row that exists but cannot be mapped to its AAD or opened refuses the restore.
-  // These rows count by themselves: a device with latch rows and NO contacts (a Remove deletes the contact and keeps the latch) is still checked.
-  const heldBeacon: Array<{ aad: string | null; raw: unknown }> = [];
-  for (const prefix of beaconRowPrefixes(fingerprint)) {
-    for (const key of await txKeysWithPrefix('settings', prefix)) {
-      const row = await txGet<{ key: string; value?: unknown }>('settings', key);
-      if (row) heldBeacon.push({ aad: beaconRowAad(fingerprint, key), raw: row.value });
-    }
-  }
-  if (encryptedContacts.length > 0 || heldSealed.length > 0 || heldBeacon.length > 0) {
-    const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
-    if (!setting?.value) return false;
-    try {
-      let key = derived.get(setting.value);
-      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(setting.value)); derived.set(setting.value, key); }
-      for (const rec of encryptedContacts) {
-        if (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string') return false;
-        await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext });
-        opened++;
-      }
-      for (const held of heldSealed) {
-        if (typeof held.value.iv !== 'string' || typeof held.value.ciphertext !== 'string') return false;
-        await decryptContactRecord(key, held.recordId, fingerprint, { enc_version: held.value.enc_version, iv: held.value.iv, ciphertext: held.value.ciphertext });
-        opened++;
-      }
-      for (const held of heldBeacon) {
-        if (held.aad === null || typeof held.raw !== 'string') return false;
-        const payload = JSON.parse(held.raw) as { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null;
-        if (!payload || typeof payload.iv !== 'string' || typeof payload.ciphertext !== 'string') return false;
-        await decryptContactRecord(key, held.aad, fingerprint, { enc_version: payload.enc_version, iv: payload.iv, ciphertext: payload.ciphertext });
-        opened++;
-      }
-    } catch {
-      return false;
-    }
   }
   return opened > 0;
 }

@@ -70,19 +70,24 @@ test('S4 every encryptContactRecord( call in src/ is one S1 or S3 recognises (a 
 
 // ---- the restore's passphrase check also opens EVERY beacon pair and latch row (collections, not single records) ----
 const codeOnlyText = (text: string) => text.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-const checkBody = (() => {
-  const a = store.indexOf('export async function passphraseOpensEveryHeldKeyRecord');
-  assert.ok(a >= 0, 'the check exists');
-  return codeOnlyText(store.slice(a, store.indexOf('\n}\n', a)));
-})();
+const fnOf = (head: string) => {
+  const a = store.indexOf(head);
+  assert.ok(a >= 0, `${head} exists`);
+  const ends = ['\nexport ', '\n/**'].map((m) => store.indexOf(m, a + 1)).filter((i) => i !== -1);
+  return codeOnlyText(store.slice(a, Math.min(...ends)));
+};
+const heldSetBody = fnOf('async function readHeldSet(');
+const openLoopBody = fnOf('async function openEveryHeldRecord(');
 
-test('S5 the passphrase check opens EVERY row of both beacon collections with the ports\' own AAD, refuses a row it cannot map or open, and counts these rows by themselves (a device with latch rows and NO contacts is still checked)', () => {
-  assert.match(checkBody, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\)/, 'both collections are enumerated');
-  assert.match(checkBody, /for \(const key of await txKeysWithPrefix\('settings', prefix\)\) \{/, 'EVERY key of the collection (no slice, no first-only)');
-  assert.match(checkBody, /beaconRowAad\(fingerprint, key\)/, 'the AAD comes from the ports\' one definition');
-  assert.match(checkBody, /if \(encryptedContacts\.length > 0 \|\| heldSealed\.length > 0 \|\| heldBeacon\.length > 0\) \{/, 'a device holding ONLY beacon rows enters the check (no contacts, no listed record)');
-  assert.match(checkBody, /for \(const held of heldBeacon\) \{\s*if \(held\.aad === null \|\| typeof held\.raw !== 'string'\) return false;/, 'a row that cannot be mapped or is not a string refuses');
-  assert.match(checkBody, /decryptContactRecord\(key, held\.aad, fingerprint,/, 'EVERY row is opened under the candidate key (not one per collection)');
+test('S5 the held set has EVERY row of both beacon collections, mapped with the ports\' own AAD; a row that cannot be mapped or parsed is malformed, and a malformed record refuses', () => {
+  assert.match(heldSetBody, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\) \{/, 'both collections are enumerated');
+  assert.match(heldSetBody, /for \(const key of await txKeysWithPrefix\('settings', prefix\)\) \{/, 'EVERY key of the collection (no slice, no first-only)');
+  assert.match(heldSetBody, /const aad = beaconRowAad\(fingerprint, key\);/, 'the AAD comes from the ports\' one definition');
+  assert.match(heldSetBody, /const malformed = aad === null \|\| !payload \|\| typeof payload\.iv !== 'string' \|\| typeof payload\.ciphertext !== 'string';/, 'an unmappable or unparseable row is malformed');
+  assert.match(heldSetBody, /kind: 'beacon', keySource: 'settings-salt', encrypted: true, malformed/, 'a beacon row is always encrypted: it is never skipped');
+  assert.match(heldSetBody, /decryptContactRecord\(k, aad!, fingerprint,/, 'each row is opened with its own AAD');
+  assert.match(openLoopBody, /if \(rec\.malformed\) return false;/, 'a malformed record refuses the restore');
+  assert.match(openLoopBody, /if \(!\(await rec\.open\(await keyFor\(salt\)\)\)\) return false;/, 'EVERY member is opened (not one per collection)');
 });
 
 test('S6 the beacon row AAD has ONE definition, in beacon-ports.ts: client-store builds none of its own', () => {
@@ -94,18 +99,23 @@ test('S6 the beacon row AAD has ONE definition, in beacon-ports.ts: client-store
   assert.match(ports, /const aadOf = \(source: Source, pairId: string\) => latchAad\(owner, source, pairId\);/, 'the latch uses the shared builder');
 });
 
-// ---- a device whose keys were cleared but whose settings rows were not still counts as holding the owner ----
-const fnBody = (head: string) => {
-  const a = store.indexOf(head);
-  assert.ok(a >= 0, `${head} exists`);
-  return codeOnlyText(store.slice(a, store.indexOf('\n}\n', a)));
-};
+// ---- ONE held set: holding, the passphrase check and the open session all read it ----
+const fnBody = (head: string) => fnOf(head);
 
-test('S7 deviceHoldsOwner counts every owner-sealed settings record and every beacon row, and NOT the contact manifest (a MAC the passphrase check cannot open)', () => {
-  const b = fnBody('export async function deviceHoldsOwner');
-  assert.match(b, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{\s*if \(await txGet<unknown>\('settings', sealed\.settingKey\(fingerprint\)\)\) return true;\s*\}/, 'every listed record');
-  assert.match(b, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\) \{\s*if \(\(await txKeysWithPrefix\('settings', prefix\)\)\.length > 0\) return true;\s*\}/, 'every beacon pair and latch row');
-  assert.doesNotMatch(b, /contactManifestSettingKey|contact_manifest/, 'the manifest holds nothing the check can open: counting it would refuse every restore on such a device');
+test('S7 deviceHoldsOwner is "the held set is non-empty", the held set counts every owner-sealed settings record and every beacon row, and NOT the contact manifest (stated in its definition)', () => {
+  assert.match(fnBody('export async function deviceHoldsOwner'), /return \(await readHeldSet\(fingerprint\)\)\.length > 0;/, 'holding = the held set is non-empty');
+  assert.match(heldSetBody, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{\s*const row = await txGet<[^\n]*>\('settings', sealed\.settingKey\(fingerprint\)\);\s*if \(!row\) continue;/, 'every listed record');
+  assert.match(heldSetBody, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\)/, 'every beacon pair and latch row');
+  assert.doesNotMatch(heldSetBody + fnBody('export async function deviceHoldsOwner'), /contactManifestSettingKey|contact_manifest/, 'the manifest holds nothing that can be opened: counting it would refuse every restore on such a device');
+  assert.match(store, /NOT a member: the contact book manifest/, 'the exclusion is stated in the definition');
+});
+
+test('S9 the passphrase check and the open session iterate the SAME held set, so the three questions cannot disagree about what counts', () => {
+  assert.match(fnBody('export async function passphraseOpensEveryHeldKeyRecord'), /return openEveryHeldRecord\(fingerprint, async \(salt\) => \{/, 'the passphrase check');
+  assert.match(fnBody('export async function sessionOpensOwner'), /return openEveryHeldRecord\(fingerprint, async \(\) => sessionKey\);/, 'the open session');
+  assert.match(openLoopBody, /const held = await readHeldSet\(fingerprint\);/, 'both read the one held set');
+  const callers = [...store.matchAll(/await readHeldSet\(fingerprint\)/g)].length;
+  assert.equal(callers, 2, 'readHeldSet is read by exactly two functions: deviceHoldsOwner and the opening loop');
 });
 
 test('S8 the snapshot has one entry per beacon collection: the count and the digest of the key-sorted key + value rows', () => {

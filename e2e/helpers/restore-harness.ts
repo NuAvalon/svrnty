@@ -82,6 +82,15 @@ window.__rh = {
   async seedSealedOnly(fp: string, pw: string, name: string) { await initSessionKey(pw); await writeSealed(fp, name); lockSession(); return true; },
   /** ONLY the contact book manifest under `pw`: a contact added and removed again leaves the empty book's manifest (a MAC, not a sealed record), with no key and no contact row. */
   async seedContactManifestOnly(fp: string, pw: string, row: Parameters<typeof addContact>[1]) { await initSessionKey(pw); const c = await addContact(fp, row); await removeContact(c.id); lockSession(); return true; },
+  /** The owner's held state for the agreement matrix: any subset of key / contact / sealed / beacon, EVERY kind under ONE passphrase `pw`. */
+  async seedState(fp: string, keys: { privateKey: string; passphrase: string }, pw: string, kinds: string[], row: Parameters<typeof addContact>[1]) {
+    await initSessionKey(pw);
+    if (kinds.includes('key')) await storeKey(fp, keys.privateKey, keys.passphrase);
+    if (kinds.includes('contact')) await addContact(fp, row);
+    if (kinds.includes('sealed')) await writeSealed(fp, 'suppression');
+    if (kinds.includes('beacon')) await createBeaconPorts(fp).latch.setLatched('a1'.repeat(32), 'local');
+    lockSession(); return true;
+  },
   /** ONLY a beacon row under `pw` (a local latch, or a pair record): no key, no contact, nothing else: the state left when an identity's keys are cleared but its settings rows are not. */
   async seedBeaconRowOnly(fp: string, pw: string, kind: 'pair' | 'latch-local') {
     await initSessionKey(pw);

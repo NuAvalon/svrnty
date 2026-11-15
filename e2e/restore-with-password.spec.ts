@@ -467,6 +467,36 @@ test('v. a device holding ONLY a contact book manifest (no key, no contact, no s
   await ctx.close();
 });
 
+// THE AGREEMENT MATRIX. "Does this device hold this owner" (deviceHoldsOwner), "does this passphrase open it" (the passphrase check) and "does the open session open it" (the guard
+// inside the import) answer from ONE held set, so over every combination of what a device can hold they must agree. Each state is seeded with every kind under ONE passphrase:
+//   held     + the RIGHT passphrase  => the restore succeeds (never a dead end, a keyless device included);
+//   held     + a WRONG passphrase    => refused, and nothing on the device changes (a Block is never orphaned);
+//   not held                         => nothing to check: the restore succeeds as on a fresh device.
+const HELD_KINDS = ['key', 'contact', 'sealed', 'beacon'] as const;
+for (let mask = 0; mask < 16; mask++) {
+  const kinds = HELD_KINDS.filter((_, bit) => mask & (1 << bit));
+  const label = kinds.length ? kinds.join(' + ') : 'nothing at all';
+  test(`w. agreement matrix [${label}]: ${kinds.length ? 'the right passphrase restores, a wrong one refuses with nothing written' : 'not held, so the restore needs no check'}`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedState', fp, backup.keys, UNLOCK_PW, [...kinds], { name: 'Held Here', email: 'held@example.test', public_key: '', fingerprint: '', trust_level: 'known' });
+    await page.reload();
+    if (kinds.length) {
+      const keysBefore = await ownerSettingKeys(page, fp);
+      const stBefore = await deviceState(page);
+      const wrong = writeFull(testInfo, `full-w-${mask}-wrong.json`, noVault(), OTHER_PW);
+      await page.reload();
+      expect(await restoreWith(page, wrong, OTHER_PW), `[${label}] a wrong passphrase`).toBe('error');
+      await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+      expect(await deviceState(page), `[${label}] nothing was written`).toEqual(stBefore);
+      expect(await ownerSettingKeys(page, fp), `[${label}] no settings row was written or removed`).toEqual(keysBefore);
+    }
+    const right = writeFull(testInfo, `full-w-${mask}-right.json`, noVault(), UNLOCK_PW);
+    await page.reload(); await page.addScriptTag({ content: HARNESS });
+    expect(await restoreWith(page, right, UNLOCK_PW), `[${label}] the right passphrase`).toBe('restored');
+    await ctx.close();
+  });
+}
+
 test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);
   expect(backup.device_mailbox, 'the backup carries the device mailbox').toBeTruthy();
