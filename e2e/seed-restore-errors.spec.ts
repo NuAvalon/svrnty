@@ -125,13 +125,16 @@ test('4. an unreadable recovery vault says part of the backup cannot be read (ne
   await close();
 });
 
-test('5. a backup made without a recovery vault says recovery codes were not set up and names the button that works', async ({ browser }, testInfo) => {
+test('5. a backup made without a recovery vault says recovery codes were not set up; the passphrase path it names is one step away ("I have my passphrase", then "Restore identity")', async ({ browser }, testInfo) => {
   const bytes = readFileSync(vaultPath);
   const file = cut(testInfo, 'no-recovery.svrnty', recoveryStart(bytes));
   const { page, close } = await pick(browser, file);
   await recover(page, recoveryCode);
   await expect(page.getByText(RESTORE_MESSAGES.noRecoveryVault)).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole('button', { name: /^restore identity$/i })).toBeVisible(); // the button the sentence names is on this screen
+  // The sentence names "Restore identity". On this screen (the recovery-code path) the way to it is the button "I have my passphrase": one step, then the button is there.
+  await expect(page.getByRole('button', { name: /^restore identity$/i })).toHaveCount(0);
+  await page.getByRole('button', { name: /^i have my passphrase$/i }).click();
+  await expect(page.getByRole('button', { name: /^restore identity$/i })).toBeVisible();
   await expect(body(page)).not.toContainText(RAW);
   await close();
 });
