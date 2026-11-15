@@ -7,6 +7,7 @@
 import { fingerprintMatchesKey } from './fingerprint';
 import { restoreWritesVerdict, tagRestoreWrites, type OwnerSnapshot } from './restore-writes';
 import { canonicalAuthorityPin } from './authority-pin';
+import { DEVICE_PASSWORD_MIN } from './device-password';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
@@ -2320,8 +2321,8 @@ export class PlaintextImportNeedsSession extends Error {
   constructor() { super('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.'); this.name = 'PlaintextImportNeedsSession'; }
 }
 
-/** The shortest password a device will be unlocked with (the same floor the password exports ask for). */
-export const DEVICE_PASSWORD_MIN = 12;
+// DEVICE_PASSWORD_MIN lives in device-password.ts (pure) so the restore sentences read the same constant; it is re-exported here for every existing importer.
+export { DEVICE_PASSWORD_MIN };
 
 /**
  * A restore on a device with no session needs a password to protect the restored keys at rest, and neither the file's own password (absent, or shorter than

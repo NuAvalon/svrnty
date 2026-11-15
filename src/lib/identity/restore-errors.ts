@@ -8,6 +8,8 @@
 // classified shows one generic sentence that echoes nothing from the error. (Same rule as the #532 fix: an inconsistent record is never read as a wrong
 // password.)
 
+import { DEVICE_PASSWORD_MIN } from './device-password';
+
 /** The restore screen could not recognise the file's shape at all. */
 export class RestoreFormatUnrecognized extends Error {
   readonly code = 'restore-format-unrecognized' as const;
@@ -64,7 +66,7 @@ export const RESTORE_MESSAGES = Object.freeze({
   deviceUsesFilePassword: 'This device now unlocks with the same password as your backup file.',
   chooseDevicePasswordTitle: 'Choose a password for this device',
   chooseDevicePasswordWeakFile: "Your backup opened. Its password is shorter than 12 characters, so this device won't use it to unlock. Choose a new password of at least 12 characters. Your backup file keeps its old password.",
-  chooseDevicePasswordNoFilePassword: 'This backup file has no password of its own. Choose a password of at least 12 characters to protect your keys on this device.',
+  chooseDevicePasswordNoFilePassword: `This backup file doesn't have its own password. Choose a password of at least ${DEVICE_PASSWORD_MIN} characters. It protects your keys on this device.`,
   nothingSavedYet: 'Nothing has been saved yet.',
   stoppedPartway: 'The restore stopped partway, and part of it was saved on this device. Run the restore again with the same file to finish it.',
   stoppedNothingSaved: 'The restore stopped before any of your data was saved. Run the restore again with the same file.',
