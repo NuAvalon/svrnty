@@ -7,6 +7,7 @@
 // NOT recovered on this path (by format design). Copy must say so honestly.
 
 import { readPrivateKey, decryptKey } from 'openpgp';
+import { RestoreThrow } from '@/lib/crypto/coded-error';
 import { extractRecoveryVault } from '@/lib/sync/vault';
 import { recoverFromSeedPhrase, seedPhraseToMasterSecret } from '@/lib/crypto/recovery';
 import { durableFromSeedBundle } from '@/lib/identity/restore-durable';
@@ -92,7 +93,7 @@ export async function restoreIdentityFromSeedVault(
   // Genuinely-classical (pre-canonical) backup — NO post-quantum material at all. Product decision
   // on classical restorability is pending (⚡9686), so fail honestly without presuming a remedy.
   if (!bundle.pq_kem_secret_key || !bundle.pq_signing_secret_key) {
-    throw new Error('This backup uses an older identity format from before post-quantum identities and cannot be restored on this version yet.');
+    throw new RestoreThrow('identity-older-format', 'This backup uses an older identity format from before post-quantum identities and cannot be restored on this version yet.');
     // TODO(⚡9686): product decision pending on genuinely-classical (40-hex, no-PQ) restore — do NOT add user-facing remediation copy until Peter rules.
   }
 

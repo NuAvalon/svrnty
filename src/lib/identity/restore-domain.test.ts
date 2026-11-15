@@ -152,11 +152,18 @@ test('plain-backup import: guard right after the identity binds, before the firs
 
 test('the gate shows the refusal as itself, never as a wrong passphrase', () => {
   const src = read('../../components/SoverentityFrontend.tsx');
-  // The message is now chosen by classifyRestoreFailure (by type and code); the refusal must still be handled BEFORE that call, so it is shown as itself.
-  const classifyAt = src.indexOf('classifyRestoreFailure(err');
-  assert.ok(classifyAt > 0, 'the handler classifies the failure');
-  const handler = src.slice(classifyAt - 400, classifyAt);
-  assert.match(handler, /isRestoreDomainRefusal\(err\)/, 'a restore-domain refusal must be handled before the failure is classified, so it is never shown as a wrong passphrase');
+  // The message is chosen by classifyRestoreFailure (by type and code). In EVERY handler that runs a restore, a restore-domain refusal must still be handled
+  // BEFORE that call, so it is shown as itself. The file-PICK handler runs no restore and cannot see a refusal, so it is the one call site exempt from this.
+  const calls = [...src.matchAll(/classifyRestoreFailure\(err/g)].map((m) => m.index as number);
+  assert.ok(calls.length >= 4, `the handlers classify the failure (found ${calls.length} call sites)`);
+  let checked = 0;
+  for (const at of calls) {
+    const before = src.slice(Math.max(0, at - 900), at);
+    if (/Picking a file/.test(before)) continue;
+    checked++;
+    assert.match(before, /isRestoreDomainRefusal\(err\)/, `the call at offset ${at}: a restore-domain refusal must be handled before the failure is classified, so it is never shown as a wrong passphrase`);
+  }
+  assert.ok(checked >= 3, `the vault restore, the device-password step and the seed restore are each checked (checked ${checked})`);
 });
 
 test('the seed-restore handler also shows the refusal as itself', () => {
