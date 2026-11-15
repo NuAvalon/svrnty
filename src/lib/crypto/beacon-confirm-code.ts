@@ -10,7 +10,7 @@
 // Nothing here is persisted or logged: no nonce, no K, no S, no code.
 import { ProverRefused, deriveConfirmKey, CONFIRM_DOMAIN } from './beacon-prover';
 import { beaconFrame, asciiField, hexField, keyField, u32Field } from './beacon-frame';
-import { beaconPublicKey, checkBeaconPublicKey } from './beacon-key';
+import { BEACON_ORDER, beaconPublicKey, checkBeaconPublicKey } from './beacon-key';
 
 export type ConfirmParty = {
   /** 64 lowercase hex characters. */
@@ -65,7 +65,9 @@ export async function confirmCode(x: bigint, own: ConfirmParty, held: ConfirmPar
   const T = confirmTranscript(own, held, nonceOwn, nonceOther);
   const checked = await checkBeaconPublicKey(held.beaconKey, own.beaconKey);
   if (!checked.ok) throw new ProverRefused(KEY_REASON[checked.reason] ?? 'statement');
-  const K = await deriveConfirmKey(x, checked.point, T);
+  // Own key first, so no confirm key ever exists for a key this device does not hold. A secret outside [1, l) is refused here with the deposit path's
+  // reason, because beaconPublicKey would throw a RangeError for it.
+  if (typeof x !== 'bigint' || x < BigInt(1) || x >= BEACON_ORDER) throw new ProverRefused('x-range');
   if ((await beaconPublicKey(x)) !== own.beaconKey) throw new ProverRefused('own-key');
-  return codeFromKey(K);
+  return codeFromKey(await deriveConfirmKey(x, checked.point, T));
 }

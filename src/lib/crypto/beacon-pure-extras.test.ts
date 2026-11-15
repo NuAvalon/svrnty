@@ -45,6 +45,10 @@ test('CONFIRM: a device never builds a code for an own key it does not hold: own
   assert.equal(await confirmCode(xA, A, B, 'ABCDEFGHIJ', 'KLMNOPQR23'), '739644'); // control: the true own key gives the vector code
 });
 
+test('CONFIRM: a secret outside [1, l) is refused [x-range] with the deposit path\'s reason, not a RangeError, and before any key is derived', async () => {
+  for (const x of [BigInt(0), BEACON_ORDER, BigInt(-1)]) await assert.rejects(confirmCode(x, A, B, 'ABCDEFGHIJ', 'KLMNOPQR23'), refusedWith(['x-range']));
+});
+
 test('ROTATE: signRotate refuses a secret outside [1, l) [x-range], not with a RangeError', async () => {
   for (const x of [BigInt(0), BEACON_ORDER, BigInt(-1)]) await assert.rejects(signRotate(x, st), refusedWith(['x-range']));
 });

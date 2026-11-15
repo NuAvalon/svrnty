@@ -11,7 +11,10 @@
 //   verify: R and the old key pass the card checks, s < l (no malleable s + l), s*Base8 == R + e*X_old
 //
 // The generation ORDER (new > old) is NOT checked here: it is the RECEIVER's rule (R2 of the gate-15 design), which also needs the held generation.
-// This module only proves possession of x_old over a well-formed statement.
+// This module only proves possession of x_old over a well-formed statement. BOUND for the receiver: the new key passes only the strict DECODE here
+// (keyField), NOT the card checks (on the curve, not the identity, not of small order, in the prime-order subgroup, not our own key), and no generation
+// order is checked. The receiver must run checkBeaconPublicKey(newPk, ownPk) and its own rotation rules before it holds the new key, and a verdict of
+// 'unavailable' is a refusal like any other, never "could not check, accept".
 import { ProverRefused } from './beacon-prover';
 import { beaconFrame, asciiField, hexField, keyField, u32Field } from './beacon-frame';
 import { BEACON_ORDER, beaconPublicKey, checkBeaconPublicKey, decodeBeaconKey, loadCurve } from './beacon-key';
