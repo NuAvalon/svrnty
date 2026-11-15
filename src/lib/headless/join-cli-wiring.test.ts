@@ -23,7 +23,8 @@ test('the join branch exists and is bounded by the gate branch', () => {
 test('join goes through runJoin(parseJoinFlags(rest), ...) and admits ONLY via the injected admit callback (after the deposit)', () => {
   assert.match(branch, /await runJoin\(parseJoinFlags\(rest\),/);
   assert.equal((branch.match(/store\.upsertContact\(/g) ?? []).length, 1, 'exactly one upsert, inside the admit callback');
-  assert.match(branch, /admit: \(contact\) => store\.upsertContact\(contact\)/);
+  // #724: the callback writes through withAdmitLog (provenance line before the write), still the branch's only upsert.
+  assert.match(branch, /admit: \(contact\) => withAdmitLog\(\s*DIR,\s*\{ source: 'join',[^\n]*\},\s*\(\) => store\.upsertContact\(contact\),\s*\),/);
 });
 
 test('a refusal prints a line and exits NON-ZERO, and says nothing was admitted', () => {
@@ -81,11 +82,31 @@ function runAdmit(card: unknown): { status: number | null; out: string; contacts
 }
 const FPX = 'ab'.repeat(32);
 
-test('admit: a good card is written, read back, and exits 0', () => {
-  const r = runAdmit({ fingerprint: FPX, public_key: '-----PUB-----', name: 'topos' });
+test('admit: a good card is written, read back, and exits 0', async () => {
+  // #724: a "good" card is one whose keys hash to its fingerprint (Invariant-1), so this mints a real canonical identity.
+  const { generateKey, readPrivateKey, decryptKey } = await import('openpgp');
+  const { generatePQKeypairBundle, uint8ToBase64 } = await import('../crypto/pq');
+  const { mintCanonicalFingerprint } = await import('../identity/fingerprint');
+  const { privateKey, publicKey } = await generateKey({
+    type: 'ecc',
+    // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime.
+    curve: 'ed25519', userIDs: [{ name: 'topos', email: 'topos@x.test' }], passphrase: 'pw-topos', format: 'armored',
+  });
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: privateKey });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase: 'pw-topos' });
+  const { fingerprint } = await mintCanonicalFingerprint({ decryptedIdentityKey: unlocked, kemPublicKey: pq.kem.publicKey, sigPublicKey: pq.signing.publicKey });
+  const r = runAdmit({ fingerprint, public_key: publicKey, pq_kem_public_key: uint8ToBase64(pq.kem.publicKey), pq_sig_public_key: uint8ToBase64(pq.signing.publicKey), name: 'topos' });
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /admitted /);
   assert.equal(r.contacts.length, 1);
+});
+
+test('admit: a card whose keys do not hash to its fingerprint exits 1 and stores nothing (#724)', () => {
+  const r = runAdmit({ fingerprint: FPX, public_key: '-----PUB-----', name: 'topos' });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /keys do not hash to its fingerprint/);
+  assert.equal(r.contacts.length, 0);
 });
 
 test('admit: a card with NO public_key exits 1, says nothing was written, and stores NOTHING (it used to print "admitted" and exit 0)', () => {
