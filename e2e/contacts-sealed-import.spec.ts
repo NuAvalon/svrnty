@@ -258,3 +258,40 @@ test('8. a sealed file exported BEFORE the post-quantum keys were written (canon
   for (const n of [ann.name, bob.name]) await expect(b.getByText(n, { exact: true })).toHaveCount(0);
   await b.context().close();
 });
+
+test('9. REMOVING an imported, unverified contact sends nothing: no request of any kind leaves the page, and the contact is gone from the book', async ({ browser }) => {
+  const { file, names } = await sourceFile(browser);
+  const b = await freshIdentity(browser, 'Bea 837g');
+  const dialog = await importSealed(b, file, EXPORT_PW);
+  await expect(dialog.getByText(SEALED_BOOK_MESSAGES.differentOwner)).toBeVisible({ timeout: 60_000 });
+  await dialog.getByRole('button', { name: /^cancel$/i }).click();
+  await b.getByRole('tab', { name: 'Contacts', exact: true }).click();
+  const row = b.locator('[data-testid="contact-row"]').filter({ hasText: names[0] });
+  await expect(row).toBeVisible();
+
+  // CONTROL first: what the page asks of the network on its own over an idle window (the app polls the relay queue on a timer, removal or not)
+  const idle: string[] = [];
+  const onIdle = (r: import('@playwright/test').Request) => idle.push(`${r.method()} ${new URL(r.url()).pathname}`);
+  b.on('request', onIdle);
+  await b.waitForTimeout(6_000);
+  b.off('request', onIdle);
+  console.log(`[sealed-remove] idle window (control): ${JSON.stringify([...new Set(idle)])}`);
+
+  // everything the page asks of the network from the first click to a few seconds after the removal
+  const requests: string[] = [];
+  b.on('request', (r) => requests.push(`${r.method()} ${new URL(r.url()).pathname}`));
+  await row.click();
+  await b.getByRole('button', { name: /^actions$/i }).click();
+  await b.getByRole('menuitem', { name: /remove/i }).click();
+  const confirm = b.getByTestId('trust-action-confirm');
+  await expect(confirm).toBeVisible();
+  await confirm.getByTestId('trust-action-confirm-btn').click();
+  await expect(confirm).toHaveCount(0);
+  await expect(b.locator('[data-testid="contact-row"]').filter({ hasText: names[0] })).toHaveCount(0);
+  await b.waitForTimeout(4_000); // a fire-and-forget request would be issued by now
+  console.log(`[sealed-remove] requests during the removal: ${JSON.stringify([...new Set(requests)])}`);
+  expect(requests.filter((r) => !r.startsWith('GET ')), 'no write of any kind').toEqual([]);
+  const routine = new Set(idle);
+  expect([...new Set(requests)].filter((r) => /\/api\//.test(r) && !routine.has(r)), 'nothing to the relay or the satellite that the idle page does not already do').toEqual([]);
+  await b.context().close();
+});

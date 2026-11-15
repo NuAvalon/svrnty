@@ -18,10 +18,10 @@ export const SEALED_BOOK_MESSAGES = Object.freeze({
   malformed: "This app can't read this file as a contacts export.",
   tooLarge: 'This file is too large to import. Nothing was added.',
   differentOwner: 'These contacts were exported by a different identity.',
-  /** Contacts the file carries without their keys: they cannot be added. n is a count, never a value from the file. */
+  /** Contacts the file carries without all of their keys (no public key, or no post-quantum keys, so they can never bind). n is a count, never a value from the file. */
   missingKeys: (n: number): string => (n === 1
-    ? "1 contact was exported without its keys, so it can't be added. Ask them to share their contact again."
-    : `${n} contacts were exported without their keys, so they can't be added. Ask each person to share their contact again.`),
+    ? "1 contact was exported without all of its keys, so it can't be added. Ask them to share their contact again."
+    : `${n} contacts were exported without all of their keys, so they can't be added. Ask each person to share their contact again.`),
 });
 
 export type SealedBookFailure = 'wrong-password' | 'malformed' | 'too-large';

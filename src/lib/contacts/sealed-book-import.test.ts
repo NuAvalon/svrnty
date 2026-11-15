@@ -95,8 +95,8 @@ test('B7 the sentences are the approved constants; the one that takes a number t
   assert.equal(SEALED_BOOK_MESSAGES.malformed, "This app can't read this file as a contacts export.");
   assert.equal(SEALED_BOOK_MESSAGES.tooLarge, 'This file is too large to import. Nothing was added.');
   assert.equal(SEALED_BOOK_MESSAGES.differentOwner, 'These contacts were exported by a different identity.');
-  assert.equal(SEALED_BOOK_MESSAGES.missingKeys(3), "3 contacts were exported without their keys, so they can't be added. Ask each person to share their contact again.");
-  assert.match(SEALED_BOOK_MESSAGES.missingKeys(1), /^1 contact was exported without its keys/);
+  assert.equal(SEALED_BOOK_MESSAGES.missingKeys(3), "3 contacts were exported without all of their keys, so they can't be added. Ask each person to share their contact again.");
+  assert.equal(SEALED_BOOK_MESSAGES.missingKeys(1), "1 contact was exported without all of its keys, so it can't be added. Ask them to share their contact again.");
   assert.ok(!SEALED_BOOK_MESSAGES.malformed.includes(OWNER) && !SEALED_BOOK_MESSAGES.differentOwner.includes(OWNER), 'no value from a file is in a sentence');
   assert.doesNotMatch(SEALED_BOOK_MESSAGES.malformed, /wrong|incorrect/i, 'a file it cannot read never says wrong password');
 });
