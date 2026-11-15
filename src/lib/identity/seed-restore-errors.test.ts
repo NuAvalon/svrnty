@@ -81,7 +81,7 @@ test('X4 every code maps to the approved sentence, and the generic one is only f
   assert.equal(by('identity-older-format').message, "This backup uses an older identity format that this version of the app can't restore.");
   assert.equal(by('vault-legacy-v2').message, 'This backup uses an old format this app no longer opens. If your identity is still open on another device, make a new backup there.');
   assert.equal(by('vault-v3-no-recovery').message, "This backup was made before recovery codes existed, so it can't be restored with a recovery code. Use its passphrase with Restore identity instead.");
-  assert.equal(by('vault-no-recovery').message, "Recovery codes weren't set up for this backup, so it can't be restored with a recovery code. Use its passphrase with Restore identity instead.");
+  assert.equal(by('vault-no-recovery').message, "Recovery codes weren't set up for this backup, so it can't be restored with a recovery code. Press I have my passphrase, then Restore identity.");
   for (const code of ['recovery-code-wrong', 'recovery-code-malformed', 'vault-truncated', 'vault-recovery-unreadable', 'vault-not-a-vault', 'identity-older-format', 'vault-legacy-v2', 'vault-v3-no-recovery', 'vault-no-recovery']) {
     assert.doesNotMatch(by(code).message, /the thrower's own text/, `${code}: the thrower's text is never the sentence`);
     assert.doesNotMatch(by(code).message, /corrupt|\byet\b/i, `${code}: never "corrupt", never "yet"`);
@@ -123,11 +123,14 @@ test('X6 the seed handler and the file-pick handler show only classified sentenc
   assert.ok(!/VaultUnsupportedFormat/.test(seed + pick), 'the screen never reads the unsupported-format error itself');
 });
 
-test('X7 the two sentences that tell the owner to use the passphrase name the button the screen has, so they change together', () => {
+test('X7 the sentences that send the owner to the passphrase path name the buttons the screen has, so they change together', () => {
   const label = /isBinaryVault \? '([^']+)' : 'Open Vault'/.exec(screen)?.[1];
   assert.equal(label, 'Restore identity', 'the passphrase path\'s button on a .svrnty file');
-  assert.ok(RESTORE_MESSAGES.v3NoRecovery.includes(`with ${label} instead.`), 'the v3 sentence names it');
-  assert.ok(RESTORE_MESSAGES.noRecoveryVault.includes(`with ${label} instead.`), 'the no-recovery-vault sentence names it');
+  // the button that brings the passphrase form back from the recovery-code path
+  const step = />\s*(I have my passphrase)\s*<\/button>/.exec(screen)?.[1];
+  assert.equal(step, 'I have my passphrase', 'the step back to the passphrase path');
+  assert.ok(RESTORE_MESSAGES.v3NoRecovery.includes(`with ${label} instead.`), 'the v3 sentence names the button that is already on screen');
+  assert.ok(RESTORE_MESSAGES.noRecoveryVault.includes(`Press ${step}, then ${label}.`), 'the no-recovery-vault sentence names the step and the button');
 });
 
 test('X8 LEAK PIN: no throw in the three recovery files interpolates a value, except the two unsupported-format throws that carry file HEADER fields and reach the console only', () => {

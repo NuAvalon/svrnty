@@ -79,9 +79,9 @@ export const RESTORE_MESSAGES = Object.freeze({
   backupPartUnreadable: "Part of this backup can't be read, so it can't be restored. If you have another copy, try that one.",
   olderIdentityFormat: "This backup uses an older identity format that this version of the app can't restore.",
   legacyV2: 'This backup uses an old format this app no longer opens. If your identity is still open on another device, make a new backup there.',
-  // These two name the button of the passphrase path on the same screen; restore-errors.test.ts pins the label so they change together.
+  // These two name the buttons of the passphrase path (the v3 one: the button already on screen; the no-recovery-vault one: the step that brings it back); seed-restore-errors.test.ts pins both labels so they change together.
   v3NoRecovery: "This backup was made before recovery codes existed, so it can't be restored with a recovery code. Use its passphrase with Restore identity instead.",
-  noRecoveryVault: "Recovery codes weren't set up for this backup, so it can't be restored with a recovery code. Use its passphrase with Restore identity instead.",
+  noRecoveryVault: "Recovery codes weren't set up for this backup, so it can't be restored with a recovery code. Press I have my passphrase, then Restore identity.",
   unknown: "Something went wrong and the restore didn't finish.",
 });
 
