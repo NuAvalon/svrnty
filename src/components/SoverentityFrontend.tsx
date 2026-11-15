@@ -626,9 +626,11 @@ export function SoverentityFrontend({
       setVaultPassphrase('');
       setGateMode('restore-verify');
     } catch (err) {
-      setRestoreError(
-        err instanceof Error ? err.message : 'Could not read file. Accepts .svrnty or .json backups.'
-      );
+      // Picking a file: by code only (restore-errors.ts); no thrower's own text is shown. A header that does not parse is rethrown by readVaultHeader as a coded
+      // error; any other error here (a SyntaxError included) is the generic sentence.
+      const failure = classifyRestoreFailure(err);
+      if (failure.code === 'unknown') console.error('Reading the file failed with an unclassified error:', err);
+      setRestoreError(failure.message);
     }
   };
 
@@ -671,24 +673,20 @@ export function SoverentityFrontend({
       setVaultPassphrase('');
       setRestorePath('passphrase');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
       if (isRestoreDomainRefusal(err)) {
-        setRestoreError(msg);
+        setRestoreError(err instanceof Error ? err.message : 'Restore refused.');
         return;
       }
-      // #532 C1: the code opened the bundle but its identity record is inconsistent. Routed BEFORE the wrong-code regex below,
-      // which would otherwise match and tell the person their recovery code is wrong.
+      // #532 C1: the code opened the bundle but its identity record is inconsistent: its own sentence.
       if (isRestoreDurableRefusal(err)) {
         setRestoreError(RESTORE_DURABLE_MESSAGE);
         return;
       }
-      // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
-      // DO-SECOND honest error (seed-only path).
-      if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
-        setRestoreError("That recovery code doesn't match this backup.");
-      } else {
-        setRestoreError(msg || 'Could not recover from this backup.');
-      }
+      // Decided by the thrower's CODE (coded-error.ts), never by its text: a message that merely mentions a hash or a seed phrase is not a wrong recovery
+      // code, and no thrower's own text is shown. A wrong code fails closed with no lockout, so the person can try again.
+      const failure = classifyRestoreFailure(err);
+      if (failure.code === 'unknown') console.error('Seed restore failed with an unclassified error:', err);
+      setRestoreError(failure.message);
     } finally {
       setRestoreLoading(false);
     }

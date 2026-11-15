@@ -8,6 +8,7 @@
 //
 // Browser-compatible: uses Web Crypto API (no Node.js crypto/Buffer)
 
+import { RestoreThrow } from './coded-error';
 import { split, combine } from 'shamir-secret-sharing';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -152,7 +153,7 @@ export async function decryptVault(
   // Verify master secret hash
   const hash = hashMasterSecret(masterSecret);
   if (hash !== vault.master_secret_hash) {
-    throw new Error('Invalid master secret — hash mismatch');
+    throw new RestoreThrow('recovery-code-wrong', 'Invalid master secret — hash mismatch');
   }
 
   const iv = fromBase64(vault.iv);
@@ -235,7 +236,7 @@ export function masterSecretToSeedPhrase(secret: Uint8Array): string {
 export function seedPhraseToMasterSecret(phrase: string): Uint8Array {
   const hex = phrase.replace(/\s+/g, '');
   if (hex.length !== 64) {
-    throw new Error('Invalid seed phrase — expected 64 hex characters (32 bytes)');
+    throw new RestoreThrow('recovery-code-malformed', 'Invalid seed phrase — expected 64 hex characters (32 bytes)');
   }
   return hexToBytes(hex);
 }
