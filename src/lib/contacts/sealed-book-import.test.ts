@@ -51,9 +51,19 @@ test('B3 a wrong password is wrong-password; nothing else is: a malformed envelo
   assert.equal(await refused(openSealedBook('[]', PW)), 'malformed', 'JSON that is not an envelope');
 });
 
-test('B4 the cap: sealed text over the cap is refused as too large BEFORE any decrypt (a small cap stands in for the 52 million)', async () => {
-  assert.ok(sealed.length > 200, 'the fixture is bigger than the small cap');
-  assert.equal(await refused(openSealedBook(sealed, PW, 200)), 'too-large');
+test('B4 the caps: sealed text over the cap is refused BEFORE any decrypt; a decrypted body over the cap is refused AFTER it; at the cap it opens', async () => {
+  const plainLen = FILE.length;
+  assert.ok(sealed.length > plainLen + 100, 'the fixture envelope is clearly larger than its plaintext');
+  // (1) a cap the plaintext fits under but the sealed text does not: only the check on the sealed text can refuse it, and it must do so without decrypting
+  let opened = 0;
+  const counting = async (e: unknown, pw: string) => { opened++; return (await import('@/lib/crypto/password-envelope')).openWithPassword(e, pw); };
+  assert.equal(await refused(openSealedBook(sealed, PW, plainLen + 50, counting)), 'too-large');
+  assert.equal(opened, 0, 'refused before the opener was called');
+  // (2) the second bound, on its own: a small envelope whose opener hands back an oversize body (not reachable with a real envelope, which cannot hold more than it is long)
+  const body = (n: number) => (async () => ({ plaintext: new TextEncoder().encode('x'.repeat(n)), legacy: false })) as never;
+  assert.equal(await refused(openSealedBook(sealed, PW, sealed.length, body(sealed.length + 1))), 'too-large', 'a body one character over the cap is refused after the decrypt');
+  assert.equal(await refused(openSealedBook(sealed, PW, sealed.length, body(sealed.length * 4 + 1))), 'too-large', 'and so is one so large that it cannot be under the cap in any encoding');
+  assert.equal(await openSealedBook(sealed, PW, sealed.length, body(sealed.length)), 'x'.repeat(sealed.length), 'a body exactly at the cap is accepted');
   assert.equal(await openSealedBook(sealed, PW, sealed.length), FILE, 'at the cap it opens');
   // the importer's own cap still applies to whatever is handed on
   assert.throws(() => contactBookFile('x'.repeat(MAX_FILE_CHARS + 1)), ContactBookTooLarge);

@@ -52,15 +52,22 @@ export function looksSealed(text: string): boolean {
 
 /**
  * Open a sealed contacts file with its password and return the plaintext, for the same parser a plain paste goes to. `maxChars` is the cap on both the sealed
- * text and the plaintext (the default is the importer's own cap; a test passes a small one).
+ * text and the plaintext (the default is the importer's own cap; a test passes a small one). `open` is the envelope opener (a test passes a fake).
  */
-export async function openSealedBook(text: string, password: string, maxChars: number = MAX_FILE_CHARS): Promise<string> {
+export async function openSealedBook(
+  text: string,
+  password: string,
+  maxChars: number = MAX_FILE_CHARS,
+  open: typeof openWithPassword = openWithPassword,
+): Promise<string> {
+  // Before anything is decrypted. A body cannot be larger than its envelope (AES-GCM does not compress), so this already bounds the plaintext; the check
+  // after the decrypt is the second, independent bound (the opener is a parameter so a test can hand back an oversize body).
   if (text.length > maxChars) throw new SealedBookRefused('too-large');
   let envelope: unknown;
   try { envelope = JSON.parse(text); } catch { throw new SealedBookRefused('malformed'); }
   let plain: Uint8Array;
   try {
-    plain = (await openWithPassword(envelope, password)).plaintext;
+    plain = (await open(envelope, password)).plaintext;
   } catch (e) {
     // By the envelope's own code, never by its text: only a failed password check is a wrong password.
     if ((e as { code?: unknown } | null)?.code === 'wrong-password') throw new SealedBookRefused('wrong-password');
