@@ -975,7 +975,7 @@ export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
 }
 
 /**
- * Does this passphrase open EVERY encrypted key record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox)?
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, and the contact rows)?
  * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
  * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
  * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
@@ -996,6 +996,24 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
       return false;
     }
     opened++;
+  }
+  // Contacts are in the passphrase domain too: their rows are under the session key (the settings salt), not under a record's own salt. Key rows under B beside
+  // contact rows under A is the two-passphrase state, and a restore that wrote more rows there would read as "stopped partway" on every re-run.
+  const encryptedContacts = (await txGetByIndex<any>('contacts', 'owner', fingerprint)).filter((r) => r && r.enc_version && r.ciphertext);
+  if (encryptedContacts.length > 0) {
+    const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
+    if (!setting?.value) return false;
+    try {
+      let key = derived.get(setting.value);
+      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(setting.value)); derived.set(setting.value, key); }
+      for (const rec of encryptedContacts) {
+        if (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string') return false;
+        await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext });
+        opened++;
+      }
+    } catch {
+      return false;
+    }
   }
   return opened > 0;
 }

@@ -18,6 +18,12 @@ window.__rh = {
     if (pwVault) { await initSessionKey(pwVault); await storeVault(fp, { seeded: true }); }
     lockSession(); return true;
   },
+  /** The other mixed device: the owner's key under `pwKeys` and one encrypted contact row under `pwContact` (same device salt, a different passphrase). */
+  async seedKeyAndContact(fp: string, keys: { privateKey: string; passphrase: string }, pwKeys: string, pwContact: string, row: any) {
+    await initSessionKey(pwKeys); await storeKey(fp, keys.privateKey, keys.passphrase);
+    await initSessionKey(pwContact); await addContact(fp, row);
+    lockSession(); return true;
+  },
   async verify(fp: string, pw: string) { return verifyPassphrase(fp, pw); },
   /** The logical state of the owner after a restore, read under `pw`. Volatile fields (ids, added_at) are left out. */
   async snapshot(fp: string, pw: string) {

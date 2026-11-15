@@ -67,3 +67,11 @@ test('keyless contact matching ignores the block flag (a row blocked in the back
   assert.match(src, /delete rest\.blocked;/);
   assert.match(src, /f === 'metadata' \? withoutBlockFlag\(c\[f\]\)/);
 });
+
+test('passphraseOpensEveryHeldKeyRecord: the contact rows are in the check, opened under the settings salt, and a failure refuses', () => {
+  const s = body('export async function passphraseOpensEveryHeldKeyRecord(', '/**\n * Call after the owner\'s fingerprint is derived');
+  assert.match(s, /txGetByIndex<any>\('contacts', 'owner', fingerprint\)/, 'the owner\'s contact rows are read');
+  assert.match(s, /'settings', 'key_encryption_salt'/, 'contacts are opened under the device salt, not a record\'s own salt');
+  assert.match(s, /decryptContactRecord\(key, rec\.id, rec\.owner_fingerprint,/, 'every encrypted contact row is decrypted, with its id and owner as AAD');
+  assert.match(s, /decryptContactRecord[\s\S]*?\} catch \{\s*return false;/, 'a contact row that does not open refuses the restore');
+});

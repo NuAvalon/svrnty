@@ -239,6 +239,22 @@ test('e2. a MIXED device (keys under A, a vault under B) refuses a restore under
   await ctx.close();
 });
 
+test('j. a MIXED device (key under A, a contact under B) refuses a restore under either passphrase, and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedKeyAndContact', fp, backup.keys, UNLOCK_PW, OTHER_PW, { name: 'Held Under Other', email: 'other@example.test', public_key: '', fingerprint: '', trust_level: 'known' });
+  await page.reload();
+  const stBefore = await deviceState(page);
+  expect(stBefore.contacts, 'the seeded contact row is on the device').toBe(1);
+  for (const pw of [UNLOCK_PW, OTHER_PW]) {
+    const file = writeFull(testInfo, `full-j-${pw.slice(0, 4)}.json`, noVault(), pw);
+    await page.reload();
+    expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
+    await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    expect(await deviceState(page)).toEqual(stBefore);
+  }
+  await ctx.close();
+});
+
 test('g. a weak (8-char) file password only OPENS the file: a new device password is asked for first, and it is the one that unlocks', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);
   const file = writeFull(testInfo, 'full-g.json', noVault(), WEAK_PW);

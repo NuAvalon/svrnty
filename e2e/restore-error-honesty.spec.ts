@@ -90,6 +90,7 @@ test.beforeAll(async ({ browser }) => {
   await ctx.close();
 });
 
+// Relies on FILE_PW being >= 12 characters: only then does the device take the file's password, so no device-password prompt is asked first.
 test('1. an old-format full backup with the right password restores on a fresh device: no error, and the screen says the device now unlocks with that password', async ({ browser }, testInfo) => {
   const b = { ...backup! }; delete b.vault;
   const file = testInfo.outputPath('full-old.json');
