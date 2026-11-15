@@ -71,6 +71,10 @@ export function SecureExportDialog({
         };
         if (includePublicKeys && c.public_key) {
           base.public_key = c.public_key;
+          // A contact's fingerprint is bound to ALL its public keys, so a file without the post-quantum keys cannot be imported back (the store refuses every
+          // key-bound contact). They are public, and the plain contact-book export writes them too.
+          if (c.pq_kem_public_key) base.pq_kem_public_key = c.pq_kem_public_key;
+          if (c.pq_sig_public_key) base.pq_sig_public_key = c.pq_sig_public_key;
         }
         return base;
       });
