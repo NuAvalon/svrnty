@@ -1,6 +1,7 @@
 // src/lib/identity/owner-sealed-settings.test.ts
 // Every owner-sealed settings record is named in ONE list (OWNER_SEALED_SETTINGS in client-store.ts), and the restore's passphrase check and snapshot walk that list.
 // A sealed record that is written but not listed would sit beside a restore it cannot see: this test makes that red.
+// BOUND: these checks see DIRECT calls to encryptContactRecord( only. An alias (`const seal = encryptContactRecord; seal(...)`) or a re-export wrapper escapes them.
 // Run: node --import tsx --test src/lib/identity/owner-sealed-settings.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
