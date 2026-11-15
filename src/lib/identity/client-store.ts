@@ -878,6 +878,20 @@ export async function importBeaconKeyRecord(ownerFingerprint: string, candidate:
   return txAdd('settings', { key: beaconKeySettingKey(ownerFingerprint), value: payload });
 }
 
+/**
+ * EVERY owner-sealed record in `settings`: a payload under the session key, a reserved id, and the owner as authenticated data. This list is the one place
+ * that names them: the restore's passphrase check opens each one that is present, and its before/after snapshot compares each one. A new sealed record MUST be
+ * added here; a static test fails when an encryptContactRecord(_sessionKey, <ID>, ...) call site uses an id that is not listed.
+ */
+export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: string; settingKey: (ownerFingerprint: string) => string }> = [
+  { name: 'suppression', recordId: SUPPRESSION_RECORD_ID, settingKey: suppressionSettingKey },
+  { name: 'held-affirms', recordId: HELD_AFFIRMS_RECORD_ID, settingKey: heldAffirmsSettingKey },
+  { name: 'delivery-default', recordId: DELIVERY_RECORD_ID, settingKey: deliverySettingKey },
+  { name: 'lens-book', recordId: LENS_BOOK_RECORD_ID, settingKey: lensBookSettingKey },
+  { name: 'beacon-seeds', recordId: BEACON_SEEDS_RECORD_ID, settingKey: beaconSeedsSettingKey },
+  { name: 'beacon-key', recordId: BEACON_KEY_RECORD_ID, settingKey: beaconKeySettingKey },
+];
+
 export async function listIdentities(): Promise<IdentityRecord[]> {
   return txGetAll('identities');
 }
@@ -978,8 +992,10 @@ export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnaps
   await put('contacts', contacts);
   const manifest = await txGet<unknown>('settings', contactManifestSettingKey(fingerprint));
   await put('contact-manifest', manifest ? [manifest] : []);
-  const delivery = await txGet<unknown>('settings', deliverySettingKey(fingerprint));
-  await put('delivery-default', delivery ? [delivery] : []);
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    const row = await txGet<unknown>('settings', sealed.settingKey(fingerprint));
+    await put(`sealed:${sealed.name}`, row ? [row] : []);
+  }
   return out;
 }
 
@@ -990,7 +1006,7 @@ export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
 }
 
 /**
- * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, and the receipts default)?
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, and every OWNER_SEALED_SETTINGS record)?
  * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
  * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
  * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
@@ -1012,13 +1028,16 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
     }
     opened++;
   }
-  // Contacts and the owner's receipts default are in the passphrase domain too: their records are under the session key (the settings salt), not under a
-  // record's own salt. Key rows under B beside a contact (or a receipts default) under A is the two-passphrase state, and a restore that wrote more rows there
-  // would read as "stopped partway" on every re-run, or leave a record unreadable for good.
+  // Contacts and every owner-sealed settings record (OWNER_SEALED_SETTINGS) are in the passphrase domain too: their records are under the session key (the settings
+  // salt), not under a record's own salt. Key rows under B beside a contact or a sealed record (a blocklist, the receipts default, ...) under A is the
+  // two-passphrase state, and a restore that wrote more rows there would read as "stopped partway" on every re-run, or leave a record unreadable for good.
   const encryptedContacts = (await txGetByIndex<any>('contacts', 'owner', fingerprint)).filter((r) => r && r.enc_version && r.ciphertext);
-  const deliveryRow = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', deliverySettingKey(fingerprint));
-  const deliveryValue = deliveryRow?.value;
-  if (encryptedContacts.length > 0 || deliveryValue) {
+  const heldSealed: Array<{ recordId: string; value: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }> = [];
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
+    if (row?.value) heldSealed.push({ recordId: sealed.recordId, value: row.value });
+  }
+  if (encryptedContacts.length > 0 || heldSealed.length > 0) {
     const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
     if (!setting?.value) return false;
     try {
@@ -1029,9 +1048,9 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
         await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext });
         opened++;
       }
-      if (deliveryValue) {
-        if (typeof deliveryValue.iv !== 'string' || typeof deliveryValue.ciphertext !== 'string') return false;
-        await decryptContactRecord(key, DELIVERY_RECORD_ID, fingerprint, { enc_version: deliveryValue.enc_version, iv: deliveryValue.iv, ciphertext: deliveryValue.ciphertext });
+      for (const held of heldSealed) {
+        if (typeof held.value.iv !== 'string' || typeof held.value.ciphertext !== 'string') return false;
+        await decryptContactRecord(key, held.recordId, fingerprint, { enc_version: held.value.enc_version, iv: held.value.iv, ciphertext: held.value.ciphertext });
         opened++;
       }
     } catch {

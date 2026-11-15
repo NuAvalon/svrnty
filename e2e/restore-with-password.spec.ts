@@ -93,6 +93,12 @@ const hasSetting = (page: Page, key: string) => page.evaluate((k) => new Promise
   open.onerror = () => resolve(false);
   open.onsuccess = () => { const db = open.result; const r = db.transaction('settings').objectStore('settings').get(k); r.onsuccess = () => { db.close(); resolve(r.result !== undefined); }; };
 }), key);
+/** The settings rows that belong to this owner (by key), sorted. Reads only. */
+const ownerSettingKeys = (page: Page, fpr: string) => page.evaluate((f) => new Promise<string[]>((resolve) => {
+  const open = indexedDB.open('svrnty');
+  open.onerror = () => resolve([]);
+  open.onsuccess = () => { const db = open.result; const r = db.transaction('settings').objectStore('settings').getAllKeys(); r.onsuccess = () => { db.close(); resolve((r.result as string[]).filter((k) => String(k).includes(f)).map(String).sort()); }; };
+}), fpr);
 const rawKeyRecord = (page: Page, fp: string) => page.evaluate((f) => new Promise<string>((resolve) => {
   const open = indexedDB.open('svrnty');
   open.onsuccess = () => { const db = open.result; const r = db.transaction('keys').objectStore('keys').get(f); r.onsuccess = () => { db.close(); resolve(JSON.stringify(r.result ?? null)); }; };
@@ -315,6 +321,28 @@ test('n. a device with NO contacts whose receipts default is under another passp
   }
   await ctx.close();
 });
+
+// Every owner-sealed settings record other than the receipts default (cases l, n, m): held ALONE under one passphrase beside the key under another, a restore under either is refused.
+for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds', 'beacon-key']) {
+  test(`o. owner-sealed record "${sealed}" under another passphrase than the key: a restore under either passphrase is refused, and nothing changes`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedKeyAndSealed', fp, backup.keys, UNLOCK_PW, OTHER_PW, sealed);
+    await page.reload();
+    const keysBefore = await ownerSettingKeys(page, fp);
+    expect(keysBefore.length, `the ${sealed} record is on the device`).toBeGreaterThanOrEqual(1);
+    const stBefore = await deviceState(page);
+    expect(stBefore.contacts, 'no contact row: the sealed record alone makes the two domains').toBe(0);
+    for (const pw of [UNLOCK_PW, OTHER_PW]) {
+      const file = writeFull(testInfo, `full-o-${sealed}-${pw.slice(0, 4)}.json`, noVault(), pw);
+      await page.reload();
+      expect(await restoreWith(page, file, pw), `${sealed}: restore under ${pw.slice(0, 4)}…`).toBe('error');
+      await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+      expect(await deviceState(page)).toEqual(stBefore);
+      expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+    }
+    await ctx.close();
+  });
+}
 
 test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);

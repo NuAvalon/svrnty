@@ -4,8 +4,10 @@
 import {
   initSessionKey, lockSession, exportAll, addContact, storeKey, storeVault, verifyPassphrase,
   loadIdentity, loadKey, loadPQKeys, loadDeviceMailbox, getAllContacts, storeIdentity, storeDeviceMailbox, writeDeliveryDefault,
+  setSuppressionRecord, setHeldAffirmatives, writeLensGrantBook, setBeaconSeeds, ensureBeaconKeyRecord,
 } from '@/lib/identity/client-store';
 import { serializeMailboxKeypair } from '@/lib/crypto/mailbox-keys';
+import { emptySuppression } from '@/lib/trust/suppression';
 
 declare global { interface Window { __rh: Record<string, (...a: any[]) => Promise<any>> } }
 
@@ -33,6 +35,18 @@ window.__rh = {
   async seedKeyContactDelivery(fp: string, keys: { privateKey: string; passphrase: string }, pwA: string, pwB: string, row: any) {
     await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase); if (row) await addContact(fp, row);
     await initSessionKey(pwB); await writeDeliveryDefault(fp, { v: 1, value: 'unknown' });
+    lockSession(); return true;
+  },
+  /** The key under `pwA`, and ONE owner-sealed settings record (by its name in OWNER_SEALED_SETTINGS) under `pwB`, written by that record's own writer. */
+  async seedKeyAndSealed(fp: string, keys: { privateKey: string; passphrase: string }, pwA: string, pwB: string, name: string) {
+    await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase);
+    await initSessionKey(pwB);
+    if (name === 'suppression') await setSuppressionRecord(fp, emptySuppression());
+    else if (name === 'held-affirms') await setHeldAffirmatives(fp, {});
+    else if (name === 'lens-book') await writeLensGrantBook(fp, '{}');
+    else if (name === 'beacon-seeds') await setBeaconSeeds(fp, {});
+    else if (name === 'beacon-key') await ensureBeaconKeyRecord(fp);
+    else throw new Error(`unknown sealed record ${name}`);
     lockSession(); return true;
   },
   async verify(fp: string, pw: string) { return verifyPassphrase(fp, pw); },
