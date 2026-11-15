@@ -745,7 +745,7 @@ export function SoverentityFrontend({
   const handleDevicePasswordSubmit = async () => {
     if (!devicePwPrompt) return;
     if (newDevicePw.length < DEVICE_PASSWORD_MIN) { setRestoreError(`Use at least ${DEVICE_PASSWORD_MIN} characters.`); return; }
-    if (newDevicePw !== newDevicePwConfirm) { setRestoreError('The two passwords do not match.'); return; }
+    if (newDevicePw !== newDevicePwConfirm) { setRestoreError("The two passwords don't match."); return; }
     try {
       setRestoreLoading(true);
       setRestoreError(null);
