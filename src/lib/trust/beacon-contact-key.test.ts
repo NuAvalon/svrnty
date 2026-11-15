@@ -117,6 +117,19 @@ test('K15 DEFENSIVE: if the classifier ever let a lower generation or a differen
   assert.deepEqual(decideBeaconIntake(held, { beaconKey: { publicKey: KEY_B, keyGeneration: G(5) } }, READABLE), { verdict: 'loud', fields: {}, counted: 'conflict' });
 });
 
+test('K22 a contact that holds a key but a missing or garbled generation STILL holds it: a valid card never overwrites it (kept, counted held-malformed); a card with no beacon key just does nothing', async () => {
+  const valid = await dispositionFor(KEY_B, G(4));
+  assert.ok(valid.beaconKey, 'the card carries a valid key');
+  for (const gen of ['x', undefined, NaN, null, 1.5 as number | undefined, '3'] as unknown[]) {
+    const held = { beacon_public_key: KEY_A, beacon_key_generation: gen } as any;
+    const out = decideBeaconIntake(held, valid, READABLE);
+    assert.deepEqual(out, { verdict: 'keep', fields: {}, counted: 'held-malformed' }, `generation ${String(gen)}`);
+  }
+  assert.deepEqual(decideBeaconIntake({ beacon_public_key: 123 as any, beacon_key_generation: 3 }, valid, READABLE), { verdict: 'keep', fields: {}, counted: 'held-malformed' }, 'a non-string key is still a held key');
+  assert.deepEqual(decideBeaconIntake({ beacon_public_key: KEY_A, beacon_key_generation: 'x' as any }, { beaconKey: null }, READABLE), { verdict: 'none', fields: {} }, 'no beacon key on the card: nothing to count');
+  assert.equal(decideBeaconIntake({ beacon_key_generation: 3 }, valid, READABLE).verdict, 'backfill', 'CONTROL: a record with NO key still back-fills');
+});
+
 // ---------- the own key (fail closed) ----------
 test('K9 my own key UNREADABLE: the card key is dropped (the reflection check cannot run), the contact is still handled, nothing "pending" is stored, and it is counted', async () => {
   const d = await dispositionFor(KEY_A, G(3));
@@ -139,6 +152,9 @@ test('K11 knownBeaconOf: both fields present and typed, or nothing', () => {
   assert.equal(knownBeaconOf({ beacon_public_key: 'k' }), undefined);
   assert.equal(knownBeaconOf({ beacon_key_generation: 3 }), undefined);
   assert.equal(knownBeaconOf({ beacon_public_key: 'k', beacon_key_generation: '3' as any }), undefined);
+  assert.equal(knownBeaconOf({ beacon_public_key: 'k', beacon_key_generation: NaN }), undefined);
+  assert.equal(knownBeaconOf({ beacon_public_key: 'k', beacon_key_generation: 1.5 }), undefined);
+  assert.equal(knownBeaconOf({ beacon_public_key: 'k', beacon_key_generation: Infinity }), undefined);
 });
 
 // ---------- the key goes nowhere a contact book goes ----------

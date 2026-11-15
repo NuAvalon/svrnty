@@ -9,6 +9,8 @@
 //  - A held key is NEVER replaced here. A valid card with a higher generation is 'deferred' (counted, nothing written): replacing a key must first plan and
 //    queue the withdraw of the rows deposited under the old key while the old key can still name them, and that release-first path is a later slice.
 //  - The same generation with a different key is 'loud': nothing changes, and the caller shows ONE fixed sentence that carries no key and no generation.
+//  - A contact whose record holds a beacon key but a missing or garbled generation (a mangled restored record) STILL holds that key: it is kept, counted as
+//    'held-malformed', and never written over.
 //  - If this device's OWN beacon key cannot be read, the card's key is dropped (the reflection check cannot run): the contact is still added, and a later
 //    re-share fills the key in. No "pending, unchecked" key is ever stored.
 import type { BeaconKeyRead } from '../identity/client-store';
@@ -46,15 +48,21 @@ export async function ownBeaconFrom(
   try { return { state: 'readable', publicKey: await publicKeyOf(r.record) }; } catch { return { state: 'unreadable' }; }
 }
 
-/** The held key as the classifier's knownBeacon option, or undefined. */
+/** The held key as the classifier's knownBeacon option, or undefined: both fields must be well-formed (a generation is a real integer). */
 export function knownBeaconOf(existing: HeldBeaconKey | undefined): { publicKey: string; keyGeneration: number } | undefined {
-  if (!existing || typeof existing.beacon_public_key !== 'string' || typeof existing.beacon_key_generation !== 'number') return undefined;
-  return { publicKey: existing.beacon_public_key, keyGeneration: existing.beacon_key_generation };
+  if (!existing || typeof existing.beacon_public_key !== 'string') return undefined;
+  const g = existing.beacon_key_generation;
+  if (typeof g !== 'number' || !Number.isSafeInteger(g)) return undefined;
+  return { publicKey: existing.beacon_public_key, keyGeneration: g };
 }
 
 export function decideBeaconIntake(existing: HeldBeaconKey | undefined, card: CardBeacon, own: OwnBeacon): BeaconIntake {
   if (own.state === 'unreadable') return card.beaconKey || card.beaconKeyDropped ? { verdict: 'none', fields: {}, counted: 'own-key-unreadable' } : NONE;
   const held = knownBeaconOf(existing);
+  // a key is present but the record is not well-formed: it is still HELD. Treating it as 'none held' would let a valid card overwrite it.
+  if (existing && existing.beacon_public_key !== undefined && existing.beacon_public_key !== null && !held) {
+    return card.beaconKey || card.beaconKeyDropped ? { verdict: 'keep', fields: {}, counted: 'held-malformed' } : NONE;
+  }
   const k = card.beaconKey;
   if (!k) {
     if (card.beaconKeyDropped === 'conflict') return { verdict: 'loud', fields: {}, counted: 'conflict' };
