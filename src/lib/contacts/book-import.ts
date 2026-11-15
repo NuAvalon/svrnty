@@ -97,12 +97,21 @@ export function storeRefusalReason(err: unknown): string {
  * which is the caller's "Invalid JSON format".
  */
 export function contactBookEntries(text: string): unknown[] {
+  return contactBookFile(text).entries;
+}
+
+/**
+ * The same parse as contactBookEntries, which also hands back the owner the file names (the export writes `owner_fingerprint`), or null when it names none.
+ * The owner is for a fixed notice only: it grants nothing and is never shown as text.
+ */
+export function contactBookFile(text: string): { entries: unknown[]; owner: string | null } {
   // Refused BEFORE the parse: JSON.parse of a huge paste would freeze the tab long before the per-file contact cap could be asked.
   if (text.length > MAX_FILE_CHARS) throw new ContactBookTooLarge();
   const parsed: unknown = JSON.parse(text);
-  if (Array.isArray(parsed)) return parsed;
-  const list = (parsed as { contacts?: unknown } | null)?.contacts;
-  return Array.isArray(list) ? list : [];
+  if (Array.isArray(parsed)) return { entries: parsed, owner: null };
+  const file = parsed as { contacts?: unknown; owner_fingerprint?: unknown } | null;
+  const owner = typeof file?.owner_fingerprint === 'string' ? file.owner_fingerprint : null;
+  return { entries: Array.isArray(file?.contacts) ? (file!.contacts as unknown[]) : [], owner };
 }
 
 /** Why an entry cannot be imported, in plain words, or null when it can. */
