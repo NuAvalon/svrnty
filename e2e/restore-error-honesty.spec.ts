@@ -7,8 +7,8 @@ import { RESTORE_MESSAGES } from '../src/lib/identity/restore-errors';
 /**
  * What the restore screen says when a restore fails, through the real screens.
  *
- *  1. An old-format FULL backup (the app's own backup object, encrypted the old way with node:crypto) opens fine but cannot be saved on a fresh device without
- *     a device passphrase. The screen must say THAT, not that the password was wrong: the owner typed the password right.
+ *  1. An old-format FULL backup (the app's own backup object, encrypted the old way with node:crypto) restores on a fresh device with the right password,
+ *     and the screen says the device now unlocks with that password. (Before the full-backup restore it ended in a dead end: a message that was not the wrong-password one.)
  *  2. A genuinely WRONG password still says the password did not open the file (the fix must not over-correct).
  *  3. A file with a password method this version does not read shows its own sentence, not the wrong-password one.
  *
@@ -90,14 +90,22 @@ test.beforeAll(async ({ browser }) => {
   await ctx.close();
 });
 
-test('1. an old-format full backup that OPENS but cannot be saved on a fresh device says so: it does not say the password was wrong', async ({ browser }, testInfo) => {
+test('1. an old-format full backup with the right password restores on a fresh device: no error, and the screen says the device now unlocks with that password', async ({ browser }, testInfo) => {
   const b = { ...backup! }; delete b.vault;
   const file = testInfo.outputPath('full-old.json');
   writeFileSync(file, JSON.stringify(oldFormat(JSON.stringify(b), FILE_PW, { type: 'svrnty-full-backup', version: '1.0', encrypted: true })));
-  const shown = await restoreAndReadError(browser, file, FILE_PW);
-  console.log(`[restore-honesty] full backup, RIGHT password: "${shown}"`);
-  expect(shown).toBe(RESTORE_MESSAGES.needsDevicePassphrase);
-  expect(shown).not.toMatch(/incorrect/i);
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
+  await page.setInputFiles('[data-testid="restore-file-input"]', file);
+  await page.getByPlaceholder('Encryption password from export').fill(FILE_PW);
+  await page.getByRole('button', { name: /^(open vault|restore identity)$/i }).click();
+  await expect(page.getByText(RESTORE_MESSAGES.deviceUsesFilePassword)).toBeVisible({ timeout: 60_000 });
+  const body = await page.locator('body').innerText();
+  console.log('[restore-honesty] full backup, RIGHT password: restored, device line shown');
+  expect(body).not.toMatch(/incorrect|didn't open this file|Something went wrong/i);
+  await ctx.close();
 });
 
 test('2. a genuinely WRONG password still says so (the fix does not over-correct)', async ({ browser }, testInfo) => {

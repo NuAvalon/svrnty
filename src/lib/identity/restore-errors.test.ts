@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyRestoreFailure, RestoreFormatUnrecognized, RESTORE_MESSAGES } from './restore-errors';
+import { classifyRestoreFailure, RestoreFormatUnrecognized, RESTORE_MESSAGES, contactsReportLines } from './restore-errors';
 import { EnvelopeRefused } from '../crypto/password-envelope';
 
 const lookalike = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -77,12 +77,26 @@ test('R5 [static] the errors the screen has to tell apart are typed where they a
   assert.match(read('./client-store.ts'), /Set or enter your device passphrase before importing a plaintext backup/, 'and so is this one');
 });
 
+test('R5 contact report lines: a line only when its count is above zero, "kept as they are" says so when a block was tightened, and no forbidden word appears', () => {
+  assert.deepEqual(contactsReportLines({}), []);
+  assert.deepEqual(contactsReportLines({ alreadyPresent: 0, blockTightened: 0 }), []);
+  assert.deepEqual(contactsReportLines({ alreadyPresent: 3 }), ['3 contacts were already on this device and were kept as they are.']);
+  assert.deepEqual(contactsReportLines({ blockTightened: 2 }), ['2 contacts blocked in your backup are now blocked on this device too.']);
+  assert.deepEqual(contactsReportLines({ alreadyPresent: 3, blockTightened: 1 }), [
+    '3 contacts were already on this device and were kept as they are, apart from the blocks below.',
+    '1 contact blocked in your backup is now blocked on this device too.',
+  ]);
+  assert.deepEqual(contactsReportLines({ alreadyPresent: 1 }), ['1 contact was already on this device and was kept as it is.']);
+  const all = [contactsReportLines({ alreadyPresent: 5, blockTightened: 4 }), contactsReportLines({ alreadyPresent: 1 })].flat().join(' ');
+  assert.doesNotMatch(all, /merged|updated|synced|removed|unblock|lifted|cleared/i);
+});
+
 test('R6 RULE: the screen never gets an error\'s own text. Every failure maps to one of the RESTORE_MESSAGES constants, whatever the error says', () => {
   const sentences = new Set<string>(Object.values(RESTORE_MESSAGES));
   const marker = 'ZZ-DISTINCT-ERROR-TEXT-ZZ';
   const errors: unknown[] = [
     new Error(marker), lookalike('wrong-password', marker), lookalike('vault-could-not-open', marker), lookalike('needs-device-passphrase', marker),
-    lookalike('vault-unsupported', marker), lookalike('restore-format-unrecognized', marker), new RestoreFormatUnrecognized(),
+    lookalike('vault-unsupported', marker), lookalike('restore-format-unrecognized', marker), lookalike('restore-stopped-partway', marker), lookalike('needs-device-password', marker), new RestoreFormatUnrecognized(),
     new EnvelopeRefused('unknown-kdf', marker), new EnvelopeRefused('unsafe-params', marker), new EnvelopeRefused('bad-field', marker), new EnvelopeRefused('not-an-envelope', marker),
     new DOMException(marker, 'OperationError'), undefined, null, 'a string', 42, {},
   ];
