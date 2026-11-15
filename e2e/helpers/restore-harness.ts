@@ -3,7 +3,7 @@
 // against the REAL IndexedDB so the spec can build a backup, seed a device that already holds an owner, and read the state back.
 import {
   initSessionKey, lockSession, exportAll, addContact, storeKey, storeVault, verifyPassphrase,
-  loadIdentity, loadKey, loadPQKeys, loadDeviceMailbox, getAllContacts,
+  loadIdentity, loadKey, loadPQKeys, loadDeviceMailbox, getAllContacts, storeIdentity, storeDeviceMailbox, writeDeliveryDefault,
 } from '@/lib/identity/client-store';
 import { serializeMailboxKeypair } from '@/lib/crypto/mailbox-keys';
 
@@ -22,6 +22,17 @@ window.__rh = {
   async seedKeyAndContact(fp: string, keys: { privateKey: string; passphrase: string }, pwKeys: string, pwContact: string, row: any) {
     await initSessionKey(pwKeys); await storeKey(fp, keys.privateKey, keys.passphrase);
     await initSessionKey(pwContact); await addContact(fp, row);
+    lockSession(); return true;
+  },
+  /** A device that holds the owner whole (identity row + key + device mailbox under `pw`, so the unlock step has nothing to heal) but has NO receipts default: a restore rewrites the identity row byte for byte, writes the receipts default, then fails at the key. */
+  async seedHeldFull(fp: string, keys: { privateKey: string; passphrase: string }, identity: any, mailbox: any, pw: string) {
+    await initSessionKey(pw); await storeIdentity(fp, identity); await storeKey(fp, keys.privateKey, keys.passphrase); await storeDeviceMailbox(fp, mailbox);
+    lockSession(); return true;
+  },
+  /** The key and a contact under `pwA`, the owner's receipts default under `pwB` (same device salt): the receipts record is the one that does not open. */
+  async seedKeyContactDelivery(fp: string, keys: { privateKey: string; passphrase: string }, pwA: string, pwB: string, row: any) {
+    await initSessionKey(pwA); await storeKey(fp, keys.privateKey, keys.passphrase); await addContact(fp, row);
+    await initSessionKey(pwB); await writeDeliveryDefault(fp, { v: 1, value: 'unknown' });
     lockSession(); return true;
   },
   async verify(fp: string, pw: string) { return verifyPassphrase(fp, pw); },

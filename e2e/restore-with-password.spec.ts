@@ -43,8 +43,9 @@ async function newPage(browser: Browser, inject = true): Promise<{ ctx: BrowserC
       (IDBObjectStore.prototype as any)[m] = function (this: IDBObjectStore, ...a: unknown[]) {
         if (target.includes(this.name)) {
           (window as any).__puts++;
-          let at = 0; try { at = Number(sessionStorage.getItem('failAt') || 0); } catch { /* none */ }
+          let at = 0, from = 0; try { at = Number(sessionStorage.getItem('failAt') || 0); from = Number(sessionStorage.getItem('failFrom') || 0); } catch { /* none */ }
           if (at && (window as any).__puts === at) throw new DOMException('injected failure', 'AbortError');
+          if (from && (window as any).__puts >= from) throw new DOMException('injected failure', 'AbortError'); // every write from the Nth on: a write that retries still fails
         }
         return orig.apply(this, a);
       };
@@ -86,6 +87,12 @@ const deviceState = (page: Page) => page.evaluate(() => new Promise<Record<strin
     tx.oncomplete = () => { db.close(); resolve(out); };
   };
 }));
+/** Is there a row under this key in the settings store? Reads only. */
+const hasSetting = (page: Page, key: string) => page.evaluate((k) => new Promise<boolean>((resolve) => {
+  const open = indexedDB.open('svrnty');
+  open.onerror = () => resolve(false);
+  open.onsuccess = () => { const db = open.result; const r = db.transaction('settings').objectStore('settings').get(k); r.onsuccess = () => { db.close(); resolve(r.result !== undefined); }; };
+}), key);
 const rawKeyRecord = (page: Page, fp: string) => page.evaluate((f) => new Promise<string>((resolve) => {
   const open = indexedDB.open('svrnty');
   open.onsuccess = () => { const db = open.result; const r = db.transaction('keys').objectStore('keys').get(f); r.onsuccess = () => { db.close(); resolve(JSON.stringify(r.result ?? null)); }; };
@@ -105,7 +112,7 @@ async function openRestoreScreen(page: Page, file: string) {
   await page.setInputFiles('[data-testid="restore-file-input"]', file);
 }
 const PROMPT = (p: Page) => p.getByTestId('device-password-prompt');
-const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway|stopped before anything was saved|may have been saved/i;
+const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
 /** After pressing the restore button: wait for the first thing that settles the attempt. */
 async function settle(page: Page): Promise<'restored' | 'prompt' | 'error'> {
   const restored = page.getByRole('tab', { name: 'Contacts', exact: true });
@@ -270,6 +277,48 @@ test('k. a device that ALREADY held the owner, failing at the first write, says 
   await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toHaveCount(0);
   expect(await deviceState(page), 'the device really is unchanged').toEqual(stBefore);
   await page.evaluate(() => sessionStorage.removeItem('failAt'));
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  expect(await restoreWith(page, file, UNLOCK_PW), 're-run with the same file').toBe('restored');
+  await ctx.close();
+});
+
+test('l. a device whose receipts default is under another passphrase than its key and contact refuses a restore under either passphrase, and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedKeyContactDelivery', fp, backup.keys, UNLOCK_PW, OTHER_PW, { name: 'Held Under Key', email: 'held@example.test', public_key: '', fingerprint: '', trust_level: 'known' });
+  await page.reload();
+  const stBefore = await deviceState(page);
+  expect(stBefore.contacts, 'the seeded contact row is on the device').toBe(1);
+  for (const pw of [UNLOCK_PW, OTHER_PW]) {
+    const file = writeFull(testInfo, `full-l-${pw.slice(0, 4)}.json`, noVault(), pw);
+    await page.reload();
+    expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
+    await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    await expect(page.getByText(/Your current profile is left as it is\./)).toBeVisible();
+    expect(await deviceState(page)).toEqual(stBefore);
+  }
+  await ctx.close();
+});
+
+test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  expect(backup.device_mailbox, 'the backup carries the device mailbox').toBeTruthy();
+  await rh(page, 'seedHeldFull', fp, backup.keys, backup.identity, backup.device_mailbox, UNLOCK_PW);
+  await page.reload();
+  // Every owner-store write from the 2nd on fails, found by running this restore with the failure starting at each write: the identity row (write 1, an identical rewrite) succeeds,
+  // the receipts default (a settings write the counter does not see) is written, and the key write (write 2) fails. The device already holds its mailbox, so the unlock step has nothing
+  // to heal and the receipts default is the ONLY difference. (The key write retries, so a single numbered failure would be absorbed.)
+  await page.evaluate(() => sessionStorage.setItem('failFrom', '2'));
+  const keyBefore = await rawKeyRecord(page, fp);
+  const receiptsBefore = await hasSetting(page, `delivery_receipts:${fp}`);
+  expect(receiptsBefore, 'the seeded device has no receipts default').toBe(false);
+  const file = writeFull(testInfo, 'full-m.json', noVault(), UNLOCK_PW);
+  expect(await restoreWith(page, file, UNLOCK_PW)).toBe('error');
+  expect(await hasSetting(page, `delivery_receipts:${fp}`), 'the restore wrote the receipts default before it failed').toBe(true);
+  console.log(`[restore-pw] m. the screen says: "${(await page.getByText(ERROR_RE).first().innerText()).trim()}"`);
+  await expect(page.getByText(RESTORE_MESSAGES.stoppedNothingSaved), 'the receipts default WAS saved, so the screen must not say nothing was').toHaveCount(0);
+  await expect(page.getByText(RESTORE_MESSAGES.stoppedPartway)).toBeVisible();
+  expect(await rawKeyRecord(page, fp), 'the key row is untouched (the failure was at the key write)').toBe(keyBefore);
+  await page.evaluate(() => sessionStorage.removeItem('failFrom'));
   await page.reload(); await page.addScriptTag({ content: HARNESS });
   expect(await restoreWith(page, file, UNLOCK_PW), 're-run with the same file').toBe('restored');
   await ctx.close();

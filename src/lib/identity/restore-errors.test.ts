@@ -58,9 +58,10 @@ test('R2 a stopped restore says what the device holds by the comparison: nothing
   assert.deepEqual(classifyRestoreFailure(new RestoreStoppedNothingSaved()), { code: 'stopped-nothing-saved', message: RESTORE_MESSAGES.stoppedNothingSaved });
   assert.deepEqual(classifyRestoreFailure(new RestoreStoppedPartway()), { code: 'stopped-partway', message: RESTORE_MESSAGES.stoppedPartway });
   assert.deepEqual(classifyRestoreFailure(new RestoreMayHaveSaved()), { code: 'may-have-saved', message: RESTORE_MESSAGES.mayHaveBeenSaved });
-  assert.equal(RESTORE_MESSAGES.stoppedNothingSaved, 'The restore stopped before anything was saved. Nothing on this device was changed. Run the restore again with the same file.');
+  assert.equal(RESTORE_MESSAGES.stoppedNothingSaved, 'The restore stopped before any of your data was saved. Run the restore again with the same file.');
   assert.match(RESTORE_MESSAGES.mayHaveBeenSaved, /^Part of it may have been saved on this device\./);
-  assert.doesNotMatch(RESTORE_MESSAGES.mayHaveBeenSaved, /nothing (on this device )?was changed|before anything was saved/i, 'an unreadable comparison never claims nothing changed');
+  assert.doesNotMatch(RESTORE_MESSAGES.mayHaveBeenSaved, /nothing (on this device )?was changed|before any of your data was saved/i, 'an unreadable comparison never claims nothing was saved or changed');
+  assert.doesNotMatch(RESTORE_MESSAGES.stoppedNothingSaved, /nothing (on this device )?was changed/i, 'the salt can change, so this line never claims the device is untouched');
   assert.doesNotMatch(RESTORE_MESSAGES.stoppedPartway, /nothing (on this device )?was changed/i);
 });
 

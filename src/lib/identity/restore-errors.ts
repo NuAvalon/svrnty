@@ -23,7 +23,7 @@ export class RestoreStoppedPartway extends Error {
 /** A restore failed and the device was compared with its state just before the first write: identical. Nothing of this owner was saved; the same file can be run again. */
 export class RestoreStoppedNothingSaved extends Error {
   readonly code = 'restore-stopped-nothing-saved' as const;
-  constructor() { super('The restore stopped before anything was saved.'); this.name = 'RestoreStoppedNothingSaved'; }
+  constructor() { super('The restore stopped before any of your data was saved.'); this.name = 'RestoreStoppedNothingSaved'; }
 }
 
 /** A restore failed and the comparison could not be read, so nothing may be claimed either way. */
@@ -59,7 +59,7 @@ export const RESTORE_MESSAGES = Object.freeze({
   chooseDevicePasswordNoFilePassword: 'This backup file has no password of its own. Choose a password of at least 12 characters to protect your keys on this device.',
   nothingSavedYet: 'Nothing has been saved yet.',
   stoppedPartway: 'The restore stopped partway, and part of it was saved on this device. Run the restore again with the same file to finish it.',
-  stoppedNothingSaved: 'The restore stopped before anything was saved. Nothing on this device was changed. Run the restore again with the same file.',
+  stoppedNothingSaved: 'The restore stopped before any of your data was saved. Run the restore again with the same file.',
   mayHaveBeenSaved: 'Part of it may have been saved on this device. Run the restore again with the same file.',
   keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
   unsupportedFormat: "This backup uses a format this version of the app can't read.",

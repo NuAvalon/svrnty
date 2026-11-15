@@ -978,6 +978,8 @@ export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnaps
   await put('contacts', contacts);
   const manifest = await txGet<unknown>('settings', contactManifestSettingKey(fingerprint));
   await put('contact-manifest', manifest ? [manifest] : []);
+  const delivery = await txGet<unknown>('settings', deliverySettingKey(fingerprint));
+  await put('delivery-default', delivery ? [delivery] : []);
   return out;
 }
 
@@ -988,7 +990,7 @@ export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
 }
 
 /**
- * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, and the contact rows)?
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, and the receipts default)?
  * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
  * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
  * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
@@ -1010,10 +1012,13 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
     }
     opened++;
   }
-  // Contacts are in the passphrase domain too: their rows are under the session key (the settings salt), not under a record's own salt. Key rows under B beside
-  // contact rows under A is the two-passphrase state, and a restore that wrote more rows there would read as "stopped partway" on every re-run.
+  // Contacts and the owner's receipts default are in the passphrase domain too: their records are under the session key (the settings salt), not under a
+  // record's own salt. Key rows under B beside a contact (or a receipts default) under A is the two-passphrase state, and a restore that wrote more rows there
+  // would read as "stopped partway" on every re-run, or leave a record unreadable for good.
   const encryptedContacts = (await txGetByIndex<any>('contacts', 'owner', fingerprint)).filter((r) => r && r.enc_version && r.ciphertext);
-  if (encryptedContacts.length > 0) {
+  const deliveryRow = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', deliverySettingKey(fingerprint));
+  const deliveryValue = deliveryRow?.value;
+  if (encryptedContacts.length > 0 || deliveryValue) {
     const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
     if (!setting?.value) return false;
     try {
@@ -1022,6 +1027,11 @@ export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, pas
       for (const rec of encryptedContacts) {
         if (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string') return false;
         await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext });
+        opened++;
+      }
+      if (deliveryValue) {
+        if (typeof deliveryValue.iv !== 'string' || typeof deliveryValue.ciphertext !== 'string') return false;
+        await decryptContactRecord(key, DELIVERY_RECORD_ID, fingerprint, { enc_version: deliveryValue.enc_version, iv: deliveryValue.iv, ciphertext: deliveryValue.ciphertext });
         opened++;
       }
     } catch {

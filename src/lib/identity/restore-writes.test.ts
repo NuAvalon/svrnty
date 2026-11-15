@@ -64,3 +64,11 @@ test('W5 the handler maps none -> nothing saved, some -> part saved, anything el
   assert.match(h, /classifyRestoreFailure\(err\)\.code === 'unknown'/, 'only an error nobody classified is read this way');
   assert.match(h, /!isRestoreDomainRefusal\(err\)/, 'a refusal is never read this way');
 });
+
+test('W6 the snapshot covers every place importAll writes for the owner, including the receipts default', () => {
+  const a = src.indexOf('export async function snapshotOwnerRows(');
+  assert.ok(a >= 0, 'snapshotOwnerRows is found');
+  const body = src.slice(a, src.indexOf('\n}\n', a));
+  for (const place of ["'identities'", 'OWNER_KEY_STORES', "'contacts'", "'contact-manifest'", "'delivery-default'"]) assert.ok(body.includes(place), `${place} is in the snapshot`);
+  assert.match(body, /deliverySettingKey\(fingerprint\)/, 'the receipts default is read from its settings key');
+});
