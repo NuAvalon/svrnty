@@ -1,6 +1,6 @@
 /**
  * Download name for the legacy contacts-only encrypted export
- * (SecureImportExportDialogs — PBKDF2 JSON envelope, NOT fleet packVault).
+ * (SecureImportExportDialogs — the password JSON envelope, password-envelope.ts, NOT fleet packVault).
  *
  * Claim-honesty: must NOT use the bare `.svrnty` extension. That extension is
  * reserved for the binary identity vault (`packVault` / `downloadVault`).

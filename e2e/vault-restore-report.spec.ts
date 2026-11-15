@@ -98,7 +98,7 @@ async function restoreOnNewDevice(browser: Browser) {
   const p = await ctx.newPage();
   await p.goto(APP);
   await p.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await p.setInputFiles('input[accept=".svrnty,.json"]', vaultPath);
+  await p.setInputFiles('[data-testid="restore-file-input"]', vaultPath);
   await p.getByPlaceholder('Encryption password from export').fill(EXPORT_PW);
   await p.getByRole('button', { name: /^restore identity$/i }).click();
   await expect(p.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 30_000 });

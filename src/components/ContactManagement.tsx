@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
@@ -72,7 +73,8 @@ import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
-import { ContactBookTooLarge, contactBookEntries, importContactBook, importMessage } from '@/lib/contacts/book-import';
+import { ContactBookTooLarge, contactBookEntries, contactBookFile, importContactBook, importMessage } from '@/lib/contacts/book-import';
+import { SEALED_BOOK_MESSAGES, looksSealed, namesDifferentOwner, openSealedBook, sealedFailureMessage, splitMissingKeys, splitUnbindable } from '@/lib/contacts/sealed-book-import';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -267,6 +269,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   const [importData, setImportData] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importNote, setImportNote] = useState<string | null>(null);
+  const [importPassword, setImportPassword] = useState('');
+  // A pasted password-sealed export (what "Export Contacts" writes) asks for its password; a plain paste does not.
+  const importSealed = React.useMemo(() => looksSealed(importData), [importData]);
   const [exchangePackage, setExchangePackage] = useState('');
   const [exchangeImportData, setExchangeImportData] = useState('');
   const [exchangeResult, setExchangeResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -831,11 +836,30 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
 
   const handleImportContacts = async () => {
     if (!fingerprint || !importData) return;
+    if (importSealed && !importPassword) return;
     try {
       setLoading(true);
       setImportError(null);
       setImportNote(null);
-      const entries = contactBookEntries(importData);
+      let entries: unknown[];
+      let unbindable = 0;
+      let differentOwner = false;
+      if (importSealed) {
+        // Open the sealed file, then hand its plaintext to the same parser and importer a plain paste uses (caps, unverified, the store's own checks).
+        try {
+          const file = contactBookFile(await openSealedBook(importData, importPassword));
+          // Rows exported without their post-quantum keys can never bind to their fingerprint: counted with the keyless rows, not tried.
+          const split = splitUnbindable(file.entries);
+          entries = split.attempt;
+          unbindable = split.unbindable;
+          differentOwner = namesDifferentOwner(file.owner, fingerprint);
+        } catch (err) {
+          setImportError(err instanceof ContactBookTooLarge ? SEALED_BOOK_MESSAGES.tooLarge : sealedFailureMessage(err));
+          return;
+        }
+      } else {
+        entries = contactBookEntries(importData);
+      }
       // A file carries identity only: book-import builds each contact field by field, always 'unverified', and the store still checks every binding.
       const summary = await importContactBook(entries, async (contact) => {
         const before = await getContactByFingerprint(fingerprint, contact.fingerprint);
@@ -843,8 +867,17 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         return before ? 'existing' : 'added';
       });
       await loadContacts();
-      const message = importMessage(summary);
-      if (summary.refused || summary.failed.length > 0) {
+      // A sealed file's keyless rows get one fixed sentence (a count, no names from the file); its owner, when it is not this identity, one fixed notice.
+      const keyless = importSealed ? splitMissingKeys(summary.failed) : { missingKeys: 0, other: summary.failed };
+      const withoutKeys = keyless.missingKeys + unbindable;
+      const message = importSealed
+        ? [
+            importMessage({ ...summary, failed: keyless.other, total: summary.total - keyless.missingKeys }),
+            withoutKeys > 0 ? SEALED_BOOK_MESSAGES.missingKeys(withoutKeys) : null,
+            differentOwner ? SEALED_BOOK_MESSAGES.differentOwner : null,
+          ].filter(Boolean).join(' ') || null
+        : importMessage(summary);
+      if (summary.refused || summary.failed.length > 0 || unbindable > 0) {
         setImportError(message);
         return;
       }
@@ -857,6 +890,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         return;
       }
       setImportData('');
+      setImportPassword('');
       setShowImportDialog(false);
     } catch (err) {
       if (err instanceof ContactBookTooLarge) {
@@ -2055,7 +2089,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         />
 
         {/* Import */}
-        <Dialog open={showImportDialog} onOpenChange={(open) => { setShowImportDialog(open); if (!open) setImportNote(null); }}>
+        <Dialog open={showImportDialog} onOpenChange={(open) => { setShowImportDialog(open); if (!open) { setImportNote(null); setImportPassword(''); } }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Import Contacts</DialogTitle>
@@ -2066,9 +2100,17 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             <div className="py-4">
               <Textarea value={importData} onChange={e => setImportData(e.target.value)} placeholder="Paste contacts JSON here..." className="font-mono text-xs" rows={8} />
             </div>
+            {importSealed && (
+              <div className="space-y-2 pb-2">
+                <Label htmlFor="contacts-import-password">{SEALED_BOOK_MESSAGES.passwordLabel}</Label>
+                <Input id="contacts-import-password" data-testid="contacts-import-password" type="password" autoComplete="off" value={importPassword} onChange={e => setImportPassword(e.target.value)} />
+                <p className="text-xs text-muted-foreground">{SEALED_BOOK_MESSAGES.passwordHelper}</p>
+                <p className="text-xs text-muted-foreground">{SEALED_BOOK_MESSAGES.alwaysUnverified}</p>
+              </div>
+            )}
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowImportDialog(false)}>Cancel</Button>
-              <Button onClick={handleImportContacts} disabled={loading || !importData}>
+              <Button onClick={handleImportContacts} disabled={loading || !importData || (importSealed && !importPassword)}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> : <><Upload className="h-4 w-4 mr-2" />Import</>}
               </Button>
             </DialogFooter>

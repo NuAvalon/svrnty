@@ -1,6 +1,6 @@
 # Contacts-only export chrome (gap claim-honesty residual)
 
-**Owner (UI):** Cursor · **Seam:** Flint (legacy PBKDF2 KDF — untouched) · Hypatia (copy)
+**Owner (UI):** Cursor · **Seam:** Flint (password envelope: Argon2id writes; the older PBKDF2-100k format is read-only) · Hypatia (copy)
 
 ## What changed
 - User-facing **Secure Export / Secure Contact Export** → **Export contacts**
@@ -9,7 +9,7 @@
 - Description under-claims: contacts-only; Full Backup for identity vault
 
 ## What did NOT change
-- Encryption path (PBKDF2-100k AES-GCM) — fleet migrate seam
+- Encryption path (Argon2id + AES-256-GCM, `src/lib/crypto/password-envelope.ts`; older PBKDF2-100k files are still read, never written)
 - Payload shape
 - Restore format-detect (still accepts legacy misnamed `.svrnty` JSON + `.json`)
 

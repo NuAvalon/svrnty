@@ -22,39 +22,9 @@ import {
   loadPQKeys,
 } from '@/lib/identity/client-store';
 import { contactsEncryptedExportFilename } from '@/components/export/contacts-export-name';
+import { sealWithPassword, openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE, MIN_EXPORT_PASSWORD_LENGTH } from '@/lib/crypto/password-envelope';
 
 // ── Helpers ────────────────────────────────────────────
-
-async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
-  );
-  return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-    keyMaterial,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
-}
-
-function toBase64(bytes: Uint8Array): string {
-  // Loop, NOT String.fromCharCode(...bytes): spreading a large byte array exceeds the argument-count
-  // limit on mobile browsers ("too many function arguments") — a FULL backup's encrypted payload is
-  // large enough to trip it on mobile while small exports (a key alone) stay under the limit. Same
-  // safe pattern kdf.ts / pq.ts already use. Identical base64 output.
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-function fromBase64(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
 
 // ── Secure Export Dialog ────────────────────────────────
 
@@ -101,6 +71,10 @@ export function SecureExportDialog({
         };
         if (includePublicKeys && c.public_key) {
           base.public_key = c.public_key;
+          // A contact's fingerprint is bound to ALL its public keys, so a file without the post-quantum keys cannot be imported back (the store refuses every
+          // key-bound contact). They are public, and the plain contact-book export writes them too.
+          if (c.pq_kem_public_key) base.pq_kem_public_key = c.pq_kem_public_key;
+          if (c.pq_sig_public_key) base.pq_sig_public_key = c.pq_sig_public_key;
         }
         return base;
       });
@@ -115,32 +89,14 @@ export function SecureExportDialog({
       let result: string;
       let method: string;
 
-      if (!password || password.length < 8) {
-        throw new Error('A password (8+ characters) is required to export contacts.');
+      if (!password || password.length < MIN_EXPORT_PASSWORD_LENGTH) {
+        throw new Error(`A password (${MIN_EXPORT_PASSWORD_LENGTH}+ characters) is required to export contacts.`);
       }
 
-      // Encrypt with AES-256-GCM via password
-      // NOTE (CUR-4 README): this dialog still uses the legacy PBKDF2 path that
-      // lived here before polish. Fleet preferred path for identity is packVault
-      // (Argon2id). Contacts-only Argon2id seam = follow-up — do not invent
-      // a parallel KDF in the UI.
-      const salt = new Uint8Array(16);
-      crypto.getRandomValues(salt);
-      const iv = new Uint8Array(12);
-      crypto.getRandomValues(iv);
-      const key = await deriveKey(password, salt);
-      const enc = new TextEncoder();
-      const encrypted = new Uint8Array(
-        await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr))
-      );
-      result = JSON.stringify({
-        encrypted: true,
-        algorithm: 'AES-256-GCM',
-        kdf: 'PBKDF2-SHA256-100k',
-        salt: toBase64(salt),
-        iv: toBase64(iv),
-        data: toBase64(encrypted),
-      });
+      // Encrypt with AES-256-GCM, the key derived from the password with Argon2id (the one derivation path, kdf.ts). Older exports used a weaker password
+      // method; those files are still READ (openWithPassword) and never written.
+      const sealed = await sealWithPassword(new TextEncoder().encode(jsonStr), password);
+      result = JSON.stringify({ encrypted: true, ...sealed });
       method = 'AES-256-GCM';
 
       setExportedData(result);
@@ -224,7 +180,7 @@ export function SecureExportDialog({
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter a password (8+ characters)"
+                  placeholder={`Enter a password (${MIN_EXPORT_PASSWORD_LENGTH}+ characters)`}
                   className="flex-1"
                 />
                 <Button
@@ -299,7 +255,7 @@ export function SecureExportDialog({
           {!exportComplete && (
             <Button
               onClick={handleExport}
-              disabled={loading || password.length < 8}
+              disabled={loading || password.length < MIN_EXPORT_PASSWORD_LENGTH}
               className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
@@ -335,7 +291,7 @@ export function PrivateKeyExportDialog({
   const [exportComplete, setExportComplete] = useState(false);
 
   const passwordsMatch = password === confirmPassword;
-  const passwordValid = password.length >= 8;
+  const passwordValid = password.length >= MIN_EXPORT_PASSWORD_LENGTH;
 
   const handleExport = async () => {
     if (!identityFingerprint || !passwordValid || !passwordsMatch) return;
@@ -350,13 +306,7 @@ export function PrivateKeyExportDialog({
 
       const pqKeys = await loadPQKeys(identityFingerprint);
 
-      // Encrypt with password using AES-256-GCM
-      const salt = new Uint8Array(16);
-      crypto.getRandomValues(salt);
-      const iv = new Uint8Array(12);
-      crypto.getRandomValues(iv);
-      const derivedKey = await deriveKey(password, salt);
-
+      // Encrypt with the password (AES-256-GCM, Argon2id-derived key)
       const payload = JSON.stringify({
         fingerprint: identityFingerprint,
         privateKey: keyData.privateKey,
@@ -364,20 +314,12 @@ export function PrivateKeyExportDialog({
         pq_keys: pqKeys || undefined,
         exported_at: new Date().toISOString(),
       });
-
-      const enc = new TextEncoder();
-      const encrypted = new Uint8Array(
-        await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, enc.encode(payload))
-      );
+      const sealed = await sealWithPassword(new TextEncoder().encode(payload), password);
 
       const exportFile = JSON.stringify({
         version: '1.0',
         type: 'svrnty-keys',
-        algorithm: 'AES-256-GCM',
-        kdf: 'PBKDF2-SHA256-100k',
-        salt: toBase64(salt),
-        iv: toBase64(iv),
-        data: toBase64(encrypted),
+        ...sealed,
         fingerprint: identityFingerprint,
       }, null, 2);
 
@@ -439,7 +381,7 @@ export function PrivateKeyExportDialog({
             </Alert>
 
             <div className="space-y-2">
-              <Label htmlFor="keyPassword" className="text-[var(--se-muted)]">Password (minimum 8 characters)</Label>
+              <Label htmlFor="keyPassword" className="text-[var(--se-muted)]">{`Password (minimum ${MIN_EXPORT_PASSWORD_LENGTH} characters)`}</Label>
               <div className="flex">
                 <Input
                   id="keyPassword"
@@ -543,6 +485,7 @@ export function SecureImportDialog({
   const [needsPassword, setNeedsPassword] = useState(false);
   const [importComplete, setImportComplete] = useState(false);
   const [importCount, setImportCount] = useState(0);
+  const [legacyNotice, setLegacyNotice] = useState(false);
 
   const checkIfNeedsPassword = (data: string) => {
     try {
@@ -561,6 +504,7 @@ export function SecureImportDialog({
       setError(null);
 
       let contactsJson: string;
+      let legacyOpened = false;
 
       // Check if data is encrypted
       const parsed = JSON.parse(importData);
@@ -569,15 +513,10 @@ export function SecureImportDialog({
           setNeedsPassword(true);
           throw new Error('This export is password-protected. Enter the password.');
         }
-        // Decrypt
-        const salt = fromBase64(parsed.salt);
-        const iv = fromBase64(parsed.iv);
-        const encrypted = fromBase64(parsed.data);
-        const key = await deriveKey(password, salt);
-        const decrypted = new Uint8Array(
-          await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted)
-        );
-        contactsJson = new TextDecoder().decode(decrypted);
+        // Decrypt: the file's own tag picks the derivation (Argon2id, or the older method for files already held)
+        const opened = await openWithPassword(parsed, password);
+        contactsJson = new TextDecoder().decode(opened.plaintext);
+        legacyOpened = opened.legacy;
       } else {
         contactsJson = importData;
       }
@@ -599,6 +538,7 @@ export function SecureImportDialog({
       }
 
       setImportCount(count);
+      setLegacyNotice(legacyOpened);
       setImportComplete(true);
 
       if (onImportComplete) {
@@ -624,6 +564,7 @@ export function SecureImportDialog({
     setNeedsPassword(false);
     setImportComplete(false);
     setImportCount(0);
+    setLegacyNotice(false);
     setError(null);
     onClose();
   };
@@ -706,6 +647,11 @@ export function SecureImportDialog({
                 Successfully imported {importCount} contacts.
               </AlertDescription>
             </Alert>
+            {legacyNotice && (
+              <Alert data-testid="legacy-password-method-notice">
+                <AlertDescription>{LEGACY_PASSWORD_METHOD_NOTICE}</AlertDescription>
+              </Alert>
+            )}
           </div>
         )}
 
