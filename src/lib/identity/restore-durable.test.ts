@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { classifyRestoreFailure } from './restore-errors';
 import { durableFromSeedBundle, RestoreDurableRefused, isRestoreDurableRefusal, RESTORE_DURABLE_CODE, RESTORE_DURABLE_MESSAGE } from './restore-durable';
 import { createKeyVault, recoverFromSeedPhrase, seedPhraseToMasterSecret, type PrivateKeyBundle } from '../crypto/recovery';
 import { deriveNextAuthorityCommitment } from './fingerprint';
@@ -34,7 +35,7 @@ test('D3 fail-closed: a bad epoch, a missing durable id past genesis, a bad id, 
   refuses(() => durableFromSeedBundle({ durable_fingerprint: DURABLE }, FP), 'genesis-id-mismatch');
 });
 
-const WRONG_CODE_RE = /master secret|seed phrase|Invalid seed|hash|mismatch/i; // the seed-restore catch's wrong-code regex (G4 pins it)
+const WRONG_CODE_RE = /master secret|seed phrase|Invalid seed|hash|mismatch/i; // the wording the seed-restore catch used to test for; this refusal's message must still not read like it
 test('D4 every refusal: ONE user string, no reason token, no bundle bytes, recognisable by code, and never the wrong-code wording', () => {
   const cases: Array<[Record<string, unknown>, string]> = [
     [{ durable_epoch: -1 }, 'bad-epoch'], [{ durable_epoch: 2 }, 'missing-durable-id'],
@@ -135,12 +136,17 @@ test('G3 both mint paths seal a genesis durable record into the seed bundle', ()
   }
 });
 
-test('G4 the seed-restore UI catch routes this refusal to its own string BEFORE the wrong-code regex', () => {
+test('G4 the seed-restore UI catch routes this refusal to its own string BEFORE classification, and classification can never call it a wrong recovery code', () => {
   const src = read('../../components/SoverentityFrontend.tsx');
   const i = src.indexOf('await restoreIdentityFromSeedVault(');
   assert.ok(i >= 0);
   const s = code(src.slice(src.indexOf('} catch (err) {', i), src.indexOf('} finally {', i)));
-  before(s, 'isRestoreDurableRefusal(err)', '/master secret|seed phrase|Invalid seed|hash|mismatch/i', 'routed before the regex');
+  before(s, 'isRestoreDurableRefusal(err)', 'classifyRestoreFailure(err)', 'routed before the classification');
   assert.match(s, /if \(isRestoreDurableRefusal\(err\)\) \{\s*setRestoreError\(RESTORE_DURABLE_MESSAGE\);\s*return;/);
-  assert.ok(s.includes(String(WRONG_CODE_RE).slice(1, -2)), 'the regex D4 checks against is the one in the catch');
+  // by behaviour as well: even if one reached classification, it is never a wrong recovery code (the old text test on the message is gone)
+  for (const reason of ['bad-epoch', 'missing-durable-id', 'bad-durable-id', 'genesis-id-mismatch'] as const) {
+    const f = classifyRestoreFailure(new RestoreDurableRefused(reason));
+    assert.notEqual(f.code, 'wrong-recovery-code', reason);
+    assert.doesNotMatch(f.message, /recovery code doesn't match/i, reason);
+  }
 });
