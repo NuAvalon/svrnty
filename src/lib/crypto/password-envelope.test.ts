@@ -180,3 +180,15 @@ test('E12 the export password floor is 12 (the same as every other password in t
   const pinned = app().filter((f) => /minimum 8 char|8\+ char/i.test(code(f))).map((f) => relative(SRC, f));
   assert.deepEqual(pinned, [], 'no source line says "minimum 8 characters" / "8+ characters"');
 });
+
+test('E13 the export dialog\'s three on-screen lines are the copy owner\'s words, built from the ONE constant (no digits written out), and the old wordings are gone', () => {
+  const dlg = code(join(SRC, 'components/SecureImportExportDialogs.tsx'));
+  const once = (needle: string) => assert.equal(dlg.split(needle).length - 1, 1, needle);
+  once('`Password (minimum ${MIN_EXPORT_PASSWORD_LENGTH} characters)`');                                               // the label (the key export)
+  once('placeholder={`At least ${MIN_EXPORT_PASSWORD_LENGTH} characters`}');                                          // the placeholder
+  once('throw new Error(`Enter a password of at least ${MIN_EXPORT_PASSWORD_LENGTH} characters to export your contacts.`);'); // the refusal (missing or too short only)
+  assert.ok(!/Enter a password \(|\+ characters\)|is required to export contacts/.test(dlg), 'the old wordings are gone');
+  assert.ok(!/(minimum|least)\s+\d|\(\d+\+/i.test(dlg), 'no digit is written out next to the copy: the number comes from the constant');
+  // the refusal is only for a missing or too-short password
+  assert.match(dlg, /if \(!password \|\| password\.length < MIN_EXPORT_PASSWORD_LENGTH\) \{\s*throw new Error\(`Enter a password of at least/);
+});

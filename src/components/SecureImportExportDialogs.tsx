@@ -86,7 +86,7 @@ export function SecureExportDialog({
       let method: string;
 
       if (!password || password.length < MIN_EXPORT_PASSWORD_LENGTH) {
-        throw new Error(`A password (${MIN_EXPORT_PASSWORD_LENGTH}+ characters) is required to export contacts.`);
+        throw new Error(`Enter a password of at least ${MIN_EXPORT_PASSWORD_LENGTH} characters to export your contacts.`);
       }
 
       // Encrypt with AES-256-GCM, the key derived from the password with Argon2id (the one derivation path, kdf.ts). Older exports used a weaker password
@@ -176,7 +176,7 @@ export function SecureExportDialog({
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder={`Enter a password (${MIN_EXPORT_PASSWORD_LENGTH}+ characters)`}
+                  placeholder={`At least ${MIN_EXPORT_PASSWORD_LENGTH} characters`}
                   className="flex-1"
                 />
                 <Button
