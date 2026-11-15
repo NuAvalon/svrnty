@@ -135,12 +135,16 @@ async function checkedPair(x: bigint, counterpartY: Point) {
   if (Yx === big('0') && Yy === big('1')) throw new ProverRefused('y-identity');
   if (!bj.inCurve(Y)) throw new ProverRefused('y-off-curve');
   if (isId(bj, bj.mulPointEscalar(Y, EIGHT))) throw new ProverRefused('y-small-order');            // order 1, 2, 4 or 8
+  // The check below (L*Y) and the cofactor re-check further down (8*Q == Y) refuse the SAME set, every point with a torsion component, with the SAME
+  // reason, ON PURPOSE: the first is the receiver's rule, the second is what the circuit's witness needs. Each alone is enough for any input, so removing
+  // ONE changes nothing observable and removing BOTH lets a mixed-order key through. Do not "simplify" one away thinking the other covers a different case.
   if (!isId(bj, bj.mulPointEscalar(Y, L))) throw new ProverRefused('y-not-in-subgroup');             // a torsion component is present
   const P = bj.mulPointEscalar(bj.Base8, x);
   if (O(P[0]) === Yx && O(P[1]) === Yy) throw new ProverRefused('y-self');
 
   const S = bj.mulPointEscalar(Y, x);
   const Q = bj.mulPointEscalar(Y, INV8);                                                              // 8 * Q = Y, Q in the prime-order subgroup
+  // the cofactor re-check: redundant with the L*Y check above by design (see the comment there)
   const q8 = bj.mulPointEscalar(Q, EIGHT);
   if (O(q8[0]) !== Yx || O(q8[1]) !== Yy) throw new ProverRefused('y-not-in-subgroup');
   return { poseidon, O, Yx, Yy, P, S, Q };
