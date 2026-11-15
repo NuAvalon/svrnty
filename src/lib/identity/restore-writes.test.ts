@@ -52,3 +52,15 @@ test('W4 the snapshot is taken after the session step and before the first write
   assert.match(fn, /try \{ after = await snapshotOwnerRows\(fingerprint\); \} catch \{ after = null; \}/, 'so is the compare side');
   assert.match(fn, /tagRestoreWrites\(err, restoreWritesVerdict\(before, after\)\)/, 'the verdict is the comparison of the two');
 });
+
+// The screen's mapping from the verdict to a sentence: an unreadable comparison must NEVER reach "nothing saved".
+const screen = readFileSync(new URL('../../components/SoverentityFrontend.tsx', import.meta.url), 'utf8');
+
+test('W5 the handler maps none -> nothing saved, some -> part saved, anything else (unknown) -> may have been saved', () => {
+  const a = screen.indexOf('const writes = restoreWritesOf(err);');
+  assert.ok(a >= 0, 'the handler reads the verdict');
+  const h = screen.slice(a, a + 700);
+  assert.match(h, /writes === 'none' \? new RestoreStoppedNothingSaved\(\) : writes === 'some' \? new RestoreStoppedPartway\(\) : new RestoreMayHaveSaved\(\)/);
+  assert.match(h, /classifyRestoreFailure\(err\)\.code === 'unknown'/, 'only an error nobody classified is read this way');
+  assert.match(h, /!isRestoreDomainRefusal\(err\)/, 'a refusal is never read this way');
+});
