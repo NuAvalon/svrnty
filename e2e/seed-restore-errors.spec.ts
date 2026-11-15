@@ -45,6 +45,7 @@ async function exportVault(page: Page, dest: string) {
 }
 
 test.beforeAll(async ({ browser }, testInfo) => {
+  test.setTimeout(240_000); // minting real keys and exporting a vault is slow on a cold server; the file-level timeout does not cover this hook
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
   recoveryCode = await mint(page);
