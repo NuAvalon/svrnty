@@ -89,7 +89,6 @@
 import {
   type Argon2Params,
   defaultArgon2Params,
-  deriveKeyArgon2id,
   aesGcmEncrypt,
   aesGcmDecrypt,
   assertParamsWithinLimits,
@@ -100,6 +99,7 @@ import {
   SALT_LENGTH,
   IV_LENGTH,
 } from '../crypto/kdf';
+import { deriveKeyArgon2idOffThread } from '../crypto/kdf-offthread';
 import type { TrustGraph } from '../trust/types';
 import type { KeyVault } from '../crypto/recovery';
 
@@ -373,7 +373,7 @@ export async function packVault(contents: VaultContents, passphrase: string): Pr
 
   // Derive + encrypt body (contents holds the identity, keys, safe word, and a
   // copy of the recovery KeyVault — the daily-unlock path is unchanged).
-  const key = deriveKeyArgon2id(passphrase, salt, kdf);
+  const key = await deriveKeyArgon2idOffThread(passphrase, salt, kdf);
   const bodyBytes = await aesGcmEncrypt(
     key,
     iv,
@@ -496,7 +496,7 @@ export async function unpackVault(
   // AAD must be byte-identical to pack time: MAGIC ‖ the exact header bytes.
   const aad = buildAad(magic, headerBytes);
 
-  const key = deriveKeyArgon2id(passphrase, salt, header.kdf);
+  const key = await deriveKeyArgon2idOffThread(passphrase, salt, header.kdf);
   try {
     const plaintext = await aesGcmDecrypt(key, iv, bodyBytes, aad);
     const contents = JSON.parse(new TextDecoder().decode(plaintext)) as VaultContents;
