@@ -23,17 +23,19 @@ const PAIR = 'pair-1';
 function countingKV() {
   const data = new Map<string, string>();
   const n = { gets: 0, swaps: 0, keys: 0 };
+  const fail = { swap: false };
   const kv: BeaconKV = {
     async get(k) { n.gets++; return data.get(k); },
     async swap(k, expected, next) {
       n.swaps++;
+      if (fail.swap) throw new Error('kv swap failed');
       if (data.get(k) !== expected) return false;
       if (next === undefined) data.delete(k); else data.set(k, next);
       return true;
     },
     async keys(prefix) { n.keys++; return [...data.keys()].filter((k) => k.startsWith(prefix)); },
   };
-  return { kv, data, n, total: () => n.gets + n.swaps + n.keys };
+  return { kv, data, n, fail, total: () => n.gets + n.swaps + n.keys };
 }
 function fakeSealer(): Sealer {
   return {
@@ -120,7 +122,7 @@ test('W1 switch OFF: every method answers from constants and NOTHING is touched:
   r.setOn(false);
   const c = r.wire.client;
   assert.deepEqual(await c.trustAtTap(PAIR), { kind: 'unsent' });
-  assert.deepEqual(await c.removeAtTap(PAIR), { observedMatch: false });
+  // removeAtTap is NOT in this list: it is the one method that writes while off (the local latch), see W12
   assert.equal(await c.matchState(PAIR), 'none');
   assert.equal(await c.matchSince(PAIR), null);
   assert.equal(await c.renew(PAIR), undefined);
@@ -135,7 +137,7 @@ test('W1 switch OFF: every method answers from constants and NOTHING is touched:
 });
 
 // ---------- the kill switch ----------
-test('W6a switch flipped OFF after the wire was built ON: renew, pollNow, drain, trustAtTap and removeAtTap send nothing', async () => {
+test('W6a switch flipped OFF after the wire was built ON: renew, pollNow, drain and trustAtTap send nothing (removeAtTap: W12)', async () => {
   const r = await rig();
   r.f.queue.push(ok('accepted'));
   assert.equal((await r.wire.client.trustAtTap(PAIR)).kind, 'deposited');
@@ -146,7 +148,6 @@ test('W6a switch flipped OFF after the wire was built ON: renew, pollNow, drain,
   await r.wire.client.pollNow(PAIR);
   await r.wire.client.drainPendingWithdraws();
   await r.wire.client.trustAtTap(PAIR);
-  await r.wire.client.removeAtTap(PAIR);
   assert.equal(r.f.calls.length, 1, 'OFF: no further request on any path');
   assert.equal(r.k.n.swaps, writesWhileOn, 'and no further store write');
 });
@@ -219,6 +220,32 @@ test('W5b a pair I removed (local latch, a row still standing) -> never a deposi
   assert.ok(urls.some((u) => u.endsWith('/beacon/withdraw')), 'the withdraw itself was sent');
 });
 
+// ---------- a Remove survives the switch being off ----------
+test('W12 a Remove made while the switch is OFF is not lost: 0 requests, the local latch is recorded, and when the switch is on again the drain withdraws the standing row (one withdraw, no deposit)', async () => {
+  const r = await rig();
+  r.f.queue.push(ok('accepted'));
+  assert.equal((await r.wire.client.trustAtTap(PAIR)).kind, 'deposited');
+  const afterDeposit = r.f.calls.length;
+  r.setOn(false);
+  assert.deepEqual(await r.wire.client.removeAtTap(PAIR), { observedMatch: false });
+  assert.equal(r.f.calls.length, afterDeposit, 'OFF: the Remove sent nothing');
+  assert.equal(await createBeaconLatch(r.k.kv, r.sealer, OWNER).kindOf(PAIR, 'local'), 'removed', 'but it was recorded');
+  r.setOn(true);
+  r.f.queue.push({ status: 200, body: JSON.stringify({ nonce: 'a'.repeat(64) }) }, ok('withdrawn'));
+  await r.wire.client.drainPendingWithdraws();
+  const urls = r.f.calls.slice(afterDeposit).map((c) => c.url);
+  assert.equal(urls.filter((u) => u.endsWith('/beacon/withdraw')).length, 1, `exactly one withdraw, got ${JSON.stringify(urls)}`);
+  assert.ok(!urls.some((u) => u.endsWith('/beacon/deposit')), 'and no deposit');
+});
+
+test('W12b a Remove made while OFF that cannot be recorded FAILS: it never looks done', async () => {
+  const r = await rig();
+  r.setOn(false);
+  r.k.fail.swap = true;
+  await assert.rejects(() => r.wire.client.removeAtTap(PAIR));
+  assert.equal(r.f.calls.length, 0);
+});
+
 // ---------- static guards ----------
 function walk(dir: string, out: { path: string; text: string }[] = []) {
   for (const name of readdirSync(dir)) {
@@ -233,6 +260,7 @@ function walk(dir: string, out: { path: string; text: string }[] = []) {
 const SRC = walk(join(process.cwd(), 'src'));
 const codeOnly = (t: string) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 const isFile = (p: string, name: string) => p.replace(/\\/g, '/').endsWith(name);
+const namersOf = (files: { path: string; text: string }[], name: string) => files.filter((f) => new RegExp(`\\b${name}\\b`).test(codeOnly(f.text))).map((f) => f.path.replace(/\\/g, '/').split('/src/').pop());
 
 /** the callers' `confirmed` must be the real evidence function, never a constant true */
 export function scanWireCallers(files: { path: string; text: string }[]): string[] {
@@ -257,9 +285,13 @@ test('W7 the caller guard flags a constant-true confirmed (CONTROL) and finds no
   assert.deepEqual(scanWireCallers(SRC), [], 'no caller in the tree passes a constant-true confirmed');
 });
 
-test('W8 the gate-injecting entry is named by no other source file (tests only), and the base URL is not a parameter of the wire', () => {
-  const namers = SRC.filter((f) => /\bcreateBeaconWireWithGate\b/.test(codeOnly(f.text))).map((f) => f.path.replace(/\\/g, '/').split('/src/').pop());
-  assert.deepEqual(namers, ['lib/trust/beacon-wire.ts']);
+test('W8 the gate-injecting entry is named by no other non-test source file (the guard FIRES on a synthetic importer, CONTROL), and the base URL is not a parameter of the wire', () => {
+  const flagged = namersOf([
+    { path: '/x/src/lib/other.ts', text: "import { createBeaconWireWithGate } from './beacon-wire';" },
+    { path: '/x/src/lib/comment.ts', text: '// createBeaconWireWithGate is for tests' },
+  ], 'createBeaconWireWithGate');
+  assert.deepEqual(flagged, ['lib/other.ts'], 'an importer is flagged; a comment is not');
+  assert.deepEqual(namersOf(SRC, 'createBeaconWireWithGate'), ['lib/trust/beacon-wire.ts']);
   const wire = SRC.find((f) => isFile(f.path, 'src/lib/trust/beacon-wire.ts'))!;
   assert.doesNotMatch(codeOnly(wire.text), /\bbaseUrl\b/, 'no baseUrl in the wire: the client fixed base is the only one');
 });

@@ -5,7 +5,12 @@
 //
 // Three rules, each pinned by a test:
 //  1. OFF MEANS OFF, on every path. The switch is read on every client call and again inside the fetch the client is given, not once at construction.
-//     While it is off the client is INERT: it answers from constants, writes nothing, reads nothing, calls no dependency.
+//     While it is off the client is INERT: it answers from constants, writes nothing, reads nothing, calls no dependency, sends nothing.
+//     ONE exception, because a Remove is a tightening and an off switch may stop traffic but must never lose one: removeAtTap still records the LOCAL
+//     latch (a local write, no request). That is the state the client itself calls a half-done Remove; when the switch is on again its drain finds the
+//     latch and withdraws the standing row. If the latch cannot be recorded the call fails: a Remove that was not recorded must not look done.
+//     A switch flipped off mid-flight makes the in-flight fetch throw BeaconWireOff: no request leaves, and the client's own failure path may write a
+//     local retry counter, which clears itself.
 //  2. The two inputs that are not built yet fail CLOSED. counterpartY (the contact's verified beacon key) defaults to "unknown", so nothing can be derived
 //     and no request is made. confirmed (key-freshness evidence after a restore) defaults to false for every pair, so no request is made.
 //  3. The base URL is not a parameter. The client's fixed same-origin base is the only one.
@@ -57,7 +62,7 @@ export class BeaconWireOff extends Error {
 /** The answers while the wire is off. Constants: no dependency is touched, nothing is persisted, nothing is sent. */
 const INERT: BeaconClient = {
   trustAtTap: async () => ({ kind: 'unsent' }),
-  removeAtTap: async () => ({ observedMatch: false }),
+  removeAtTap: async () => ({ observedMatch: false }), // the wire adds the one local write (the latch) around this; see createBeaconWireWithGate
   matchState: async () => 'none',
   matchSince: async () => null,
   renew: async () => undefined,
@@ -104,7 +109,11 @@ export function createBeaconWireWithGate(deps: BeaconWireDeps, live: () => boole
   });
   const client: BeaconClient = {
     trustAtTap: (p) => (live() ? inner.trustAtTap(p) : INERT.trustAtTap(p)),
-    removeAtTap: (p) => (live() ? inner.removeAtTap(p) : INERT.removeAtTap(p)),
+    removeAtTap: async (p) => {
+      if (live()) return inner.removeAtTap(p);
+      await latch.setLatched(p, 'local'); // recorded even while off: no request, and a failure propagates
+      return INERT.removeAtTap(p);
+    },
     matchState: (p) => (live() ? inner.matchState(p) : INERT.matchState(p)),
     matchSince: (p) => (live() ? inner.matchSince(p) : INERT.matchSince(p)),
     renew: (p) => (live() ? inner.renew(p) : INERT.renew(p)),
