@@ -93,3 +93,25 @@ test('S6 the beacon row AAD has ONE definition, in beacon-ports.ts: client-store
   assert.match(ports, /const aadOf = \(pairId: string\) => pairAad\(owner, pairId\);/, 'the store uses the shared builder');
   assert.match(ports, /const aadOf = \(source: Source, pairId: string\) => latchAad\(owner, source, pairId\);/, 'the latch uses the shared builder');
 });
+
+// ---- a device whose keys were cleared but whose settings rows were not still counts as holding the owner ----
+const fnBody = (head: string) => {
+  const a = store.indexOf(head);
+  assert.ok(a >= 0, `${head} exists`);
+  return codeOnlyText(store.slice(a, store.indexOf('\n}\n', a)));
+};
+
+test('S7 deviceHoldsOwner counts every owner-sealed settings record and every beacon row, and NOT the contact manifest (a MAC the passphrase check cannot open)', () => {
+  const b = fnBody('export async function deviceHoldsOwner');
+  assert.match(b, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{\s*if \(await txGet<unknown>\('settings', sealed\.settingKey\(fingerprint\)\)\) return true;\s*\}/, 'every listed record');
+  assert.match(b, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\) \{\s*if \(\(await txKeysWithPrefix\('settings', prefix\)\)\.length > 0\) return true;\s*\}/, 'every beacon pair and latch row');
+  assert.doesNotMatch(b, /contactManifestSettingKey|contact_manifest/, 'the manifest holds nothing the check can open: counting it would refuse every restore on such a device');
+});
+
+test('S8 the snapshot has one entry per beacon collection: the count and the digest of the key-sorted key + value rows', () => {
+  const b = fnBody('export async function snapshotOwnerRows');
+  assert.match(b, /beaconRowPrefixes\(fingerprint\)/, 'the prefixes come from the ports\' one definition');
+  assert.match(b, /\['beacon-pair-rows', pairPrefix\], \['beacon-latch-rows', latchPrefix\]/, 'one entry per collection');
+  assert.match(b, /\(await txKeysWithPrefix\('settings', prefix\)\)\.slice\(\)\.sort\(\)/, 'every key, sorted (a digest that does not depend on the order IndexedDB returns them)');
+  assert.match(b, /rows\.push\(\{ key, value: \(await txGet<\{ value\?: unknown \}>\('settings', key\)\)\?\.value \}\);\s*await put\(place, rows\);/, 'each row contributes its key and its value');
+});

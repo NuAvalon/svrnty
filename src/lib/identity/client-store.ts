@@ -1139,12 +1139,26 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
 
 // ── Restore key-domain guard ──────────────────────────────
 
-/** Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes. */
+/**
+ * Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes.
+ * That includes every OWNER_SEALED_SETTINGS record and any beacon pair or latch row, so a device whose KEYS were cleared but whose settings rows were not (the state a partial
+ * wipe leaves) still counts as holding the owner and gets the passphrase check: a restore that wrote new keys there under another passphrase would orphan every latch (the pair id
+ * is derived from the passphrase) and a Block would silently stop applying. BOUND: on such a device a restore now refuses when the passphrase differs or the settings salt is gone,
+ * until the latches travel in the backup or are rebuilt fail-closed. NOT the contact manifest: it is a MAC over the book, not a record the check can open, so counting it would
+ * hold a device with nothing to open and the restore would refuse under every passphrase, the right one included.
+ */
 export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
   for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
     if (await txGet<unknown>(store, fingerprint)) return true;
   }
-  return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
+  if ((await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0) return true;
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    if (await txGet<unknown>('settings', sealed.settingKey(fingerprint))) return true;
+  }
+  for (const prefix of beaconRowPrefixes(fingerprint)) {
+    if ((await txKeysWithPrefix('settings', prefix)).length > 0) return true;
+  }
+  return false;
 }
 
 const digestOf = async (value: unknown): Promise<string> =>
@@ -1165,6 +1179,15 @@ export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnaps
   for (const sealed of OWNER_SEALED_SETTINGS) {
     const row = await txGet<unknown>('settings', sealed.settingKey(fingerprint));
     await put(`sealed:${sealed.name}`, row ? [row] : []);
+  }
+  // The beacon pair and latch rows are COLLECTIONS: one entry per prefix, the count and the digest of the key-sorted key + value rows. A restore never writes them, so an
+  // entry that did not change is a runtime check of "a restore does not touch a Block", not only a test assertion; one that did change is read like any other place.
+  const [pairPrefix, latchPrefix] = beaconRowPrefixes(fingerprint);
+  for (const [place, prefix] of [['beacon-pair-rows', pairPrefix], ['beacon-latch-rows', latchPrefix]] as const) {
+    const keys = prefix ? (await txKeysWithPrefix('settings', prefix)).slice().sort() : [];
+    const rows: unknown[] = [];
+    for (const key of keys) rows.push({ key, value: (await txGet<{ value?: unknown }>('settings', key))?.value });
+    await put(place, rows);
   }
   return out;
 }
