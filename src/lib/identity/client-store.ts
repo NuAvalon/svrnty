@@ -13,7 +13,7 @@ import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type Resto
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+import { CONTACT_ENC_VERSION, deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
@@ -1140,18 +1140,50 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
 // ── Restore key-domain guard ──────────────────────────────
 
 /** One record this device holds for an owner, and where the key that opens it comes from. */
+/**
+ * What state a held record is in. 'encrypted': in the current format, every field an opener needs is there. 'legacy': the old UNENCRYPTED form, positively identified (no
+ * enc_version AND the old plaintext shape): under no passphrase, so nothing can be orphaned and unlock heals it. 'malformed': anything else: an enc_version that is present but
+ * not the current one, an encrypted record missing a field, a row with no recognisable shape. A malformed record is never skipped: the checks refuse.
+ */
+type HeldForm = 'encrypted' | 'legacy' | 'malformed';
+
+/** One record this device holds for an owner, and where the key that opens it comes from. */
 interface HeldRecord {
   kind: 'key' | 'contact' | 'sealed' | 'beacon';
   /** 'record-salt': the key is derived with the salt written in the record itself. 'settings-salt': it is the session key (the device's `key_encryption_salt`). */
   keySource: 'record-salt' | 'settings-salt';
   /** For 'record-salt' records, that salt. */
   salt?: string;
-  /** false = still in the old unencrypted form: under no passphrase, so the checks skip it (it still counts as HELD). */
-  encrypted: boolean;
-  /** present and encrypted, but not in a shape that can be opened: the checks refuse. */
-  malformed: boolean;
-  /** Opens it with this key: false or a throw means "does not open". Only called when encrypted and not malformed. */
+  form: HeldForm;
+  /** Opens it with this key: false or a throw means "does not open". Only called when the form is 'encrypted'. */
   open: (key: CryptoKey) => Promise<boolean>;
+}
+
+/** The field that identifies a key store's old plaintext form (loadKey, loadPQKeys, loadVault, loadShards). device_mailbox has none: it was born encrypted, so a record there without the current enc_version is corrupt. */
+const LEGACY_KEY_SHAPE: Record<string, ((r: Record<string, unknown>) => boolean) | undefined> = {
+  keys: (r) => typeof r.privateKey === 'string',
+  pq_keys: (r) => typeof r.bundle === 'object' && r.bundle !== null,
+  vaults: (r) => typeof r.vault === 'object' && r.vault !== null,
+  shards: (r) => typeof r.shards_data === 'object' && r.shards_data !== null,
+  device_mailbox: undefined,
+};
+
+function keyRecordForm(store: string, r: Record<string, unknown>): HeldForm {
+  if (r.enc_version === ENC_VERSION) return typeof r.salt === 'string' && typeof r.iv === 'string' && typeof r.ciphertext === 'string' ? 'encrypted' : 'malformed';
+  if (r.enc_version !== undefined) return 'malformed'; // present, but not the current version
+  return LEGACY_KEY_SHAPE[store]?.(r) ? 'legacy' : 'malformed'; // no enc_version: legacy only when the old plaintext shape is positively there
+}
+
+function contactRowForm(r: Record<string, unknown>): HeldForm {
+  if (r.enc_version === CONTACT_ENC_VERSION) return typeof r.iv === 'string' && typeof r.ciphertext === 'string' ? 'encrypted' : 'malformed';
+  if (r.enc_version !== undefined) return 'malformed';
+  return ['fingerprint', 'name', 'email', 'public_key'].every((f) => typeof r[f] === 'string') ? 'legacy' : 'malformed';
+}
+
+/** A sealed payload ({ iv, ciphertext, enc_version }) of a settings record or a beacon row: there is no old plaintext form for these, so it is encrypted or malformed. */
+function sealedPayloadForm(p: { iv?: unknown; ciphertext?: unknown; enc_version?: unknown } | null | undefined): HeldForm {
+  if (!p || typeof p.iv !== 'string' || typeof p.ciphertext !== 'string') return 'malformed';
+  return p.enc_version === undefined || p.enc_version === CONTACT_ENC_VERSION ? 'encrypted' : 'malformed';
 }
 
 /**
@@ -1168,26 +1200,20 @@ async function readHeldSet(fingerprint: string): Promise<HeldRecord[]> {
   for (const store of OWNER_KEY_STORES) {
     const record = await txGet<{ enc_version?: number; salt?: unknown; iv?: unknown; ciphertext?: unknown }>(store, fingerprint);
     if (!record) continue;
-    const encrypted = record.enc_version === ENC_VERSION;
-    const malformed = encrypted && (typeof record.salt !== 'string' || typeof record.iv !== 'string' || typeof record.ciphertext !== 'string');
-    held.push({ kind: 'key', keySource: 'record-salt', salt: typeof record.salt === 'string' ? record.salt : undefined, encrypted, malformed, open: (key) => keyRecordOpens(record, key, ENC_VERSION) });
+    held.push({ kind: 'key', keySource: 'record-salt', salt: typeof record.salt === 'string' ? record.salt : undefined, form: keyRecordForm(store, record as Record<string, unknown>), open: (key) => keyRecordOpens(record, key, ENC_VERSION) });
   }
   // Contacts and every owner-sealed settings record are under the session key (the settings salt), not under a record's own salt. Key rows under B beside a contact or a
   // sealed record (a blocklist, the receipts default, ...) under A is the two-passphrase state, and a restore that wrote more rows there would read as "stopped partway"
   // on every re-run, or leave a record unreadable for good.
   for (const rec of await txGetByIndex<any>('contacts', 'owner', fingerprint)) {
     if (!rec) continue;
-    const encrypted = !!(rec.enc_version && rec.ciphertext);
-    const malformed = encrypted && (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string');
-    held.push({ kind: 'contact', keySource: 'settings-salt', encrypted, malformed, open: async (key) => { await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext }); return true; } });
+    held.push({ kind: 'contact', keySource: 'settings-salt', form: contactRowForm(rec), open: async (key) => { await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext }); return true; } });
   }
   for (const sealed of OWNER_SEALED_SETTINGS) {
     const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
     if (!row) continue;
     const value = row.value;
-    const encrypted = !!value;
-    const malformed = encrypted && (typeof value!.iv !== 'string' || typeof value!.ciphertext !== 'string');
-    held.push({ kind: 'sealed', keySource: 'settings-salt', encrypted, malformed, open: async (key) => { await decryptContactRecord(key, sealed.recordId, fingerprint, { enc_version: value!.enc_version, iv: value!.iv as string, ciphertext: value!.ciphertext as string }); return true; } });
+    held.push({ kind: 'sealed', keySource: 'settings-salt', form: sealedPayloadForm(value), open: async (key) => { await decryptContactRecord(key, sealed.recordId, fingerprint, { enc_version: value!.enc_version, iv: value!.iv as string, ciphertext: value!.ciphertext as string }); return true; } });
   }
   // The beacon pair and latch rows (beacon-ports.ts) are COLLECTIONS, so each row is a member, not one per collection. A pair id is derived from the passphrase, so a restore
   // that changed the passphrase-derived keys on a device holding them would orphan every row (the lookups find nothing, read "no latch", and a Block would silently stop
@@ -1200,20 +1226,22 @@ async function readHeldSet(fingerprint: string): Promise<HeldRecord[]> {
       const raw = row.value;
       let payload: { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null = null;
       if (aad !== null && typeof raw === 'string') { try { payload = JSON.parse(raw); } catch { payload = null; } }
-      const malformed = aad === null || !payload || typeof payload.iv !== 'string' || typeof payload.ciphertext !== 'string';
-      held.push({ kind: 'beacon', keySource: 'settings-salt', encrypted: true, malformed, open: async (k) => { await decryptContactRecord(k, aad!, fingerprint, { enc_version: payload!.enc_version, iv: payload!.iv as string, ciphertext: payload!.ciphertext as string }); return true; } });
+      const form: HeldForm = aad === null ? 'malformed' : sealedPayloadForm(payload);
+      held.push({ kind: 'beacon', keySource: 'settings-salt', form, open: async (k) => { await decryptContactRecord(k, aad!, fingerprint, { enc_version: payload!.enc_version, iv: payload!.iv as string, ciphertext: payload!.ciphertext as string }); return true; } });
     }
   }
   return held;
 }
 
 /**
- * Does this device hold anything for this owner? The held set (readHeldSet) is non-empty. Presence only: no decryption, no writes.
- * So a device whose KEYS were cleared but whose settings rows were not (the state a partial wipe leaves) still counts as holding the owner and gets the passphrase check.
+ * Does this device hold this owner, for the passphrase-domain decisions? The held set has at least one member that is not LEGACY (an encrypted one, or a malformed one that
+ * the checks must refuse). Presence only: no decryption, no writes. A device holding the owner ONLY in the old unencrypted form is not held: nothing on it is under a
+ * passphrase, so nothing can be orphaned, it needs the device-password floor like a fresh one, and unlock heals its rows. A device whose KEYS were cleared but whose settings
+ * rows were not (the state a partial wipe leaves) is held and gets the passphrase check.
  * BOUND: on such a device a restore refuses when the passphrase differs or the settings salt is gone, until the latches travel in the backup or are rebuilt fail-closed.
  */
 export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
-  return (await readHeldSet(fingerprint)).length > 0;
+  return (await readHeldSet(fingerprint)).some((r) => r.form !== 'legacy');
 }
 
 const digestOf = async (value: unknown): Promise<string> =>
@@ -1278,8 +1306,8 @@ async function openEveryHeldRecord(fingerprint: string, keyFor: (salt: string) =
   let settingsSalt: string | undefined;
   let opened = 0;
   for (const rec of held) {
-    if (!rec.encrypted) continue;
-    if (rec.malformed) return false;
+    if (rec.form === 'legacy') continue;
+    if (rec.form === 'malformed') return false;
     let salt = rec.salt;
     if (rec.keySource === 'settings-salt') {
       if (settingsSalt === undefined) settingsSalt = (await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt'))?.value ?? '';

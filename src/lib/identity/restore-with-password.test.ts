@@ -69,7 +69,7 @@ test('keyless contact matching ignores the block flag (a row blocked in the back
 });
 
 test('passphraseOpensEveryHeldKeyRecord: the contact rows are in the check, opened under the settings salt, and a failure refuses', () => {
-  const set = body('async function readHeldSet(', '/**\n * Does this device hold anything for this owner?');
+  const set = body('async function readHeldSet(', '/**\n * Does this device hold this owner, for the passphrase-domain decisions?');
   const loop = body('async function openEveryHeldRecord(', '/**\n * Call after the owner\'s fingerprint is derived');
   const s = set + loop;
   assert.match(s, /txGetByIndex<any>\('contacts', 'owner', fingerprint\)/, 'the owner\'s contact rows are read');
@@ -80,7 +80,7 @@ test('passphraseOpensEveryHeldKeyRecord: the contact rows are in the check, open
   assert.match(set, /kind: 'sealed', keySource: 'settings-salt'/, 'a sealed record is a member of the held set with no condition on contacts: the check runs when ONLY a sealed record is held');
   assert.match(set, /kind: 'beacon', keySource: 'settings-salt'/, 'and so is a beacon row');
   assert.match(set, /decryptContactRecord\(key, sealed\.recordId, fingerprint,/, 'each sealed record is decrypted under the settings salt with its reserved id and the owner as AAD');
-  assert.match(set, /const malformed = encrypted && \(typeof value!\.iv !== 'string' \|\| typeof value!\.ciphertext !== 'string'\);/, 'a malformed sealed record is flagged...');
-  assert.match(loop, /if \(rec\.malformed\) return false;/, '...and refuses the restore');
-  assert.match(loop, /for \(const rec of held\) \{\s*if \(!rec\.encrypted\) continue;/, 'every held record is visited unconditionally (an old unencrypted one is skipped, not failed)');
+  assert.match(set, /kind: 'sealed', keySource: 'settings-salt', form: sealedPayloadForm\(value\)/, 'a sealed record is classified: encrypted, or malformed (no old plaintext form exists for it)...');
+  assert.match(loop, /if \(rec\.form === 'malformed'\) return false;/, '...and a malformed one refuses the restore');
+  assert.match(loop, /for \(const rec of held\) \{\s*if \(rec\.form === 'legacy'\) continue;/, 'every held record is visited unconditionally (a positively identified old unencrypted one is skipped, not failed)');
 });

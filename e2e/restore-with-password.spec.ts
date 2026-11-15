@@ -497,6 +497,107 @@ for (let mask = 0; mask < 16; mask++) {
   });
 }
 
+// LEGACY AND CORRUPT ROWS. A record still in the old UNENCRYPTED form is under no passphrase, so nothing can be orphaned: a device holding the owner ONLY in that form is not held, restores
+// with a password like a fresh one, and unlock heals its rows. It is recognised POSITIVELY (no enc_version AND the old plaintext shape). Anything else that is not in the current encrypted
+// shape (an enc_version that is not the current one, an encrypted record missing a field) is malformed and REFUSES the restore: it is never skipped as legacy.
+const LEGACY_CONTACT = (owner: string) => ({ id: 'legacy-contact-1', owner_fingerprint: owner, fingerprint: '', name: 'Legacy Contact', email: 'legacy@example.test', public_key: '', trust_level: 'known', added_at: '2026-01-01T00:00:00.000Z' });
+test('x1. a device holding the owner ONLY as an old unencrypted KEY record is not held: the restore succeeds with a password', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, privateKey: backup.keys!.privateKey, passphrase: backup.keys!.passphrase } }]);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  const file = writeFull(testInfo, 'full-x1.json', noVault(), UNLOCK_PW);
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a legacy-only key record').toBe('restored');
+  await ctx.close();
+});
+test('x2. a device holding the owner ONLY as an old unencrypted CONTACT row is not held: the restore succeeds with a password', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: LEGACY_CONTACT(fp) }]);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  const file = writeFull(testInfo, 'full-x2.json', noVault(), UNLOCK_PW);
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a legacy-only contact row').toBe('restored');
+  await ctx.close();
+});
+test('x3. a legacy contact beside an ENCRYPTED record: the check runs on the encrypted one (the right passphrase restores, a wrong one refuses with nothing written)', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedSealedOnly', fp, UNLOCK_PW, 'suppression');
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: LEGACY_CONTACT(fp) }]);
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  const stBefore = await deviceState(page);
+  const wrong = writeFull(testInfo, 'full-x3-wrong.json', noVault(), OTHER_PW);
+  await page.reload();
+  expect(await restoreWith(page, wrong, OTHER_PW), 'a wrong passphrase').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  expect(await ownerSettingKeys(page, fp)).toEqual(keysBefore);
+  const right = writeFull(testInfo, 'full-x3-right.json', noVault(), UNLOCK_PW);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  expect(await restoreWith(page, right, UNLOCK_PW), 'the right passphrase').toBe('restored');
+  await ctx.close();
+});
+test('x4. a key record with an enc_version that is NOT the current one is malformed, not legacy: the restore is refused and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, enc_version: 99, salt: 'AAAA', iv: 'AAAA', ciphertext: 'AAAA' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x4.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'enc_version 99').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+test('x5. a contact row with an enc_version but NO ciphertext is malformed, not legacy: the restore is refused and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: { id: 'broken-contact-1', owner_fingerprint: fp, enc_version: 1, iv: 'AAAA' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x5.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'enc_version with no ciphertext').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+
+test('x6. a malformed record BESIDE an encrypted one still refuses, under the right passphrase too: it is never skipped', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedSealedOnly', fp, UNLOCK_PW, 'suppression');
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, enc_version: 99, salt: 'AAAA', iv: 'AAAA', ciphertext: 'AAAA' } }]);
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x6.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'the right passphrase, a malformed key record beside an encrypted sealed record').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  expect(await ownerSettingKeys(page, fp)).toEqual(keysBefore);
+  await ctx.close();
+});
+test('x7. a key row with NO enc_version and NOT the old plaintext shape is malformed, not legacy: the restore is refused', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, note: 'neither encrypted nor the old plaintext shape' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x7.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a row of no recognisable shape').toBe('error');
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+test('x8. a contact row with NO enc_version and NOT the plaintext fields is malformed, not legacy: the restore is refused', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: { id: 'junk-contact-1', owner_fingerprint: fp, name: 'Only a name' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x8.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a contact row of no recognisable shape').toBe('error');
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+
 test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);
   expect(backup.device_mailbox, 'the backup carries the device mailbox').toBeTruthy();

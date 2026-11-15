@@ -183,7 +183,7 @@ test('the store helper computes facts without writing and fails closed', () => {
   assert.match(set, /for \(const store of OWNER_KEY_STORES\)/, 'the held set looks in every key store');
   assert.match(set, /txGetByIndex<any>\('contacts', 'owner', fingerprint\)/, 'contact rows count as holding the owner');
   assert.doesNotMatch(set, /txPut|txDelete|initSessionKey|deriveSessionKey/, 'the held set only reads');
-  assert.match(heldFn, /\(await readHeldSet\(fingerprint\)\)\.length > 0/, 'holding = the held set is non-empty');
+  assert.match(heldFn, /\(await readHeldSet\(fingerprint\)\)\.some\(\(r\) => r\.form !== 'legacy'\)/, 'holding = the held set has a member that is not legacy (a legacy-only device is not held)');
   assert.doesNotMatch(heldFn, /txPut|txDelete|decrypt|\.open\(/, 'presence only: no writes, no decryption');
   const opens = fnBody(s, 'export async function sessionOpensOwner');
   assert.match(opens, /if \(!sessionKey\) return false;/, 'a locked session opens nothing');

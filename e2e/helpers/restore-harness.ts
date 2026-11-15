@@ -91,6 +91,15 @@ window.__rh = {
     if (kinds.includes('beacon')) await createBeaconPorts(fp).latch.setLatched('a1'.repeat(32), 'local');
     lockSession(); return true;
   },
+  /** RAW rows straight into the app's own database, for states its writers never produce: the old unencrypted forms and corrupt records. Opens the database first so its stores exist. */
+  async seedRaw(fp: string, rows: Array<{ store: string; row: Record<string, unknown> }>) {
+    await getAllContacts(fp);
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const o = indexedDB.open('svrnty'); o.onsuccess = () => resolve(o.result); o.onerror = () => reject(o.error); });
+    for (const r of rows) {
+      await new Promise<void>((resolve, reject) => { const tx = db.transaction(r.store, 'readwrite'); tx.objectStore(r.store).put(r.row); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+    }
+    db.close(); return true;
+  },
   /** ONLY a beacon row under `pw` (a local latch, or a pair record): no key, no contact, nothing else: the state left when an identity's keys are cleared but its settings rows are not. */
   async seedBeaconRowOnly(fp: string, pw: string, kind: 'pair' | 'latch-local') {
     await initSessionKey(pw);
