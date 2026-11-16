@@ -189,7 +189,7 @@ test('item 4: nextLensSeq is max(prev+1, whole seconds since epoch) — a wiped 
 });
 
 test('receive floor: acceptInSeq accepts strictly-greater seqs and refuses a far-future seq', () => {
-  let book = emptyBook();
+  const book = emptyBook();
   const a1 = acceptInSeq(book, FP_A, 5, NOW);
   assert.notEqual(a1, null);
   assert.equal(acceptInSeq(a1!, FP_A, 5, NOW), null); // replay

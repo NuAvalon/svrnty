@@ -195,7 +195,8 @@ export function setRecipientLens(book: LensGrantBook, recipientFingerprint: stri
   const prev = grants[fp] ?? {};
   if (lensId === null) {
     if (prev.lens === undefined) return book;
-    const { lens: _drop, ...rest } = prev;
+    const rest = { ...prev };
+    delete rest.lens;
     if (Object.keys(rest).length === 0) delete grants[fp];
     else grants[fp] = rest;
   } else {
