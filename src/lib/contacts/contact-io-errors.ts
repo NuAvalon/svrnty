@@ -9,6 +9,7 @@ import { EnvelopeRefused, EnvelopeWrongPassword, MIN_EXPORT_PASSWORD_LENGTH } fr
 import { RESTORE_MESSAGES } from '@/lib/identity/restore-errors';
 import { ContactBookTooLarge } from './book-import';
 import { SEALED_BOOK_MESSAGES } from './sealed-book-import';
+import { errorTag } from '@/lib/error-tag';
 
 export type ContactIoFailure = 'export-password-short' | 'private-key-missing' | 'import-password-required';
 
@@ -30,15 +31,8 @@ export const CONTACT_IO_MESSAGES = Object.freeze({
   exportPasswordShort: (min: number): string => `Enter a password of at least ${min} characters to export your contacts.`,
 });
 
-const SAFE = /[^A-Za-z0-9_.:-]/g;
-const part = (v: unknown): string => (typeof v === 'string' ? v.replace(SAFE, '').slice(0, 40) : '');
-
-/** For the log of an UNKNOWN error: its class name and code, nothing else. Never the message, never the stack. */
-export function errorTag(err: unknown): string {
-  if (!err || typeof err !== 'object') return typeof err;
-  const o = err as { name?: unknown; code?: unknown };
-  return [part(o.name) || 'Error', part(o.code)].filter(Boolean).join(':');
-}
+// errorTag lives in a leaf module (no imports), so a screen that only needs the log tag does not pull the password-envelope and book-import code into its bundle.
+export { errorTag };
 
 /** The export dialog's catch: the typed short-password refusal, else the generic sentence. */
 export function exportFailureMessage(err: unknown): string {
