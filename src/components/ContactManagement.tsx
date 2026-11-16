@@ -66,7 +66,7 @@ import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safe
 import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
-import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { authorityPinConflictMessage, unverifiedCardMessage, addedUnverifiedContactMessage } from '@/lib/identity/authority-pin-copy';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
@@ -729,10 +729,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         // pq on the existing edge — no duplicate; NEVER silently replaces a different stored pq
         // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
         if (d.alarm === 'loud') {
-          setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
+          // Security warnings name the BOOK's contact (existing.name), never the card's display name.
+          setExchangeResult({ success: false, message: unverifiedCardMessage(existing.name) });
         } else if (d.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== d.authorityPin) {
           // #787: first write wins. A DIFFERENT pin on a valid card is loud and changes nothing.
-          setExchangeResult({ success: false, message: authorityPinConflictMessage(displayName) });
+          setExchangeResult({ success: false, message: authorityPinConflictMessage(existing.name) });
         } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment)) {
           // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held).
           await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField) });
@@ -755,7 +756,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
         const message =
           d.alarm === 'loud'
-            ? `Added "${displayName}" (classical only) — could not verify their key material; possible tampering. Ask them to re-share over a secure link.`
+            ? addedUnverifiedContactMessage() // no trusted name exists yet: the contact is created FROM this card
             : d.alarm === 'soft-info'
               ? `Added "${displayName}" — their post-quantum key uses an unsupported format, so classical only.`
               : `Contact "${displayName}" added successfully.`;

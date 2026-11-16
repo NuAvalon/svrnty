@@ -51,7 +51,7 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
-import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { authorityPinConflictMessage, gateAuthorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
@@ -266,8 +266,9 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         : null;
       if (existing) {
         if (peer.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== peer.authorityPin) {
-          // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import)
-          setError(authorityPinConflictMessage(peer.name));
+          // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import).
+          // The name is the BOOK's (existing.name), never the card's: the card may be the impersonator's.
+          setError(authorityPinConflictMessage(existing.name));
           return;
         }
         if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox) || (peer.authorityPin && !existing.next_authority_commitment)) {
@@ -289,7 +290,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         // First write wins at the Gate too: someone already waiting here under a DIFFERENT pin is loud and changes nothing (same rule and words as Contacts import).
         const pinMerge = mergeArrivalPin(await getGateArrival(ownerFp, peer.fingerprint), peer.authorityPin);
         if (pinMerge.conflict) {
-          setError(authorityPinConflictMessage(peer.name));
+          // No book entry here and every Gate name came from a card, so the sentence carries no name at all.
+          setError(gateAuthorityPinConflictMessage());
           return;
         }
         await enqueueGateArrival(ownerFp, {
