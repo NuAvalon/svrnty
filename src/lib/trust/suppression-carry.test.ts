@@ -41,6 +41,12 @@ test('parse: refuses every non-record input', () => {
   for (const x of [null, undefined, 0, 1, 'x', true, [], [good()], () => 0]) assert.equal(parseCarriedSuppression(x), null);
 });
 
+test('parse: an ARRAY carrying the five right own properties is still refused (the exact-keys check alone would pass it, and a structured clone keeps array properties)', () => {
+  const arr = Object.assign([], good());
+  assert.deepEqual(Object.keys(arr).sort(), ['global', 'groups', 'persons', 'removed', 'v'], 'the probe really has exactly the five keys');
+  assert.equal(parseCarriedSuppression(arr), null);
+});
+
 test('parse: refuses missing, extra and wrong-version keys', () => {
   const g = good();
   for (const k of Object.keys(g)) {
@@ -277,9 +283,9 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test('DARK pin: nothing outside tests imports suppression-carry', () => {
+test('DARK pin: nothing outside tests imports suppression-carry except the restore module, which has its own dark pin', () => {
   const roots = ['src', 'app'].map((d) => join(process.cwd(), d)).filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
   assert.ok(roots.length >= 1);
   const importers = roots.flatMap((r) => walk(r)).filter((f) => !/\.test\.[a-z]+$/.test(f) && !f.endsWith('suppression-carry.ts') && /suppression-carry/.test(readFileSync(f, 'utf8')));
-  assert.deepEqual(importers, []);
+  assert.deepEqual(importers.map((f) => f.slice(f.lastIndexOf('/') + 1)), ['suppression-restore.ts']);
 });
