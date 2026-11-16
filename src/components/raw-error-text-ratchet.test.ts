@@ -41,7 +41,7 @@ function walk(dir: string, acc: string[] = []): string[] {
   for (const f of readdirSync(dir).sort()) {
     const p = join(dir, f);
     if (statSync(p).isDirectory()) walk(p, acc);
-    else if (/\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f) && !/\.d\.ts$/.test(f)) acc.push(p);
+    else if (/\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f)) acc.push(p);
   }
   return acc;
 }
@@ -97,6 +97,12 @@ export function ratchet(now: Record<string, number>, allowed: Record<string, num
   return { grew, shrank };
 }
 
+/** The whole check: walk a root, scan, and compare with a baseline file. */
+export function checkTree(root: string, baselineFile: string): { grew: string[]; shrank: string[] } {
+  const b = JSON.parse(readFileSync(baselineFile, 'utf8')) as { counts: Record<string, number> };
+  return ratchet(countsByPath(root), b.counts);
+}
+
 test('RT3 the ratchet logic (controls): growth, a new path, a stale baseline, and an exact match', () => {
   assert.deepEqual(ratchet({ a: 2 }, { a: 2 }), { grew: [], shrank: [] });
   assert.deepEqual(ratchet({ a: 3 }, { a: 2 }), { grew: ['a: 3 > baseline 2'], shrank: [] }, 'one more in an old file');
@@ -106,29 +112,32 @@ test('RT3 the ratchet logic (controls): growth, a new path, a stale baseline, an
   assert.deepEqual(ratchet({ a: 3, b: 1 }, { a: 4 }), { grew: ['b: 1 > baseline 0'], shrank: ['a: 3 < baseline 4'] }, 'both at once');
 });
 
-test('RT5 the walk, the scan and the ratchet together, on a synthetic tree: .tsx and .ts, nested folders, tests ignored, a new file, a removed line', () => {
+test('RT5 the walk, the scan and the ratchet together, on a synthetic tree: .tsx and .ts, nested folders, tests ignored, a new file, a removed line, and the baseline file', () => {
   const root = mkdtempSync(join(tmpdir(), 'rawerr-'));
   try {
     const put = (rel: string, body: string) => { const p = join(root, rel); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body); };
     put('src/components/A.tsx', "try {} catch (err) {\n  setError(err.message);\n  setNote(err instanceof Error ? err.message : 'x');\n}\n");
     put('src/components/sub/deeper/B.ts', "p.catch((reason) => log(reason.message));\n");
     put('src/components/C.test.ts', "setError(err.message);\n");
-    put('src/components/D.d.ts', "declare const x: { message: string };\n");
     put('src/components/E.tsx', "setError(typedSentence);\n");
     put('src/lib/F.ts', "setError(err.message);\n");
     const base = { 'src/components/A.tsx': 2, 'src/components/sub/deeper/B.ts': 1 };
-    assert.deepEqual(countsByPath(root), base, 'counts .tsx and nested .ts; ignores tests, .d.ts, clean files and anything outside src/components');
+    assert.deepEqual(countsByPath(root), base, 'counts .tsx and nested .ts; ignores tests, clean files and anything outside src/components');
     assert.deepEqual(ratchet(countsByPath(root), base), { grew: [], shrank: [] });
     put('src/components/G.tsx', "catch (e) { setError(e.message); }\n");
     assert.deepEqual(ratchet(countsByPath(root), base).grew, ['src/components/G.tsx: 1 > baseline 0'], 'a new file with one line');
     put('src/components/A.tsx', "try {} catch (err) {\n  setError(err.message);\n}\n");
     assert.deepEqual(ratchet(countsByPath(root), { ...base, 'src/components/G.tsx': 1 }).shrank, ['src/components/A.tsx: 1 < baseline 2'], 'a removed line');
+    const bf = join(root, 'baseline.json');
+    writeFileSync(bf, JSON.stringify({ rule: 'r', counts: { 'src/components/A.tsx': 1, 'src/components/G.tsx': 1, 'src/components/sub/deeper/B.ts': 1 } }));
+    assert.deepEqual(checkTree(root, bf), { grew: [], shrank: [] }, 'the check reads the baseline FILE and matches');
+    writeFileSync(bf, JSON.stringify({ rule: 'r', counts: { 'src/components/A.tsx': 1, 'src/components/G.tsx': 1, 'src/components/sub/deeper/B.ts': 0 } }));
+    assert.deepEqual(checkTree(root, bf).grew, ['src/components/sub/deeper/B.ts: 1 > baseline 0'], 'the file\'s numbers decide, not the tree\'s own');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('RT4 THE RATCHET ON THE TREE: no file shows more of an error\'s own text than its baseline, and the baseline is exact', () => {
-  const b = JSON.parse(readFileSync(BASELINE_FILE, 'utf8')) as { counts: Record<string, number> };
-  const { grew, shrank } = ratchet(countsByPath(), b.counts);
+  const { grew, shrank } = checkTree(ROOT, BASELINE_FILE);
   assert.deepEqual(grew, [], 'a NEW line shows an error\'s own text: choose the sentence by a typed code (see src/lib/contacts/contact-io-errors.ts); the baseline never goes up');
   assert.deepEqual(shrank, [], 'a line was removed: lower the baseline to the new count in the same change (delete the path when it reaches 0), so the ratchet only tightens');
 });
