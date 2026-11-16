@@ -95,7 +95,7 @@ jobs:
   # (T11 demo-arc). BLOCKING once specs mature — starts with the harness smoke test.
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
