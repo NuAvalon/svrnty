@@ -31,6 +31,7 @@ test('C1 the sentences are the copy owner\'s words, byte for byte (ledger row 21
   assert.equal(CONTACT_IO_MESSAGES.invalidJson, 'Invalid JSON format');
   assert.equal(CONTACT_IO_MESSAGES.exportPasswordShort(MIN_EXPORT_PASSWORD_LENGTH), `Enter a password of at least ${MIN_EXPORT_PASSWORD_LENGTH} characters to export your contacts.`);
   assert.equal(CONTACT_IO_MESSAGES.exportPasswordShort(12), 'Enter a password of at least 12 characters to export your contacts.');
+  assert.equal(CONTACT_IO_MESSAGES.exportPasswordShort(15), 'Enter a password of at least 15 characters to export your contacts.', 'the number is the argument, not a written-out digit');
   assert.ok(Object.isFrozen(CONTACT_IO_MESSAGES));
 });
 
