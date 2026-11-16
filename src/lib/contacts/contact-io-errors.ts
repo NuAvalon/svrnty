@@ -7,6 +7,7 @@
 // Run: npx tsx --test src/lib/contacts/contact-io-errors.test.ts
 import { EnvelopeRefused, EnvelopeWrongPassword, MIN_EXPORT_PASSWORD_LENGTH } from '@/lib/crypto/password-envelope';
 import { RESTORE_MESSAGES } from '@/lib/identity/restore-errors';
+import { dbUpgradeBlockedMessage } from '@/lib/db-upgrade-blocked';
 import { ContactBookTooLarge } from './book-import';
 import { SEALED_BOOK_MESSAGES } from './sealed-book-import';
 import { errorTag } from '@/lib/error-tag';
@@ -37,13 +38,13 @@ export { errorTag };
 /** The export dialog's catch: the typed short-password refusal, else the generic sentence. */
 export function exportFailureMessage(err: unknown): string {
   if (err instanceof ContactIoRefused && err.code === 'export-password-short') return CONTACT_IO_MESSAGES.exportPasswordShort(MIN_EXPORT_PASSWORD_LENGTH);
-  return CONTACT_IO_MESSAGES.exportUnknown;
+  return dbUpgradeBlockedMessage(err) ?? CONTACT_IO_MESSAGES.exportUnknown;
 }
 
 /** The private-key export dialog's catch. */
 export function keyExportFailureMessage(err: unknown): string {
   if (err instanceof ContactIoRefused && err.code === 'private-key-missing') return CONTACT_IO_MESSAGES.privateKeyMissing;
-  return CONTACT_IO_MESSAGES.keyExportUnknown;
+  return dbUpgradeBlockedMessage(err) ?? CONTACT_IO_MESSAGES.keyExportUnknown;
 }
 
 export interface ImportFailureView { message: string; needsPassword: boolean }
@@ -60,5 +61,5 @@ export function importFailureView(err: unknown): ImportFailureView {
 export function plainPasteFailureMessage(err: unknown): string {
   if (err instanceof ContactBookTooLarge) return SEALED_BOOK_MESSAGES.tooLarge;
   if (err instanceof SyntaxError) return CONTACT_IO_MESSAGES.invalidJson;
-  return CONTACT_IO_MESSAGES.importUnknown;
+  return dbUpgradeBlockedMessage(err) ?? CONTACT_IO_MESSAGES.importUnknown;
 }
