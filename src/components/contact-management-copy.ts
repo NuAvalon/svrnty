@@ -5,8 +5,10 @@
 //   - FAILURE: one fixed sentence per site for everything else. A site that writes and then reloads can be half done, so it says "check" before "try again".
 //   - An unknown error is logged by its class name and code only (contact-io-errors' errorTag), never its message.
 //   - The export site reuses the export sentence of the import/export screens, so the same event reads the same everywhere.
+//   - A store REFUSAL (a fingerprint that does not match its key, trust without a verification, a blocked contact) keeps its own sentence (ledger row 233).
 // Run: npx tsx --test src/components/contact-management-copy.test.ts
 import { CONTACT_IO_MESSAGES, errorTag } from '@/lib/contacts/contact-io-errors';
+import { contactRefusalMessage } from '@/lib/contacts/contact-refusal';
 
 export type ContactInputCode =
   | 'invite-no-key'
@@ -74,9 +76,11 @@ export const CONTACT_FAILURE_MESSAGES: Readonly<Record<ContactFailureSite, strin
   export: CONTACT_IO_MESSAGES.exportUnknown,
 });
 
-/** The sentence for a failed action: the typed refusal's own sentence, else the site's fixed one (and the real error is logged by tag only). */
+/** The sentence for a failed action: a typed refusal's own sentence (input, or a store refusal by code), else the site's fixed one (the real error is logged by tag only). */
 export function contactFailureMessage(err: unknown, site: ContactFailureSite): string {
   if (err instanceof ContactInputError) return CONTACT_INPUT_MESSAGES[err.code];
+  const refusal = contactRefusalMessage(err, site === 'import' ? 'import' : site === 'add' ? 'add' : 'other');
+  if (refusal !== null) return refusal;
   console.error(`Contact ${site} failed:`, errorTag(err));
   return CONTACT_FAILURE_MESSAGES[site];
 }

@@ -73,6 +73,7 @@ import { toContactBookJson } from '@/lib/contacts/book-export';
 import { ContactBookTooLarge, contactBookEntries, contactBookFile, importContactBook, importMessage } from '@/lib/contacts/book-import';
 import { errorTag, plainPasteFailureMessage } from '@/lib/contacts/contact-io-errors';
 import { ContactInputError, contactFailureMessage } from './contact-management-copy';
+import { CONTACT_REFUSAL_MESSAGES } from '@/lib/contacts/contact-refusal';
 import { SEALED_BOOK_MESSAGES, looksSealed, namesDifferentOwner, openSealedBook, sealedFailureMessage, splitMissingKeys, splitUnbindable } from '@/lib/contacts/sealed-book-import';
 import {
   ClassicalFieldsEditor,
@@ -711,7 +712,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const d = await classifyImportedCard(card);
       if (!d.importClassical) {
         // Branch 1 — fp↔key mismatch / malformed: refuse the card entirely.
-        setExchangeResult({ success: false, message: 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.' });
+        setExchangeResult({ success: false, message: CONTACT_REFUSAL_MESSAGES.importBinding });
         return;
       }
 
