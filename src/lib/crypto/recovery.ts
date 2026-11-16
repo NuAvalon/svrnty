@@ -9,6 +9,7 @@
 // Browser-compatible: uses Web Crypto API (no Node.js crypto/Buffer)
 
 import { RestoreThrow } from './coded-error';
+import { newSetId, commitSet, sortPieces, parseCommitments, type PieceCommitments, type BadPieceReason } from './recovery-commit';
 import { split, combine } from 'shamir-secret-sharing';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -44,6 +45,9 @@ export interface KeyVault {
   shamir: {
     threshold: number;     // M (minimum shards needed)
     total_shares: number;  // N (total shards created)
+    /** A commitment to each piece (recovery-commit.ts), in the backup's readable outer so a person who lost the device still has it. Absent in older vaults.
+     *  It can only MISCLASSIFY pieces: master_secret_hash below stays the final authority on whether a rebuilt secret is the right one. */
+    pieces?: PieceCommitments;
   };
   /** Hash of master secret for verification (SHA-256, not reversible) */
   master_secret_hash: string;  // hex
@@ -265,21 +269,119 @@ export async function createKeyVault(
 
   const vault: KeyVault = {
     ...encryptedVault,
-    shamir: { threshold, total_shares: totalShares },
+    shamir: { threshold, total_shares: totalShares, pieces: commitSet(newSetId(), shards) },
   };
 
   return { vault, shards, seedPhrase, masterSecret };
 }
 
+/** Most M-subsets of the handed pieces that recovery will try when one of them is bad and the backup has no list to say which. Past it, recovery refuses. */
+export const MAX_SUBSET_SEARCH = 1000;
+
 /**
- * Recover keys from Shamir shards.
+ * Recovery refused to rebuild from these pieces. The error carries only a code and a literal sentence, so nothing derived from the pieces can reach it; a screen that
+ * wants to say WHICH pieces do not fit asks checkPieces.
+ */
+export class RecoveryPiecesRefused extends RestoreThrow {
+  constructor(code: 'recovery-pieces-insufficient' | 'recovery-pieces-search-too-large', message: string) {
+    super(code, message);
+    this.name = 'RecoveryPiecesRefused';
+  }
+}
+
+/** A piece the vault's list does not accept, by label and reason only: never piece data, a commitment value or the set id. */
+export interface NamedBadPiece { index: number | null; reason: BadPieceReason }
+
+/**
+ * The pieces split by the vault's list: those that fit, and each that does not, named by label and reason. `listed` is false when the vault has no readable list
+ * (an older backup, or one whose list does not parse): then nothing can be named and every piece is returned as `good` for the hash-based search to decide.
+ * This is what a recovery screen asks to say which pieces to look at again; recoverFromShards uses the same split.
+ */
+export function checkPieces(vault: KeyVault, shards: Shard[]): { listed: boolean; good: Shard[]; bad: NamedBadPiece[] } {
+  const rawList = vault.shamir?.pieces;
+  const list = rawList === undefined ? null : parseCommitments(rawList);
+  if (!list) return { listed: false, good: shards.slice(), bad: [] };
+  const sorted = sortPieces(list, shards);
+  return { listed: true, good: sorted.good, bad: sorted.bad.map((b) => ({ index: typeof b.index === 'number' ? b.index : null, reason: b.reason })) };
+}
+
+/** The vault's threshold if it is a plausible one. The outer comes from a file, so it is checked before it decides anything. */
+function readThreshold(vault: KeyVault): number | null {
+  const t = vault.shamir?.threshold;
+  return typeof t === 'number' && Number.isInteger(t) && t >= 2 && t <= 255 ? t : null;
+}
+
+/** True when C(n, k) is larger than `cap`. Stops as soon as it is, so a huge n cannot make this slow. */
+function binomialExceeds(n: number, k: number, cap: number): boolean {
+  let c = 1;
+  for (let i = 1; i <= k; i++) {
+    c = (c * (n - k + i)) / i;
+    if (c > cap) return true;
+  }
+  return false;
+}
+
+function* combinations(n: number, k: number): Generator<number[]> {
+  const idx = Array.from({ length: k }, (_, i) => i);
+  while (true) {
+    yield [...idx];
+    let i = k - 1;
+    while (i >= 0 && idx[i] === n - k + i) i--;
+    if (i < 0) return;
+    idx[i]++;
+    for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
+  }
+}
+
+/**
+ * The secret that the vault's own hash accepts, from the pieces handed in, or null. Tries everything handed in together first; if that fails and there are more
+ * pieces than the threshold, tries each threshold-sized subset (refusing, not cutting short, when there are more than MAX_SUBSET_SEARCH of them).
+ * The hash is the only authority here: nothing in the vault's list or threshold can make a wrong secret pass.
+ */
+async function secretByHash(vault: KeyVault, shards: Shard[], threshold: number | null): Promise<Uint8Array | null> {
+  const seen = new Set<string>();
+  const uniq = shards.filter((s) => typeof s?.data === 'string' && !seen.has(s.data) && seen.add(s.data));
+  const accepts = (secret: Uint8Array) => hashMasterSecret(secret) === vault.master_secret_hash;
+  if (uniq.length >= 2) {
+    try { const s = await reconstructFromShards(uniq); if (accepts(s)) return s; } catch { /* a bad or clashing piece: fall through to the search */ }
+  }
+  if (threshold === null || uniq.length <= threshold) return null;
+  if (binomialExceeds(uniq.length, threshold, MAX_SUBSET_SEARCH)) {
+    throw new RecoveryPiecesRefused('recovery-pieces-search-too-large', 'Too many pieces with a bad one among them to try the combinations.');
+  }
+  let tries = 0;
+  for (const pick of combinations(uniq.length, threshold)) {
+    // A backstop independent of the size check above: never more than the cap, whatever the vault's threshold says, so no outer can make this loop run on.
+    if (++tries > MAX_SUBSET_SEARCH) return null;
+    try { const s = await reconstructFromShards(pick.map((i) => uniq[i])); if (accepts(s)) return s; } catch { /* clashing labels in this subset */ }
+  }
+  return null;
+}
+
+/**
+ * Recover keys from Shamir shards. A backup that carries a list of piece commitments has the pieces checked against it BEFORE combining (checkPieces), so a bad,
+ * relabelled, foreign or repeated piece is left out and can be named, and M+1 pieces with one bad still open it. A backup without one, or a list that
+ * does not hold up, falls back to searching subsets by the vault hash. Either way the vault's own hash decides: a wrong bundle is never returned.
  */
 export async function recoverFromShards(
   vault: KeyVault,
   shards: Shard[]
 ): Promise<PrivateKeyBundle> {
-  const masterSecret = await reconstructFromShards(shards);
-  return decryptVault(vault, masterSecret);
+  const threshold = readThreshold(vault);
+  const need = threshold ?? 2;
+  const checked = checkPieces(vault, shards);
+  if (checked.listed && checked.good.length >= need) {
+    const secret = await reconstructFromShards(checked.good).catch(() => null);
+    // The hash decides, not the list: if it does not match, the list marked a bad piece good, and the search below finds the real secret or refuses.
+    if (secret !== null && hashMasterSecret(secret) === vault.master_secret_hash) return decryptVault(vault, secret);
+  }
+  const found = await secretByHash(vault, shards, threshold);
+  if (found) return decryptVault(vault, found);
+  const distinct = new Set(shards.filter((s) => typeof s?.data === 'string').map((s) => s.data)).size;
+  if (checked.bad.length > 0 || distinct < need) {
+    throw new RecoveryPiecesRefused('recovery-pieces-insufficient', 'Not enough pieces that fit this backup to rebuild the recovery key.');
+  }
+  throw new RestoreThrow('recovery-code-wrong', 'Invalid master secret — hash mismatch');
 }
 
 /**
