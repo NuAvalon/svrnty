@@ -78,6 +78,43 @@ test('cap pin: the cap is the chosen 4096 (a CONSTANT pin, not behaviour: raisin
   assert.equal(CARRY_MAX_ENTRIES, 4096);
 });
 
+// A sparse array: JSON cannot make one, but a structured clone (IndexedDB) keeps holes, and Array.prototype.every() skips them.
+const sparse = (len: number, at: number, value: string): string[] => { const a: string[] = new Array(len); a[at] = value; return a; };
+
+test('parse: a SPARSE array is refused in every list (a hole must never read as an entry)', () => {
+  for (const [key, v] of [['persons', hex(1)], ['removed', hex(1)], ['groups', 'x']] as const) {
+    const hole = (at: number, len: number) => ({ ...good(), [key]: sparse(len, at, v) });
+    assert.ok(0 in hole(1, 2)[key] === false && 1 in hole(1, 2)[key], `${key}: the probe really is sparse`);
+    assert.equal(parseCarriedSuppression(hole(1, 2)), null, `${key}: hole first`);
+    assert.equal(parseCarriedSuppression(hole(0, 2)), null, `${key}: hole last`);
+    assert.equal(parseCarriedSuppression(hole(1, 3)), null, `${key}: hole in the middle`);
+    assert.equal(parseCarriedSuppression({ ...good(), [key]: new Array(1) }), null, `${key}: one hole, nothing else`);
+  }
+});
+
+test('parse: a bad entry is refused wherever it sits in the list, last position included', () => {
+  assert.equal(parseCarriedSuppression(good({ persons: [hex(1), 'not-hex'] })), null);
+  assert.equal(parseCarriedSuppression(good({ removed: [hex(1), hex(2), 'not-hex'] })), null);
+  assert.equal(parseCarriedSuppression(good({ groups: ['ok', 'Bad'] })), null);
+  assert.equal(parseCarriedSuppression(good({ persons: ['not-hex', hex(1)] })), null);
+});
+
+test('parse: group ids refuse EVERY control character (C0, DEL, C1) and keep format characters', () => {
+  for (const bad of ['a\u0080b', 'a\u0085b', 'a\u009fb', '\u0085', 'a\u0000b', 'a\u001fb', 'a\u007fb']) {
+    assert.equal(parseCarriedSuppression(good({ groups: [bad] })), null, JSON.stringify(bad));
+  }
+  // Format characters are legal (emoji tags need ZWJ). A renderer must isolate a group id (bidi): not this module's job, pinned so a change is deliberate.
+  for (const ok of ['\u{1F468}‍\u{1F469}‍\u{1F467}', 'a‮b', 'a​b']) {
+    assert.deepEqual(parseCarriedSuppression(good({ groups: [ok] }))?.groups, [ok], JSON.stringify(ok));
+  }
+});
+
+test('carry: a record whose list has a hole is OMITTED, never cleaned', () => {
+  assert.equal(carrySuppression(rec({ persons: sparse(2, 1, hex(1)) }), []), undefined);
+  assert.equal(carrySuppression(rec({ groups: sparse(2, 1, 'x') }), []), undefined);
+  assert.equal(carrySuppression(rec(), sparse(2, 1, hex(1))), undefined);
+});
+
 test('parse: the cap is exact and a list over it is refused whole', () => {
   assert.equal(parseCarriedSuppression(good({ persons: ids(1, CARRY_MAX_ENTRIES) }))?.persons.length, CARRY_MAX_ENTRIES);
   assert.equal(parseCarriedSuppression(good({ persons: ids(1, CARRY_MAX_ENTRIES + 1) })), null);

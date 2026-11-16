@@ -16,9 +16,10 @@ import { suppressGroup, suppressPerson, setGlobalSuppression, type SuppressionRe
 export const CARRY_MAX_ENTRIES = 4096;
 
 const DURABLE_ID = /^[0-9a-f]{64}$/;           // a person or a removed contact: a canonical lowercase-hex fingerprint (suppression.ts)
-// A group id is opaque and owner-local (today a contact tag, so it may hold spaces or accents): any non-control text, bounded, and already in the stored form (trimmed,
-// lowercase: suppression.ts norm()), because this parser never normalises. Accepting more text cannot loosen anything: a group entry only ever adds suppression.
-const GROUP_ID = /^[^\x00-\x1f\x7f]{1,128}$/u;
+// A group id is opaque and owner-local (today a contact tag, so it may hold spaces or accents): any text without control characters (\p{Cc}: C0, DEL and C1), at most 128
+// code points, and already in the stored form (trimmed, lowercase: suppression.ts norm()), because this parser never normalises. Format characters (ZWJ, bidi marks) stay legal:
+// emoji tags need them, so whoever renders a group id must isolate it (<bdi> / dir="auto"). Accepting more text cannot loosen anything: a group entry only ever adds suppression.
+const GROUP_ID = /^[^\p{Cc}]{1,128}$/u;
 const groupIdOk = (s: string): boolean => GROUP_ID.test(s) && s === s.trim().toLowerCase();
 
 export interface CarriedSuppression {
@@ -32,8 +33,15 @@ export interface CarriedSuppression {
 
 const KEYS = ['v', 'global', 'groups', 'persons', 'removed'];
 
-const listOk = (a: unknown, ok: (s: string) => boolean): a is string[] =>
-  Array.isArray(a) && a.length <= CARRY_MAX_ENTRIES && a.every((s) => typeof s === 'string' && ok(s)) && new Set(a).size === a.length;
+// An index loop, not a.every(): every() skips holes, and a structured clone (IndexedDB) keeps a sparse array, so a hole must read as the non-string it is.
+const listOk = (a: unknown, ok: (s: string) => boolean): a is string[] => {
+  if (!Array.isArray(a) || a.length > CARRY_MAX_ENTRIES) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const s: unknown = a[i];
+    if (typeof s !== 'string' || !ok(s)) return false;
+  }
+  return new Set(a).size === a.length;
+};
 
 /** The strict reader. Returns the carried record or null; null means "ignore it", never "read as empty". */
 export function parseCarriedSuppression(x: unknown): CarriedSuppression | null {
