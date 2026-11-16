@@ -7,6 +7,7 @@
 //   W2  the checked path: every M-subset opens it; M+1 with one bad opens it (the R9b target); a bad, relabelled or foreign piece is named by index and reason
 //   W3  a FORGED list, a forged threshold, a garbage outer: restore refuses or opens with the RIGHT bundle; never a wrong one
 //   W4  a legacy vault (no list): the same recoveries by subset search on the vault hash, capped; past the cap it refuses and says so, never tries fewer
+//   W5  attachPieceCommitments (existing identities): idempotent, never overwrites, refuses unless the held pieces open the vault, writes nothing otherwise
 //   W6  refusals name index + reason only, never piece data or a commitment value; no screen calls recoverFromShards yet, and the day one does this fails
 // Run: npx tsx --test src/lib/crypto/recovery-wiring.test.ts
 import { test } from 'node:test';
@@ -14,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
-  createKeyVault, recoverFromShards, checkPieces, MAX_SUBSET_SEARCH,
+  createKeyVault, recoverFromShards, checkPieces, attachPieceCommitments, MAX_SUBSET_SEARCH,
   RecoveryPiecesRefused, type KeyVault, type PrivateKeyBundle, type Shard,
 } from './recovery';
 import { commitSet, commitPiece, parseCommitments, newSetId } from './recovery-commit';
@@ -152,6 +153,46 @@ test('W4c repeats do not inflate the search: many copies of a few pieces are sti
   const handed = [...shards.map((p, i) => (i === 3 ? flip(p) : p)), ...shards.filter((_, i) => i !== 3).slice(0, 5), shards[0], shards[1]];
   assert.equal(handed.length, 14);
   assert.equal(await outcome(legacy, handed), 'ok');
+});
+
+test('W5 attachPieceCommitments (existing identities): idempotent, never overwrites, refuses unless the held pieces open the vault, and writes nothing otherwise', async () => {
+  const { vault, shards } = await made(3, 5);
+  const legacy = withoutList(vault);
+  const before = JSON.stringify(legacy);
+  const r = attachPieceCommitments(legacy, shards);
+  assert.equal(JSON.stringify(legacy), before, 'the input vault is not mutated');
+  assert.equal((await r).ok, true);
+  const attached = (await r) as { ok: true; vault: KeyVault; attached: boolean };
+  assert.equal(attached.attached, true);
+  const list = parseCommitments(attached.vault.shamir.pieces);
+  assert.ok(list);
+  for (const s of shards) assert.equal(list!.commitments[String(s.index)], commitPiece(list!.set_id, s.index, s.data));
+  assert.equal(attached.vault.master_secret_hash, legacy.master_secret_hash);
+  assert.equal(await outcome(attached.vault, [shards[0], flip(shards[1]), shards[2], shards[3]]), 'ok', 'and the attached vault now names a bad piece');
+  // idempotent: a second attach changes nothing
+  const again = (await attachPieceCommitments(attached.vault, shards)) as { ok: true; vault: KeyVault; attached: boolean };
+  assert.equal(again.ok, true);
+  assert.equal(again.attached, false);
+  assert.equal(JSON.stringify(again.vault), JSON.stringify(attached.vault));
+  // never overwrites an existing list, even when the pieces held are different: the first list stays
+  const otherSplit = (await made(3, 5)).shards;
+  const keep = (await attachPieceCommitments(attached.vault, otherSplit)) as { ok: true; vault: KeyVault; attached: boolean };
+  assert.equal(keep.ok, true);
+  assert.equal(keep.attached, false);
+  assert.equal(JSON.stringify(keep.vault.shamir.pieces), JSON.stringify(attached.vault.shamir.pieces));
+  // M pieces open the vault, but a list over only some labels would call the other holders' pieces unknown: refuse until ALL of them are held
+  const incomplete = (await attachPieceCommitments(legacy, pick(shards, [0, 1, 2]))) as { ok: boolean; reason?: string; vault?: unknown };
+  assert.deepEqual([incomplete.ok, incomplete.reason, incomplete.vault], [false, 'pieces-incomplete', undefined]);
+  // an existing list that does not parse is NOT overwritten either: refuse, so a damaged restore record is looked at
+  const junk = (await attachPieceCommitments(withList(legacy, { v: 1, junk: true }), shards)) as { ok: false; reason: string };
+  assert.deepEqual([junk.ok, junk.reason], [false, 'existing-list-unreadable']);
+  // refuses, and returns no vault, when the held pieces do not recombine to the vault's master_secret_hash
+  for (const [name, held] of [['a bad piece', [shards[0], flip(shards[1]), shards[2], shards[3], shards[4]]], ['too few', pick(shards, [0, 1])], ['another identity\'s pieces', otherSplit], ['none', []]] as const) {
+    const res = (await attachPieceCommitments(legacy, held as Shard[])) as { ok: boolean; reason?: string; vault?: unknown };
+    assert.equal(res.ok, false, name);
+    assert.equal(res.reason, 'pieces-do-not-open-vault', name);
+    assert.equal(res.vault, undefined, `${name}: nothing to write`);
+  }
 });
 
 test('W6 refusals carry no data and checkPieces names index + reason only; and no screen calls recoverFromShards yet: the day one does, the refusal codes need a screen sentence', async () => {

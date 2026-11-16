@@ -385,6 +385,31 @@ export async function recoverFromShards(
 }
 
 /**
+ * For a vault made before piece commitments: add them, computed from the pieces the owner holds. Idempotent and never overwrites: a vault that already has a list
+ * comes back unchanged (and one whose list does not read is refused, not replaced). It writes nothing unless ALL the pieces held open this vault's master hash
+ * and cover every label. Returns a new vault; the input is untouched.
+ */
+export async function attachPieceCommitments(
+  vault: KeyVault,
+  pieces: Shard[]
+): Promise<{ ok: true; vault: KeyVault; attached: boolean } | { ok: false; reason: 'existing-list-unreadable' | 'pieces-do-not-open-vault' | 'pieces-incomplete' }> {
+  const existing = vault.shamir?.pieces;
+  if (existing !== undefined) {
+    return parseCommitments(existing) ? { ok: true, vault, attached: false } : { ok: false, reason: 'existing-list-unreadable' };
+  }
+  try {
+    if (hashMasterSecret(await reconstructFromShards(pieces)) !== vault.master_secret_hash) return { ok: false, reason: 'pieces-do-not-open-vault' };
+  } catch {
+    return { ok: false, reason: 'pieces-do-not-open-vault' };
+  }
+  const total = vault.shamir?.total_shares;
+  if (typeof total !== 'number' || !Number.isInteger(total) || pieces.length !== total || new Set(pieces.map((p) => p.index)).size !== total) {
+    return { ok: false, reason: 'pieces-incomplete' };
+  }
+  return { ok: true, vault: { ...vault, shamir: { ...vault.shamir, pieces: commitSet(newSetId(), pieces) } }, attached: true };
+}
+
+/**
  * Recover keys from seed phrase.
  */
 export async function recoverFromSeedPhrase(
