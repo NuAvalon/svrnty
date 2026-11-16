@@ -112,4 +112,6 @@ test('C9 the three dialogs and the contact book\'s paste import no longer render
   assert.ok(h.length > 1500 && h.includes('plainPasteFailureMessage') && h.includes('importContactBook('), 'the slice is the whole handler');
   assert.ok(!/\.message\b/.test(h), 'no .message in the paste import handler');
   assert.ok(/setImportError\(plainPasteFailureMessage\(err\)\)/.test(h));
+  assert.ok(/console\.error\('Contact import failed:', errorTag\(err\)\)/.test(h), 'an unknown paste-import error is logged by its tag');
+  assert.ok(!/console\.error\([^)]*\berr\b(?!\))/.test(h.replace(/errorTag\(err\)/g, '')), 'the handler never logs the error object');
 });
