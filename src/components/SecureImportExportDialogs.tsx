@@ -23,6 +23,7 @@ import {
 } from '@/lib/identity/client-store';
 import { contactsEncryptedExportFilename } from '@/components/export/contacts-export-name';
 import { sealWithPassword, openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE, MIN_EXPORT_PASSWORD_LENGTH } from '@/lib/crypto/password-envelope';
+import { ContactIoRefused, errorTag, exportFailureMessage, importFailureView, keyExportFailureMessage } from '@/lib/contacts/contact-io-errors';
 
 // ── Helpers ────────────────────────────────────────────
 
@@ -90,7 +91,7 @@ export function SecureExportDialog({
       let method: string;
 
       if (!password || password.length < MIN_EXPORT_PASSWORD_LENGTH) {
-        throw new Error(`Enter a password of at least ${MIN_EXPORT_PASSWORD_LENGTH} characters to export your contacts.`);
+        throw new ContactIoRefused('export-password-short');
       }
 
       // Encrypt with AES-256-GCM, the key derived from the password with Argon2id (the one derivation path, kdf.ts). Older exports used a weaker password
@@ -107,8 +108,8 @@ export function SecureExportDialog({
       }
 
     } catch (err) {
-      console.error('Error exporting contacts:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('Error exporting contacts:', errorTag(err));
+      setError(exportFailureMessage(err));
     } finally {
       setLoading(false);
     }
@@ -302,7 +303,7 @@ export function PrivateKeyExportDialog({
 
       // Read key from IndexedDB
       const keyData = await loadKey(identityFingerprint);
-      if (!keyData) throw new Error('Private key not found in local storage');
+      if (!keyData) throw new ContactIoRefused('private-key-missing');
 
       const pqKeys = await loadPQKeys(identityFingerprint);
 
@@ -336,8 +337,8 @@ export function PrivateKeyExportDialog({
 
       setExportComplete(true);
     } catch (err) {
-      console.error('Key export error:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('Key export error:', errorTag(err));
+      setError(keyExportFailureMessage(err));
     } finally {
       setLoading(false);
     }
@@ -511,7 +512,7 @@ export function SecureImportDialog({
       if (parsed.encrypted) {
         if (!password) {
           setNeedsPassword(true);
-          throw new Error('This export is password-protected. Enter the password.');
+          throw new ContactIoRefused('import-password-required');
         }
         // Decrypt: the file's own tag picks the derivation (Argon2id, or the older method for files already held)
         const opened = await openWithPassword(parsed, password);
@@ -546,12 +547,10 @@ export function SecureImportDialog({
       }
 
     } catch (err) {
-      console.error('Error importing contacts:', err);
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-      if (errorMessage.includes('decrypt') || errorMessage.includes('password')) {
-        setNeedsPassword(true);
-      }
-      setError(errorMessage);
+      console.error('Error importing contacts:', errorTag(err));
+      const view = importFailureView(err);                              // the sentence and the password prompt both come from the error's type/code
+      if (view.needsPassword) setNeedsPassword(true);
+      setError(view.message);
     } finally {
       setLoading(false);
     }
