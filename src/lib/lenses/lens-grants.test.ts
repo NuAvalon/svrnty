@@ -107,7 +107,7 @@ test('R2a: raw === "" (present but empty) reads UNREADABLE — never a readable 
     'a stored empty string is a record that did not read — read-only stand-in, not no-record');
 });
 
-test('R2: corrupt or unreadable records read as EMPTY — identical to no record', async () => {
+test('R2: corrupt or unreadable records read UNREADABLE — empty for the filter, flagged for the send', async () => {
   const s = memStorage();
   s.map.set(lensGrantKey(OWNER), '{not json');
   assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {}, unreadable: true },
