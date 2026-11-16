@@ -10,7 +10,9 @@ import { restoreWritesOf } from '@/lib/identity/restore-writes';
 import { classifyRestoreFailure, RestoreFormatUnrecognized, RestoreStoppedPartway, RestoreStoppedNothingSaved, RestoreMayHaveSaved, RESTORE_MESSAGES, contactsReportLines } from '@/lib/identity/restore-errors';
 import type { SovereignBackup } from '@/lib/identity/client-store';
 import { DEVICE_PASSWORD_MIN, assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
-import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
+import { isRestoreDomainRefusal, restoreDomainRefusalMessage } from '@/lib/identity/restore-domain';
+import { ContactInputError, contactFailureMessage } from './contact-management-copy';
+import { frontendFailureMessage } from './soverentity-frontend-copy';
 import { isRestoreDurableRefusal, RESTORE_DURABLE_MESSAGE } from '@/lib/identity/restore-durable';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
@@ -542,7 +544,7 @@ export function SoverentityFrontend({
       });
       setGateMode('recovery-reveal');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(frontendFailureMessage(err, 'createIdentity'));
     } finally {
       setLoading(false);
     }
@@ -674,7 +676,7 @@ export function SoverentityFrontend({
       setRestorePath('passphrase');
     } catch (err) {
       if (isRestoreDomainRefusal(err)) {
-        setRestoreError(err instanceof Error ? err.message : 'Restore refused.');
+        setRestoreError(restoreDomainRefusalMessage(err));
         return;
       }
       // #532 C1: the code opened the bundle but its identity record is inconsistent: its own sentence.
@@ -749,7 +751,7 @@ export function SoverentityFrontend({
       setRestoreError(null);
       await importBackupAndFinish(devicePwPrompt.backup, { devicePassword: newDevicePw, legacyOpened: devicePwPrompt.legacyOpened });
     } catch (err) {
-      if (isRestoreDomainRefusal(err)) { setRestoreError(err instanceof Error ? err.message : 'Restore refused.'); }
+      if (isRestoreDomainRefusal(err)) { setRestoreError(restoreDomainRefusalMessage(err)); }
       else {
         const failure = classifyRestoreFailure(err);
         if (failure.code === 'unknown') console.error('Restore failed with an unclassified error:', err);
@@ -933,9 +935,8 @@ export function SoverentityFrontend({
         }
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
       if (isRestoreDomainRefusal(err)) {
-        setRestoreError(msg);
+        setRestoreError(restoreDomainRefusalMessage(err));
         return;
       }
       // Decided by the error's type and code, never by its message text (restore-errors.ts): a message that merely mentions a passphrase must not read as
@@ -1823,12 +1824,12 @@ export function SoverentityFrontend({
     try {
       const fp = identity.identity.fingerprint as string;
       const key = await loadKey(fp);
-      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      if (!key) throw new ContactInputError('share-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       setSharePackage(JSON.stringify(signed, null, 2));
       setShowShareIdentity(true);
     } catch (e) {
-      setShareError(e instanceof Error ? e.message : 'Could not prepare share package');
+      setShareError(contactFailureMessage(e, 'share'));
     } finally {
       setShareBusy(false);
     }
@@ -1908,7 +1909,7 @@ export function SoverentityFrontend({
       }
       return { ok: true, status: 'sent', deposited, skipped, failed, message };
     } catch (e) {
-      return { ok: false, reason: 'error', message: e instanceof Error ? e.message : 'Send failed.' };
+      return { ok: false, reason: 'error', message: frontendFailureMessage(e, 'sendUpdate') };
     }
   };
 
