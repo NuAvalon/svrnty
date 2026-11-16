@@ -93,9 +93,21 @@ jobs:
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
   # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
   # (T11 demo-arc). BLOCKING once specs mature — starts with the harness smoke test.
-  e2e:
+  #
+  # SPLIT IN TWO (one runner could no longer finish the suite inside its cap): a 2-way matrix, each
+  # shard on its OWN runner with its OWN `next dev` + in-process relay (own sqlite mailbox), so specs
+  # that share server/relay state never run against the same instance: isolation by construction,
+  # not by locking. playwright.config.ts is fullyParallel, so --shard splits by TEST (contiguous
+  # ranges in file order), and the two shards' lists together equal the unsharded list exactly.
+  # Do NOT replace this with 2 workers on one runner: that shares one server and relay.
+  e2e-shard:
+    name: e2e (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -106,15 +118,36 @@ jobs:
         run: npm ci
       - name: Install Playwright browser (chromium)
         run: npx playwright install --with-deps chromium
-      - name: e2e — demo-critical flows against next dev
-        run: npm run test:e2e
+      - name: e2e — demo-critical flows against next dev (shard ${{ matrix.shard }} of 2)
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/2
       # The beta-claimed spec needs NEXT_PUBLIC_SVRNTY_BETA_GATE=1 inlined at dev-server boot —
       # a server-env, not a per-test toggle — so it runs in its own playwright invocation (its
       # own webServer) while the main run stays gate-OFF for beta-messaging-copy.spec.ts.
+      # Runs once, on shard 1 (shard 2 carries the slow restore matrix).
       - name: e2e — beta-claimed (gate ON, scoped spec)
+        if: matrix.shard == 1
         env:
           NEXT_PUBLIC_SVRNTY_BETA_GATE: '1'
         run: npx playwright test e2e/beta-messaging-claimed.spec.ts
+
+  # The ONE e2e result to read: green only when EVERY shard finished with success. A failed,
+  # cancelled (e.g. timed out) or skipped shard makes this red, so "a cancelled e2e is not a pass"
+  # holds by construction, and a gate that reads the name `e2e` keeps working.
+  e2e:
+    needs: e2e-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every e2e shard completed with success
+        env:
+          SHARDS_RESULT: ${{ needs.e2e-shard.result }}
+        run: |
+          echo "e2e shards: $SHARDS_RESULT"
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::e2e shards ended '$SHARDS_RESULT', not 'success': a cancelled or skipped shard is not a pass"
+            exit 1
+          fi
 
   # Playwright e2e against a PRODUCTION build (`next build` + `next start`) — the ONLY path that can
   # verify beat-3 (guided-Ceremony): React StrictMode double-invoke breaks the joiner mount under
