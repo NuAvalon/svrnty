@@ -103,7 +103,7 @@ jobs:
   e2e-shard:
     name: e2e (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 1  # NEG ONLY: throwaway draft, never merged
     strategy:
       fail-fast: false
       matrix:
