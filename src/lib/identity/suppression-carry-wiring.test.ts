@@ -76,8 +76,9 @@ test('W5 every change to the record or the removed list is the atomic update: th
   assert.doesNotMatch(block, /txPut\('settings', \{ key: (removedSettingKey|suppressionSettingKey)/, 'no raw put of the record or the list');
   assert.doesNotMatch(block, /txPutIfAbsent\(/, 'no separate put-if-absent: the CAS covers an absent row');
   assert.match(block, /return makeUpdate<T>\(\{/, 'the loop is the pure module\'s makeUpdate (tested there), not a copy of it');
-  assert.match(block, /commitIfUnchanged\(await openDB\(\), \[\{ store: 'settings', key: settingKey, expected: token as StoredRow \}\]/, 'the commit compares the row that was read');
-  assert.match(block, /const row = await txGet<SealedRow>\('settings', settingKey\);\s*return \{ token: row, held: await decodeSealed\(row, ownerFingerprint, recordId, parse\) \};/, 'the token IS the row the decision is made on');
+  assert.match(block, /commitIfUnchanged\(await deps\.openDb\(\), \[\{ store: 'settings', key: deps\.settingKey, expected: token as StoredRow \}\]/, 'the commit compares the row that was read');
+  assert.match(block, /const row = await deps\.readRow\(\);\s*return \{ token: row, held: await deps\.decode\(row\) \};/, 'the token IS the row the decision is made on');
+  assert.match(block, /return sealedRowUpdate<T>\(\{\s*settingKey,\s*readRow: \(\) => txGet<SealedRow>\('settings', settingKey\),\s*openDb: openDB,\s*decode: \(row\) => decodeSealed\(row, ownerFingerprint, recordId, parse\),\s*seal,\s*\}\);/, 'the real store supplies the real read, open and decode');
   assert.doesNotMatch(block, /isPiece2MutualBlockLive/, 'the mutual-block live gate is not touched');
 });
 
@@ -106,12 +107,22 @@ test('W8 no screen imports the confirmation or the readers yet (the copy is not 
 });
 
 test('W9 the lines that only the store can hold: the best-effort wrapper, the throw on a refused Remove, the ports\' owner and keys, the all-or-nothing export', () => {
-  assert.match(fnBody('export async function restoreCarriedSuppression('), /try \{\s*return await restoreSuppression\(carried, backupAt, createRestorePorts\(ownerFingerprint\)\);\s*\} catch \(e\) \{[\s\S]*return null;\s*\}/, 'a failure leaves the device private and does not fail the restore');
+  assert.match(fnBody('export async function restoreCarriedSuppression('), /try \{\s*return await restoreSuppression\(carried, \{ backupAt, restoredAt: new Date\(\)\.toISOString\(\) \}, createRestorePorts\(ownerFingerprint\)\);\s*\} catch \(e\) \{[\s\S]*return null;\s*\}/, 'a failure leaves the device private and does not fail the restore');
   assert.match(fnBody('export async function recordRemovedContact('), /const refusal = removalRefusal\(await recordRemoval\(createRestorePorts\(ownerFingerprint\)\.updateRemoved, durableId\)\);\s*if \(refusal !== null\) throw new Error\(refusal\);/, 'a refused Remove throws, so the caller\'s Remove fails');
   assert.match(fnBody('export async function exportSuppressionCarry('), /return suppressionToCarry\(await getSuppressionRecord\(ownerFingerprint\), await readRemovedList\(ownerFingerprint\)\);/, 'the export decision is the pure all-or-nothing one, over the two real reads');
   const ports = fnBody('function createRestorePorts(');
-  assert.match(ports, /updateSuppression: updateSealed<SuppressionRecord>\(ownerFingerprint, suppressionSettingKey\(ownerFingerprint\), SUPPRESSION_RECORD_ID, \(x\) => \(isSuppressionRecord\(x\) \? x : null\), \(v\) => sealSuppression\(ownerFingerprint, v\)\),/);
+  assert.match(ports, /updateSuppression: updateSuppressionRecord\(ownerFingerprint\),/, 'the restore changes the record through the one shared atomic update');
+  assert.match(store, /export const updateSuppressionRecord = \(ownerFingerprint: string\): Update<SuppressionRecord> =>\s*updateSealed<SuppressionRecord>\(ownerFingerprint, suppressionSettingKey\(ownerFingerprint\), SUPPRESSION_RECORD_ID, \(x\) => \(isSuppressionRecord\(x\) \? x : null\), \(v\) => sealSuppression\(ownerFingerprint, v\)\);/);
   assert.match(ports, /updateRemoved: updateSealed<string\[\]>\(ownerFingerprint, removedSettingKey\(ownerFingerprint\), REMOVED_RECORD_ID, parseRemovedList, \(v\) => sealRemoved\(ownerFingerprint, v\)\),/);
   assert.match(ports, /readPending: \(\) => readPendingGlobalOff\(ownerFingerprint\),\s*writePending: \(marker\) => writePendingGlobalOff\(ownerFingerprint, marker\),\s*clearPending: \(\) => clearPendingGlobalOff\(ownerFingerprint\),/);
   assert.match(store, /export const confirmGlobalOffAfterRestore = \(ownerFingerprint: string\): Promise<ConfirmOutcome> => confirmPendingGlobalOff\(createRestorePorts\(ownerFingerprint\)\);/);
+});
+
+test('W11 the Block / Unblock write is the atomic update too: block-suppression never reads then replaces, and the plain setter is left to genesis alone', () => {
+  const block = codeOnly(readFileSync(new URL('../trust/block-suppression.ts', import.meta.url), 'utf8'));
+  assert.doesNotMatch(block, /setSuppressionRecord|getSuppressionRecord/, 'no read-then-replace in the block path');
+  assert.match(block, /import \{ updateSuppressionRecord \} from '@\/lib\/identity\/client-store';/);
+  assert.match(block, /const defaultStore: SuppressionStoreSeam = \{ updateSuppression: updateSuppressionRecord \};/, 'the default store is the shared atomic update');
+  assert.match(block, /store\.updateSuppression\(ownerFingerprint\)<BlockSuppressionOutcome>\(\(held\) => decideBlock\(held, id, blocked\)\)/, 'the decision runs inside the update');
+  assert.deepEqual(callersOf('setSuppressionRecord'), ['src/lib/trust/piece2-genesis.ts'], 'the unguarded setter has one caller left: genesis (an empty record at mint, never on a restore)');
 });

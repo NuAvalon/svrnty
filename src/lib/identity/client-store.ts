@@ -668,7 +668,7 @@ function suppressionPendingSettingKey(ownerFingerprint: string): string {
   return `suppression_pending:${ownerFingerprint}`;
 }
 
-type SealedRow = { key: string; value: { iv: string; ciphertext: string; enc_version?: number } };
+export type SealedRow = { key: string; value: { iv: string; ciphertext: string; enc_version?: number } };
 
 /** A stored settings row as ok / absent / unreadable (locked, a decrypt or tag failure, or a shape its strict parser refuses). A row that cannot be read is never taken for "absent". */
 async function decodeSealed<T>(row: SealedRow | null, ownerFingerprint: string, recordId: string, parse: (x: unknown) => T | null): Promise<SealedRead<T>> {
@@ -705,21 +705,39 @@ async function sealRemoved(ownerFingerprint: string, list: string[]): Promise<un
   return encryptContactRecord(_sessionKey, REMOVED_RECORD_ID, ownerFingerprint, list);
 }
 
+export interface SealedRowDeps<T> {
+  settingKey: string;
+  readRow(): Promise<SealedRow | null>;
+  openDb(): Promise<IDBDatabase>;
+  decode(row: SealedRow | null): Promise<SealedRead<T>>;
+  seal(value: T): Promise<unknown>;
+}
+
 /**
  * The storage under the atomic update (makeUpdate, in ../trust/suppression-restore.ts, is the loop): `read` returns the stored row as the token and its decoded state; `commit` seals the new
  * value and writes it only if the row is STILL exactly the token (commitIfUnchanged: the compare and the write are one transaction, the same commit the contact writes use). A row that could
- * not be read is never overwritten (makeUpdate refuses a write decided on it).
+ * not be read is never overwritten (makeUpdate refuses a write decided on it). The dependencies are injected so the glue can be tested against a fake database.
  */
-function updateSealed<T>(ownerFingerprint: string, settingKey: string, recordId: string, parse: (x: unknown) => T | null, seal: (value: T) => Promise<unknown>): Update<T> {
+export function sealedRowUpdate<T>(deps: SealedRowDeps<T>): Update<T> {
   return makeUpdate<T>({
     read: async () => {
-      const row = await txGet<SealedRow>('settings', settingKey);
-      return { token: row, held: await decodeSealed(row, ownerFingerprint, recordId, parse) };
+      const row = await deps.readRow();
+      return { token: row, held: await deps.decode(row) };
     },
     commit: async (token, value) => {
-      const payload = await seal(value);
-      return commitIfUnchanged(await openDB(), [{ store: 'settings', key: settingKey, expected: token as StoredRow }], [{ store: 'settings', value: { key: settingKey, value: payload } }]);
+      const payload = await deps.seal(value);
+      return commitIfUnchanged(await deps.openDb(), [{ store: 'settings', key: deps.settingKey, expected: token as StoredRow }], [{ store: 'settings', value: { key: deps.settingKey, value: payload } }]);
     },
+  });
+}
+
+function updateSealed<T>(ownerFingerprint: string, settingKey: string, recordId: string, parse: (x: unknown) => T | null, seal: (value: T) => Promise<unknown>): Update<T> {
+  return sealedRowUpdate<T>({
+    settingKey,
+    readRow: () => txGet<SealedRow>('settings', settingKey),
+    openDb: openDB,
+    decode: (row) => decodeSealed(row, ownerFingerprint, recordId, parse),
+    seal,
   });
 }
 
@@ -733,9 +751,16 @@ async function clearPendingGlobalOff(ownerFingerprint: string): Promise<void> {
   await txDelete('settings', suppressionPendingSettingKey(ownerFingerprint));
 }
 
+/**
+ * The ONE atomic update of the owner's suppression record. The restore and the Block / Unblock actions all change the record through it, never by read-then-replace: a write that lands
+ * between a read and a commit (a second tab, a restore) is kept, because the commit only happens if the record is still what was read.
+ */
+export const updateSuppressionRecord = (ownerFingerprint: string): Update<SuppressionRecord> =>
+  updateSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null), (v) => sealSuppression(ownerFingerprint, v));
+
 function createRestorePorts(ownerFingerprint: string): RestorePorts {
   return {
-    updateSuppression: updateSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null), (v) => sealSuppression(ownerFingerprint, v)),
+    updateSuppression: updateSuppressionRecord(ownerFingerprint),
     updateRemoved: updateSealed<string[]>(ownerFingerprint, removedSettingKey(ownerFingerprint), REMOVED_RECORD_ID, parseRemovedList, (v) => sealRemoved(ownerFingerprint, v)),
     readPending: () => readPendingGlobalOff(ownerFingerprint),
     writePending: (marker) => writePendingGlobalOff(ownerFingerprint, marker),
@@ -757,7 +782,7 @@ export async function exportSuppressionCarry(ownerFingerprint: string): Promise<
  */
 export async function restoreCarriedSuppression(ownerFingerprint: string, carried: unknown, backupAt: unknown): Promise<RestoreReport | null> {
   try {
-    return await restoreSuppression(carried, backupAt, createRestorePorts(ownerFingerprint));
+    return await restoreSuppression(carried, { backupAt, restoredAt: new Date().toISOString() }, createRestorePorts(ownerFingerprint));
   } catch (e) {
     console.warn('[restore] suppression record not applied (the device stays private)', e);
     return null;

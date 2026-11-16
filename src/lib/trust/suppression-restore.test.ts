@@ -38,6 +38,7 @@ const Y = hex(2);
 const Z = hex(4);
 const OTHER = hex(3);
 const AT = '2026-11-15T12:00:00.000Z';
+const NOW = '2026-11-16T02:30:00.000Z'; // the device clock the store passes in
 const carried = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ v: 1, global: false, groups: ['family'], persons: [X], removed: [], ...over });
 const rec = (over: Partial<SuppressionRecord> = {}): SuppressionRecord => ({ global: false, groups: [], persons: [], ...over });
 const suppressed = (r: SuppressionRecord | null, id: string): boolean => isPartySuppressed(r, { durableId: id });
@@ -98,7 +99,7 @@ const once = (fn: (w: World) => void): NonNullable<Opts['beforeCommit']> => { le
 test('nothing carried, or a value the strict parser refuses, touches NO port at all', async () => {
   for (const bad of [undefined, null, 0, 'x', [], {}, carried({ v: 2 }), carried({ persons: ['nope'] }), carried({ extra: 1 }), carried({ global: 'false' })]) {
     const { ports, log } = makePorts();
-    const r = await restoreSuppression(bad, AT, ports);
+    const r = await restoreSuppression(bad, { backupAt: AT, restoredAt: NOW }, ports);
     assert.deepEqual(r, { suppression: 'none-no-carried-record', pendingGlobalOff: false, removed: 'none-no-carried-record' });
     assert.deepEqual(log, [], `a port was touched for ${JSON.stringify(bad)}`);
   }
@@ -106,18 +107,18 @@ test('nothing carried, or a value the strict parser refuses, touches NO port at 
 
 test('FRESH device, backup said global OFF: persons and groups written at once, global stays ON, the confirmation is left waiting', async () => {
   const { ports, w, log } = makePorts();
-  const r = await restoreSuppression(carried({ global: false, persons: [X], groups: ['family'] }), AT, ports);
+  const r = await restoreSuppression(carried({ global: false, persons: [X], groups: ['family'] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.deepEqual(r, { suppression: 'written-fresh', pendingGlobalOff: true, removed: 'none-nothing-new' });
   assert.deepEqual(okRec(w), { global: true, groups: ['family'], persons: [X] });
   assert.equal(suppressed(okRec(w), X), true);
   assert.equal(suppressed(okRec(w), OTHER), true, 'still dark for everyone else until the person confirms');
-  assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: AT } });
+  assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: AT, restored_at: NOW } });
   assert.ok(log.indexOf('suppression:write') < log.indexOf('writePending'), 'the record is written BEFORE the marker');
 });
 
 test('FRESH device, backup said global ON: written, and NO confirmation is left (nothing to wait for)', async () => {
   const { ports, w, log } = makePorts();
-  const r = await restoreSuppression(carried({ global: true }), AT, ports);
+  const r = await restoreSuppression(carried({ global: true }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(r.suppression, 'written-fresh');
   assert.equal(r.pendingGlobalOff, false);
   assert.equal(okRec(w).global, true);
@@ -127,7 +128,7 @@ test('FRESH device, backup said global ON: written, and NO confirmation is left 
 
 test('the confirmation: global goes OFF, the carried person stays suppressed, the marker is cleared', async () => {
   const { ports, w } = makePorts();
-  await restoreSuppression(carried({ global: false, persons: [X] }), AT, ports);
+  await restoreSuppression(carried({ global: false, persons: [X] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(await confirmPendingGlobalOff(ports), 'confirmed');
   assert.equal(okRec(w).global, false);
   assert.equal(suppressed(okRec(w), X), true, 'x is still suppressed');
@@ -137,7 +138,7 @@ test('the confirmation: global goes OFF, the carried person stays suppressed, th
 
 test('EXISTING readable record: global TRUE stays TRUE under a carried global false; entries only added', async () => {
   const { ports, w } = makePorts({ supp: { state: 'ok', value: rec({ global: true, persons: [Y], groups: ['a'] }) } });
-  const r = await restoreSuppression(carried({ global: false, persons: [X], groups: ['family'] }), AT, ports);
+  const r = await restoreSuppression(carried({ global: false, persons: [X], groups: ['family'] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(r.suppression, 'merged');
   assert.equal(r.pendingGlobalOff, false);
   assert.equal(okRec(w).global, true);
@@ -154,7 +155,7 @@ test('EXISTING readable record: nothing the device held is ever dropped and glob
   for (let i = 0; i < 300; i += 1) {
     const held = rec({ global: rnd(2) === 0, persons: pick(), groups: ['a', 'b'].filter(() => rnd(2) === 0) });
     const { ports, w } = makePorts({ supp: { state: 'ok', value: held } });
-    await restoreSuppression(carried({ global: rnd(2) === 0, persons: pick(), groups: ['b', 'c'].filter(() => rnd(2) === 0) }), AT, ports);
+    await restoreSuppression(carried({ global: rnd(2) === 0, persons: pick(), groups: ['b', 'c'].filter(() => rnd(2) === 0) }), { backupAt: AT, restoredAt: NOW }, ports);
     const out = okRec(w);
     for (const p of held.persons) assert.ok(out.persons.includes(p), `case ${i} lost a person`);
     for (const g of held.groups) assert.ok(out.groups.includes(g), `case ${i} lost a group`);
@@ -164,7 +165,7 @@ test('EXISTING readable record: nothing the device held is ever dropped and glob
 
 test('an UNREADABLE record is never overwritten: no suppression write at all', async () => {
   const { ports, w, log } = makePorts({ supp: { state: 'unreadable' } });
-  const r = await restoreSuppression(carried({ global: false, persons: [X] }), AT, ports);
+  const r = await restoreSuppression(carried({ global: false, persons: [X] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(r.suppression, 'kept-unreadable');
   assert.equal(r.pendingGlobalOff, false);
   assert.deepEqual(w.supp, { state: 'unreadable' });
@@ -247,7 +248,7 @@ test('a person suppressed in a second tab mid-restore is KEPT: the merge is deci
     supp: { state: 'ok', value: rec({ persons: [Y] }) },
     beforeCommit: once((world) => landSupp(world, rec({ persons: [Y, Z] }))),
   });
-  const r = await restoreSuppression(carried({ persons: [X], groups: [] }), AT, ports);
+  const r = await restoreSuppression(carried({ persons: [X], groups: [] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(r.suppression, 'merged');
   assert.deepEqual(okRec(w).persons.slice().sort(), [X, Y, Z].sort(), 'the concurrent Z, the held Y and the carried X');
   assert.equal(log.filter((l) => l === 'suppression:read').length, 2, 'decided twice: once on the stale record, once on the newer');
@@ -256,7 +257,7 @@ test('a person suppressed in a second tab mid-restore is KEPT: the merge is deci
 
 test('a FRESH device whose record appears mid-restore is merged into, never replaced, and no marker is left', async () => {
   const { ports, w } = makePorts({ beforeCommit: once((world) => landSupp(world, rec({ global: false, persons: [Y] }))) });
-  const r = await restoreSuppression(carried({ global: false, persons: [X], groups: [] }), AT, ports);
+  const r = await restoreSuppression(carried({ global: false, persons: [X], groups: [] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.deepEqual(r, { suppression: 'merged', pendingGlobalOff: false, removed: 'none-nothing-new' });
   assert.deepEqual(okRec(w).persons.slice().sort(), [X, Y].sort());
   assert.equal(w.pending.state, 'absent', 'this device had its own record: nothing to wait for');
@@ -264,7 +265,7 @@ test('a FRESH device whose record appears mid-restore is merged into, never repl
 
 test('a FRESH device whose record appears mid-restore but cannot be read is left ALONE', async () => {
   const { ports, w, log } = makePorts({ beforeCommit: once((world) => { world.supp = { state: 'unreadable' }; world.vSupp += 1; }) });
-  const r = await restoreSuppression(carried({ persons: [X] }), AT, ports);
+  const r = await restoreSuppression(carried({ persons: [X] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(r.suppression, 'kept-unreadable');
   assert.deepEqual(w.supp, { state: 'unreadable' });
   assert.ok(!log.includes('suppression:write') && !log.includes('writePending'));
@@ -273,7 +274,7 @@ test('a FRESH device whose record appears mid-restore but cannot be read is left
 test('the confirmation keeps a person suppressed in a second tab between its read and its write', async () => {
   const { ports, w } = makePorts({
     supp: { state: 'ok', value: rec({ global: true, persons: [X] }) },
-    pending: { state: 'ok', value: { v: 1, backup_at: AT } },
+    pending: { state: 'ok', value: { v: 1, backup_at: AT, restored_at: NOW } },
     beforeCommit: once((world) => landSupp(world, rec({ global: true, persons: [X, Z] }))),
   });
   assert.equal(await confirmPendingGlobalOff(ports), 'confirmed');
@@ -286,7 +287,7 @@ test('a Remove recorded while the removed list is being restored is KEPT', async
     removed: { state: 'ok', value: [Y] },
     beforeCommit: once((world) => landRemoved(world, [Y, Z])),
   });
-  const r = await restoreSuppression(carried({ removed: [X] }), AT, ports);
+  const r = await restoreSuppression(carried({ removed: [X] }), { backupAt: AT, restoredAt: NOW }, ports);
   assert.equal(r.removed, 'written');
   assert.deepEqual(okRemoved(w).slice().sort(), [X, Y, Z].sort());
 });
@@ -306,7 +307,7 @@ test('a record that keeps changing is abandoned after the bounded attempts with 
     supp: { state: 'ok', value: rec({ persons: [Y] }) },
     beforeCommit: (name, _a, world) => { if (name === 'suppression') { n += 1; landSupp(world, rec({ persons: [Y, hex(100 + n)] })); } },
   });
-  await assert.rejects(() => restoreSuppression(carried({ persons: [X] }), AT, ports), /changed too often while it was being updated; nothing was written/);
+  await assert.rejects(() => restoreSuppression(carried({ persons: [X] }), { backupAt: AT, restoredAt: NOW }, ports), /changed too often while it was being updated; nothing was written/);
   assert.equal(okRec(w).persons.includes(X), false, 'the restore wrote nothing of its own');
   assert.equal(w.pending.state, 'absent');
 });
@@ -316,29 +317,30 @@ test('the marker keeps only a plain ISO time; any other text becomes null', asyn
   const bad = ['yesterday', 'x'.repeat(100), '2026-11-15', '2026-11-15T12:00:00+01:00', `${AT}\n`, ` ${AT}`, '2026-11-15T12:00:00.1234Z', 5, {}, [], null, undefined];
   for (const at of bad) {
     const { ports, w } = makePorts();
-    await restoreSuppression(carried({ global: false }), at, ports);
-    assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: null } }, JSON.stringify(at));
+    await restoreSuppression(carried({ global: false }), { backupAt: at, restoredAt: NOW }, ports);
+    assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: null, restored_at: NOW } }, JSON.stringify(at));
   }
   for (const ok of [AT, '2026-11-15T12:00:00Z', '2026-11-15T12:00:00.5Z']) {
     const { ports, w } = makePorts();
-    await restoreSuppression(carried({ global: false }), ok, ports);
-    assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: ok } });
+    await restoreSuppression(carried({ global: false }), { backupAt: ok, restoredAt: NOW }, ports);
+    assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: ok, restored_at: NOW } });
   }
 });
 
 test('parsePendingGlobalOff: exact keys, v1, ISO time or null; everything else is unreadable', () => {
-  assert.deepEqual(parsePendingGlobalOff({ v: 1, backup_at: AT }), { v: 1, backup_at: AT });
-  assert.deepEqual(parsePendingGlobalOff({ v: 1, backup_at: null }), { v: 1, backup_at: null });
-  for (const bad of [null, undefined, 0, 'x', [], {}, { v: 1 }, { backup_at: AT }, { v: 2, backup_at: AT }, { v: '1', backup_at: AT }, { v: 1, backup_at: AT, extra: 1 }, { v: 1, backup_at: 'yesterday' }, { v: 1, backup_at: 5 }, { v: 1, backup_at: undefined }]) {
+  assert.deepEqual(parsePendingGlobalOff({ v: 1, backup_at: AT, restored_at: NOW }), { v: 1, backup_at: AT, restored_at: NOW });
+  assert.deepEqual(parsePendingGlobalOff({ v: 1, backup_at: null, restored_at: NOW }), { v: 1, backup_at: null, restored_at: NOW });
+  for (const bad of [null, undefined, 0, 'x', [], {}, { v: 1 }, { backup_at: AT }, { v: 2, backup_at: AT, restored_at: NOW }, { v: '1', backup_at: AT, restored_at: NOW }, { v: 1, backup_at: AT, restored_at: NOW, extra: 1 }, { v: 1, backup_at: 'yesterday', restored_at: NOW }, { v: 1, backup_at: 5, restored_at: NOW }, { v: 1, backup_at: undefined, restored_at: NOW },
+    { v: 1, backup_at: AT }, { v: 1, backup_at: null }, { v: 1, backup_at: AT, restored_at: null }, { v: 1, backup_at: AT, restored_at: 'today' }, { v: 1, backup_at: AT, restored_at: `${NOW}\n` }, { v: 1, backup_at: AT, restored_at: 5 }]) {
     assert.equal(parsePendingGlobalOff(bad), null, JSON.stringify(bad));
   }
 });
 
 test('parsePendingGlobalOff: an ARRAY that carries the right own properties is still refused (the keys check alone would pass it)', () => {
-  const arr = Object.assign([], { v: 1, backup_at: null });
-  assert.deepEqual(Object.keys(arr), ['v', 'backup_at'], 'the probe really has exactly the two keys');
+  const arr = Object.assign([], { v: 1, backup_at: null, restored_at: NOW });
+  assert.deepEqual(Object.keys(arr), ['v', 'backup_at', 'restored_at'], 'the probe really has exactly the three keys');
   assert.equal(parsePendingGlobalOff(arr), null);
-  assert.equal(parsePendingGlobalOff(Object.assign([], { v: 1, backup_at: AT })), null);
+  assert.equal(parsePendingGlobalOff(Object.assign([], { v: 1, backup_at: AT, restored_at: NOW })), null);
 });
 
 test('the confirmation REFUSES without the marker, with an unreadable marker, or with an unreadable record, and writes nothing', async () => {
@@ -352,7 +354,7 @@ test('the confirmation REFUSES without the marker, with an unreadable marker, or
   assert.deepEqual(writes(badMarker.log), []);
 
   for (const supp of [{ state: 'absent' }, { state: 'unreadable' }] as const) {
-    const t = makePorts({ supp, pending: { state: 'ok', value: { v: 1, backup_at: AT } } });
+    const t = makePorts({ supp, pending: { state: 'ok', value: { v: 1, backup_at: AT, restored_at: NOW } } });
     assert.equal(await confirmPendingGlobalOff(t.ports), 'record-unreadable', supp.state);
     assert.deepEqual(writes(t.log), [], supp.state);
     assert.equal(t.w.pending.state, 'ok', 'the marker is kept');
@@ -360,7 +362,7 @@ test('the confirmation REFUSES without the marker, with an unreadable marker, or
 });
 
 test('the confirmation changes the RECORD before it clears the marker, so a failure between them can be confirmed again', async () => {
-  const t = makePorts({ supp: { state: 'ok', value: rec({ global: true, persons: [X] }) }, pending: { state: 'ok', value: { v: 1, backup_at: AT } }, failOn: 'clearPending' });
+  const t = makePorts({ supp: { state: 'ok', value: rec({ global: true, persons: [X] }) }, pending: { state: 'ok', value: { v: 1, backup_at: AT, restored_at: NOW } }, failOn: 'clearPending' });
   await assert.rejects(() => confirmPendingGlobalOff(t.ports), /clearPending failed/);
   assert.equal(okRec(t.w).global, false, 'the record was written first');
   assert.equal(t.w.pending.state, 'ok', 'the marker is still there');
@@ -372,34 +374,72 @@ test('the confirmation changes the RECORD before it clears the marker, so a fail
 
 test('a failure writing the MARKER leaves the record written and dark: the person is never asked, and stays private', async () => {
   const t = makePorts({ failOn: 'writePending' });
-  await assert.rejects(() => restoreSuppression(carried({ global: false, persons: [X] }), AT, t.ports), /writePending failed/);
+  await assert.rejects(() => restoreSuppression(carried({ global: false, persons: [X] }), { backupAt: AT, restoredAt: NOW }, t.ports), /writePending failed/);
   assert.equal(okRec(t.w).global, true);
   assert.equal(suppressed(okRec(t.w), OTHER), true);
   assert.equal(t.w.pending.state, 'absent');
 });
 
+// ── restored_at: the DEVICE clock, never the file ─────────────────────────────────────────────────────────────────────────────────────────────
+test('the marker carries restored_at from the DEVICE time the caller passes, and backup_at from the file as text', async () => {
+  const { ports, w } = makePorts();
+  await restoreSuppression(carried({ global: false }), { backupAt: AT, restoredAt: NOW }, ports);
+  assert.deepEqual(w.pending, { state: 'ok', value: { v: 1, backup_at: AT, restored_at: NOW } });
+});
+
+test('the file cannot set restored_at: a carried value naming it is refused whole, and a hostile backup_at changes nothing about it', async () => {
+  const a = makePorts();
+  const r = await restoreSuppression({ ...carried({ global: false }), restored_at: '2099-01-01T00:00:00.000Z' }, { backupAt: AT, restoredAt: NOW }, a.ports);
+  assert.equal(r.suppression, 'none-no-carried-record');
+  assert.equal(a.w.pending.state, 'absent');
+  const b = makePorts();
+  await restoreSuppression(carried({ global: false }), { backupAt: '2099-01-01T00:00:00.000Z', restoredAt: NOW }, b.ports);
+  assert.deepEqual(b.w.pending, { state: 'ok', value: { v: 1, backup_at: '2099-01-01T00:00:00.000Z', restored_at: NOW } }, 'a future backup_at is kept as text (the SCREEN decides how to show it); restored_at is still the device time');
+});
+
+test('WITHOUT a valid device time no marker is written: the record is still written dark, and the person is simply never asked', async () => {
+  for (const bad of [undefined, null, 0, 'now', '2026-11-16', `${NOW}\n`, {}, []]) {
+    const { ports, w, log } = makePorts();
+    const r = await restoreSuppression(carried({ global: false, persons: [X] }), { backupAt: AT, restoredAt: bad }, ports);
+    assert.deepEqual(r, { suppression: 'written-fresh', pendingGlobalOff: false, removed: 'none-nothing-new' }, JSON.stringify(bad));
+    assert.equal(okRec(w).global, true);
+    assert.equal(w.pending.state, 'absent');
+    assert.ok(!log.includes('writePending'));
+  }
+});
+
+test('a LATER restore leaves an existing marker and its restored_at exactly as they were (the marker is about the earlier backup)', async () => {
+  const earlier = { v: 1 as const, backup_at: AT, restored_at: '2026-11-10T08:00:00.000Z' };
+  const { ports, w, log } = makePorts({ supp: { state: 'ok', value: rec({ global: true, persons: [X] }) }, pending: { state: 'ok', value: earlier } });
+  const r = await restoreSuppression(carried({ global: false, persons: [Y] }), { backupAt: '2026-11-16T01:00:00.000Z', restoredAt: NOW }, ports);
+  assert.equal(r.suppression, 'merged');
+  assert.equal(r.pendingGlobalOff, false);
+  assert.deepEqual(w.pending, { state: 'ok', value: earlier });
+  assert.ok(!log.includes('writePending') && !log.includes('clearPending'));
+});
+
 // ── the removed list ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 test('removed: absent + carried writes the list; a readable list is unioned in order; nothing new writes nothing', async () => {
   const a = makePorts();
-  assert.equal((await restoreSuppression(carried({ removed: [X, Y] }), AT, a.ports)).removed, 'written');
+  assert.equal((await restoreSuppression(carried({ removed: [X, Y] }), { backupAt: AT, restoredAt: NOW }, a.ports)).removed, 'written');
   assert.deepEqual(a.w.removed, { state: 'ok', value: [X, Y] });
 
   const b = makePorts({ removed: { state: 'ok', value: [Y] } });
-  assert.equal((await restoreSuppression(carried({ removed: [X, Y] }), AT, b.ports)).removed, 'written');
+  assert.equal((await restoreSuppression(carried({ removed: [X, Y] }), { backupAt: AT, restoredAt: NOW }, b.ports)).removed, 'written');
   assert.deepEqual(b.w.removed, { state: 'ok', value: [Y, X] });
 
   const c = makePorts({ removed: { state: 'ok', value: [X, Y] } });
-  assert.equal((await restoreSuppression(carried({ removed: [Y] }), AT, c.ports)).removed, 'none-nothing-new');
+  assert.equal((await restoreSuppression(carried({ removed: [Y] }), { backupAt: AT, restoredAt: NOW }, c.ports)).removed, 'none-nothing-new');
   assert.ok(!c.log.includes('removed:write'));
 
   const d = makePorts();
-  assert.equal((await restoreSuppression(carried({ removed: [] }), AT, d.ports)).removed, 'none-nothing-new');
+  assert.equal((await restoreSuppression(carried({ removed: [] }), { backupAt: AT, restoredAt: NOW }, d.ports)).removed, 'none-nothing-new');
   assert.ok(!d.log.includes('removed:write'));
 });
 
 test('removed: an UNREADABLE stored list is never overwritten, and the suppression record is still handled', async () => {
   const t = makePorts({ removed: { state: 'unreadable' } });
-  const r = await restoreSuppression(carried({ removed: [X] }), AT, t.ports);
+  const r = await restoreSuppression(carried({ removed: [X] }), { backupAt: AT, restoredAt: NOW }, t.ports);
   assert.equal(r.removed, 'kept-unreadable');
   assert.equal(r.suppression, 'written-fresh');
   assert.deepEqual(t.w.removed, { state: 'unreadable' });
@@ -408,7 +448,7 @@ test('removed: an UNREADABLE stored list is never overwritten, and the suppressi
 
 test('removed: an unreadable suppression record does not stop the removed list from being restored', async () => {
   const t = makePorts({ supp: { state: 'unreadable' } });
-  const r = await restoreSuppression(carried({ removed: [X] }), AT, t.ports);
+  const r = await restoreSuppression(carried({ removed: [X] }), { backupAt: AT, restoredAt: NOW }, t.ports);
   assert.equal(r.suppression, 'kept-unreadable');
   assert.equal(r.removed, 'written');
   assert.deepEqual(t.w.removed, { state: 'ok', value: [X] });
@@ -417,19 +457,19 @@ test('removed: an unreadable suppression record does not stop the removed list f
 
 test('removed: over the cap REFUSES and writes nothing; exactly the cap is fine', async () => {
   const over = makePorts({ removed: { state: 'ok', value: ids(1000, CARRY_MAX_ENTRIES) } });
-  const r = await restoreSuppression(carried({ removed: [hex(1)] }), AT, over.ports);
+  const r = await restoreSuppression(carried({ removed: [hex(1)] }), { backupAt: AT, restoredAt: NOW }, over.ports);
   assert.equal(r.removed, 'refused-too-large');
   assert.ok(!over.log.includes('removed:write'));
   assert.equal(r.suppression, 'written-fresh', 'the suppression record is unaffected by a refused list');
 
   const exact = makePorts({ removed: { state: 'ok', value: ids(1000, CARRY_MAX_ENTRIES - 1) } });
-  assert.equal((await restoreSuppression(carried({ removed: [hex(1)] }), AT, exact.ports)).removed, 'written');
+  assert.equal((await restoreSuppression(carried({ removed: [hex(1)] }), { backupAt: AT, restoredAt: NOW }, exact.ports)).removed, 'written');
   assert.equal(okRemoved(exact.w).length, CARRY_MAX_ENTRIES);
 });
 
 test('removed ids never enter the suppression record: a Remove is not a Block', async () => {
   const t = makePorts();
-  await restoreSuppression(carried({ persons: [X], removed: [Y] }), AT, t.ports);
+  await restoreSuppression(carried({ persons: [X], removed: [Y] }), { backupAt: AT, restoredAt: NOW }, t.ports);
   assert.deepEqual(okRec(t.w).persons, [X]);
   assert.deepEqual(t.w.removed, { state: 'ok', value: [Y] });
 });
@@ -531,9 +571,11 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test('WIRING pin: the only non-test importer of suppression-restore is the identity store (the storage under it)', () => {
+test('WIRING pin: the non-test importers of suppression-restore are the identity store (the storage under it) and the block path (types only)', () => {
   const roots = ['src', 'app'].map((d) => join(process.cwd(), d)).filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
   assert.ok(roots.length >= 1);
   const importers = roots.flatMap((r) => walk(r)).filter((f) => !/\.test\.[a-z]+$/.test(f) && !f.endsWith('suppression-restore.ts') && /suppression-restore/.test(readFileSync(f, 'utf8')));
-  assert.deepEqual(importers.map((f) => f.slice(f.indexOf('/src/') + 1)), ['src/lib/identity/client-store.ts']);
+  assert.deepEqual(importers.map((f) => f.slice(f.indexOf('/src/') + 1)).sort(), ['src/lib/identity/client-store.ts', 'src/lib/trust/block-suppression.ts']);
+  const block = readFileSync(join(process.cwd(), 'src', 'lib', 'trust', 'block-suppression.ts'), 'utf8');
+  assert.match(block, /^import type \{ Decision, SealedRead, Update \} from '@\/lib\/trust\/suppression-restore';$/m, 'the block path takes only TYPES from the restore module: no runtime dependency');
 });

@@ -56,24 +56,31 @@ export function makeUpdate<T>(io: UpdateIO<T>, maxAttempts: number = UPDATE_MAX_
   };
 }
 
-/** Left by a restore onto a device with no record, when the backup said global:false. The date is the vault's own timestamp as text, or null when it was not a plain ISO time. */
+/**
+ * Left by a restore onto a device with no record, when the backup said global:false. `backup_at` is the vault's own timestamp as text (file-supplied, so untrusted), or null when it was not a
+ * plain ISO time. `restored_at` is the DEVICE's clock when the restore wrote the marker: local, never file-supplied, so a screen can always say "you restored a backup on {restored_at}",
+ * which stays true when a later restore leaves this marker alone.
+ */
 export interface PendingGlobalOff {
   v: 1;
   backup_at: string | null;
+  restored_at: string;
 }
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 const isoOrNull = (x: unknown): string | null => (typeof x === 'string' && ISO_TIME.test(x) ? x : null); // the anchored pattern also bounds the length
 
-/** The strict reader for the stored marker: exact keys, version 1, a plain ISO time or null. Null means unreadable. */
+/** The strict reader for the stored marker: exact keys, version 1, `backup_at` a plain ISO time or null, `restored_at` a plain ISO time. Null means unreadable. */
 export function parsePendingGlobalOff(x: unknown): PendingGlobalOff | null {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
   const r = x as Record<string, unknown>;
   const keys = Object.keys(r);
-  if (keys.length !== 2 || !keys.includes('v') || !keys.includes('backup_at')) return null;
+  if (keys.length !== 3 || !keys.includes('v') || !keys.includes('backup_at') || !keys.includes('restored_at')) return null;
   if (r.v !== 1) return null;
   if (r.backup_at !== null && isoOrNull(r.backup_at) === null) return null;
-  return { v: 1, backup_at: r.backup_at as string | null };
+  const restoredAt = isoOrNull(r.restored_at);
+  if (restoredAt === null) return null;
+  return { v: 1, backup_at: r.backup_at as string | null, restored_at: restoredAt };
 }
 
 /** The strict reader for the stored removed list: the same rules as the carried one (lowercase 64-hex ids, no duplicates, no holes, the cap). Null means unreadable. */
@@ -136,10 +143,11 @@ export interface RestoreReport {
 }
 
 /**
- * Apply a carried record (and its removed list) to this device. `carriedRaw` is whatever the authenticated vault held under `suppression`; `backupAt` is the vault's own
- * timestamp. A port that throws propagates: the caller decides (the restore itself must not fail over this), and nothing is half-applied in a loosening direction.
+ * Apply a carried record (and its removed list) to this device. `carriedRaw` is whatever the authenticated vault held under `suppression`; `times.backupAt` is the vault's own timestamp
+ * (untrusted text) and `times.restoredAt` the device clock, passed in because this module has none. WITHOUT a valid `restoredAt` no marker is written: the person is never asked and stays
+ * private, the safe failure. A port that throws propagates: the caller decides (the restore itself must not fail over this), and nothing is half-applied in a loosening direction.
  */
-export async function restoreSuppression(carriedRaw: unknown, backupAt: unknown, ports: RestorePorts): Promise<RestoreReport> {
+export async function restoreSuppression(carriedRaw: unknown, times: { backupAt: unknown; restoredAt: unknown }, ports: RestorePorts): Promise<RestoreReport> {
   const carried = parseCarriedSuppression(carriedRaw);
   if (carried === null) return { suppression: 'none-no-carried-record', pendingGlobalOff: false, removed: 'none-no-carried-record' };
 
@@ -151,10 +159,11 @@ export async function restoreSuppression(carriedRaw: unknown, backupAt: unknown,
     }
     return { result: 'kept-unreadable' };
   });
-  const waiting = done === 'written-fresh-waiting';
-  if (waiting) await ports.writePending({ v: 1, backup_at: isoOrNull(backupAt) });
+  const restoredAt = isoOrNull(times.restoredAt);
+  const waiting = done === 'written-fresh-waiting' && restoredAt !== null;
+  if (waiting) await ports.writePending({ v: 1, backup_at: isoOrNull(times.backupAt), restored_at: restoredAt });
 
-  return { suppression: waiting ? 'written-fresh' : done, pendingGlobalOff: waiting, removed: await restoreRemoved(carried, ports) };
+  return { suppression: done === 'written-fresh-waiting' ? 'written-fresh' : done, pendingGlobalOff: waiting, removed: await restoreRemoved(carried, ports) };
 }
 
 function restoreRemoved(carried: CarriedSuppression, ports: RestorePorts): Promise<RemovedOutcome> {
