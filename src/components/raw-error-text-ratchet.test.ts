@@ -24,16 +24,19 @@ export function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
 }
 
-/** The 1-based lines that read an error's own text: `<caught variable>.message`, or `x instanceof Error ? x.message : ...`. A caught variable is a common name or any name bound by a catch clause or a .catch callback in the same file. */
+/** The 1-based lines that read an error's own text: `<caught variable>.message` (also `?.` and `!.`), a cast `(x as Error|any|unknown).message`, `const { message } = <caught variable>`, or `x instanceof Error ? x.message : ...`. A caught variable is a common name or any name bound by a catch clause or a .catch callback in the same file. */
 export function rawErrorTextLines(source: string): number[] {
   const code = stripComments(source);
   const names = new Set(COMMON);
   for (const m of code.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
   for (const m of code.matchAll(/\.catch\(\s*\(?\s*([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
-  const named = new RegExp(`(^|[^\\w$.])(${[...names].map((n) => n.replace(/\$/g, '\\$')).join('|')})\\.message\\b`);
+  const alt = [...names].map((n) => n.replace(/\$/g, '\\$')).join('|');
+  const named = new RegExp(`(^|[^\\w$.])(${alt})[?!]?\\.message\\b`);
+  const cast = /\(\s*[\w$.]+\s+as\s+(Error|any|unknown)\s*\)[?!]?\.message\b/;
+  const destructured = new RegExp(`\\{[^}]*\\bmessage\\b[^}]*\\}\\s*=\\s*(${alt})\\b`);
   const tern = /\binstanceof Error \? [A-Za-z_$][\w$.]*\.message\b/;
   const out: number[] = [];
-  code.split('\n').forEach((line, i) => { if (tern.test(line) || named.test(line)) out.push(i + 1); });
+  code.split('\n').forEach((line, i) => { if (tern.test(line) || named.test(line) || cast.test(line) || destructured.test(line)) out.push(i + 1); });
   return out;
 }
 
@@ -65,7 +68,15 @@ test('RT1 the scanner flags the lines that show an error\'s own text, and only t
   assert.equal(flagged("try { f(); } catch (caught) {\n  setError(caught.message);\n}"), 1, 'a caught variable with an uncommon name');
   assert.equal(flagged("p.catch((reason) => setError(reason.message));"), 1, 'a .catch callback variable');
   assert.equal(flagged("if (err instanceof Foo) { setE(err.message); } else { setE(err.message); }"), 1, 'a line counts once');
+  assert.equal(flagged("setError(e?.message || 'Could not admit them.');"), 1, 'optional chaining');
+  assert.equal(flagged("setError(err!.message);"), 1, 'a non-null assertion');
+  assert.equal(flagged("setResult({ message: (err as Error).message });"), 1, 'a cast to Error');
+  assert.equal(flagged("setResult({ message: (err as any)?.message });"), 1, 'a cast to any, optional');
+  assert.equal(flagged("const { message } = err;"), 1, 'destructuring the message out of a caught error');
+  assert.equal(flagged("try { f(); } catch (caught) {\n  const { name, message } = caught;\n}"), 1, 'destructuring from an uncommonly named caught variable');
   assert.equal(flagged("setError(view.message);"), 0, 'a typed sentence is not an error');
+  assert.equal(flagged("setX((result as Foo).message);"), 0, 'a cast to a type that is not an error');
+  assert.equal(flagged("const { message } = props;"), 0, 'destructuring from something that is not a caught error');
   assert.equal(flagged("setX(result.message);"), 0);
   assert.equal(flagged("const m = failure.message;"), 0, 'a name that is not a caught variable');
   assert.equal(flagged("// setError(err.message);"), 0, 'a line comment');
