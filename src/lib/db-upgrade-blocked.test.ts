@@ -90,13 +90,24 @@ test('DU4 THE HELPER LIST IS SCANNED: every exported *FailureMessage function an
   assert.deepEqual([...found].sort(), [...HELPER_NAMES].sort(), 'a new failure-message helper must ask dbUpgradeBlockedMessage first and be added to HELPERS and HELPER_NAMES');
 });
 
-test('DU5 EVERY blocked-upgrade handler rejects with the coded error: the two openers, and no other onblocked in the source', () => {
-  const holders = sources().filter(({ text }) => /\bonblocked\b/.test(text));
-  assert.deepEqual(holders.map((h) => h.rel).sort(), ['components/biometric/biometric-seam.ts', 'lib/identity/client-store.ts']);
-  for (const { rel, text } of holders) {
-    const lines = text.split('\n').filter((l) => /\bonblocked\b\s*=/.test(l));
-    assert.equal(lines.length, 1, rel);
-    assert.ok(/request\.onblocked = \(\) => reject\(new DbUpgradeBlocked\(\)\);/.test(lines[0]), `${rel}: onblocked must reject with new DbUpgradeBlocked()`);
-    assert.ok(!text.includes('is upgrading'), `${rel}: the old plain message is gone`);
+test('DU5 EVERY indexedDB.open( call site in the source has an onblocked that rejects with the coded error (paired by variable), and the scan is not vacuous', () => {
+  const sites: Array<{ rel: string; variable: string }> = [];
+  for (const { rel, text } of sources()) {
+    const opens = [...text.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*indexedDB\.open\(/g)];
+    const bare = (text.match(/indexedDB\.open\(/g) ?? []).length;
+    assert.equal(opens.length, bare, `${rel}: every indexedDB.open( must be assigned to a variable so its handlers can be checked`);
+    for (const m of opens) sites.push({ rel, variable: m[1] });
+    for (const m of opens) {
+      const handler = new RegExp(`\\b${m[1]}\\.onblocked = \\(\\) => reject\\(new DbUpgradeBlocked\\(\\)\\);`, 'g');
+      const count = (text.match(handler) ?? []).length;
+      const sameVar = opens.filter((o) => o[1] === m[1]).length;
+      assert.equal(count, sameVar, `${rel}: the opener "${m[1]}" needs ${m[1]}.onblocked = () => reject(new DbUpgradeBlocked()); (found ${count} for ${sameVar} site(s))`);
+    }
+    if (opens.length > 0) assert.ok(!text.includes('is upgrading'), `${rel}: the old plain message is gone`);
   }
+  // not vacuous: the three known openers are found (a scan that finds none would pass for any code)
+  assert.deepEqual([...new Set(sites.map((x) => x.rel))].sort(), ['components/biometric/biometric-seam.ts', 'lib/identity/client-store.ts', 'lib/messaging/store.ts']);
+  // and no onblocked handler exists in a file that has no opener to pair it with
+  const handlersWithoutOpener = sources().filter(({ rel, text }) => /\bonblocked\b/.test(text) && !sites.some((x) => x.rel === rel));
+  assert.deepEqual(handlersWithoutOpener.map((h) => h.rel), []);
 });
