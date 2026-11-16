@@ -19,7 +19,7 @@ const PASS = 'e2e-passphrase-1234';
 const OK = /Contact "Mallory Beacon" added successfully\./;
 // A card whose signature fails: branch 3 drops the pq leg, and a canonical (64-hex) fingerprint can't bind without it, so the client refuses it with the
 // binding alert (observed on deployed dev); on a card that does import classical-only the message says "possible tampering". Either is a refusal.
-const TAMPER = /possible tampering|fingerprint↔key binding failed/i;
+const TAMPER = /possible tampering|fingerprint↔key binding failed|changed after they signed it/i;
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');

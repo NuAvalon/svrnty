@@ -9,12 +9,12 @@
 export type ContactRefusalContext = 'import' | 'add' | 'other';
 
 export const CONTACT_REFUSAL_MESSAGES = Object.freeze({
-  /** R1: a card whose fingerprint does not match its key. The same sentence the paste import already showed when it checks the card itself. */
-  importBinding: 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.',
+  /** R1: a card whose fingerprint does not match its key. The same sentence the paste import shows when it checks the card itself; it names the risk (a signed card changed after signing). */
+  importBinding: 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one. This can mean it was changed after they signed it.',
   /** R2: a contact typed or pasted by hand. */
-  addBinding: "This contact wasn't added: its fingerprint doesn't match its public key. Check both and try again.",
+  addBinding: "This contact wasn't added: its fingerprint doesn't match its public key, so they may not belong to the same person. Check both and try again.",
   /** R3: a change to a stored contact. */
-  updateBinding: "Nothing was saved: this contact's fingerprint doesn't match its public key.",
+  updateBinding: "Nothing was saved: this contact's fingerprint doesn't match its public key, so the details may have been changed. Check them with the person another way.",
   /** R4: trusted without a verification, on a new row or a promotion. */
   verifyBeforeTrust: 'Verify this person in person or another way before you trust them. Nothing was changed.',
   /** R5: the existing TrustRefusedError sentence, from a constant. */

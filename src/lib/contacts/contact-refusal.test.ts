@@ -34,14 +34,31 @@ test('A1 each real refusal class maps to its ledgered sentence, by code and reas
 });
 
 test('A2 the sentences are the ledger row 233 words', () => {
-  assert.equal(M.importBinding, 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.');
-  assert.equal(M.addBinding, "This contact wasn't added: its fingerprint doesn't match its public key. Check both and try again.");
-  assert.equal(M.updateBinding, "Nothing was saved: this contact's fingerprint doesn't match its public key.");
+  assert.equal(M.importBinding, 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one. This can mean it was changed after they signed it.');
+  assert.equal(M.addBinding, "This contact wasn't added: its fingerprint doesn't match its public key, so they may not belong to the same person. Check both and try again.");
+  assert.equal(M.updateBinding, "Nothing was saved: this contact's fingerprint doesn't match its public key, so the details may have been changed. Check them with the person another way.");
   assert.equal(M.verifyBeforeTrust, 'Verify this person in person or another way before you trust them. Nothing was changed.');
   assert.equal(M.identityImmutable, "Nothing was saved: a contact's fingerprint can't be changed. If they have a new key, add them as a new contact.");
   assert.equal(M.blocked, 'This contact is blocked. Unblock them before trusting them.');
   assert.equal(M.blocked, new TrustRefusedError().message, 'the blocked sentence is the one TrustRefusedError already carried');
   assert.equal(Object.values(M).length, new Set(Object.values(M)).size, 'no two refusals share a sentence');
+});
+
+test('A3 a tampered card names the RISK on screen: the import context carries the "changed after they signed it" warning, and no other path says it (it would be false there)', () => {
+  const WARNING = /changed after they signed it/;
+  assert.match(M.importBinding, WARNING);
+  assert.match(contactRefusalMessage(new ContactRefused('binding', 'x'), 'import')!, WARNING, 'the refusal the store throws on import carries the warning');
+  assert.match(contactFailureMessage(new ContactRefused('binding', 'x'), 'import'), WARNING, 'and so does what the screen shows');
+  for (const [name, text] of [['add', M.addBinding], ['update', M.updateBinding], ['verify-before-trust', M.verifyBeforeTrust], ['blocked', M.blocked], ['identity-immutable', M.identityImmutable]] as const) {
+    assert.doesNotMatch(text, /signed/, `${name}: there is no signed card on this path, so a clause about one would be false`);
+  }
+  // the spec asserts the WARNING is on screen, not just a refusal: its pattern must accept R1 and must NOT accept a refusal without the warning
+  const spec = readFileSync(join(SRC, '..', 'e2e', 'beacon-card-import-compat.spec.ts'), 'utf8');
+  const m = /const TAMPER = (\/.+\/i);/.exec(spec);
+  assert.ok(m, 'the spec still has its TAMPER pattern');
+  const TAMPER = new RegExp(m![1].slice(1, m![1].lastIndexOf('/')), 'i');
+  assert.match(M.importBinding, TAMPER, 'the spec accepts the screen\'s warning');
+  assert.doesNotMatch("This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.", TAMPER, 'and refuses to pass a refusal WITHOUT the warning (that was the #496 regression)');
 });
 
 test('B1 every refusal at every contact-book site shows the refusal, never that site\'s fallback', () => {
