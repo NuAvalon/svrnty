@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
-  createKeyVault, recoverFromShards, checkPieces, attachPieceCommitments, MAX_SUBSET_SEARCH,
+  createKeyVault, recoverFromShards, recoverFromShardsReported, checkPieces, attachPieceCommitments, MAX_SUBSET_SEARCH,
   RecoveryPiecesRefused, type KeyVault, type PrivateKeyBundle, type Shard,
 } from './recovery';
 import { commitSet, commitPiece, parseCommitments, newSetId } from './recovery-commit';
@@ -195,6 +195,36 @@ test('W5 attachPieceCommitments (existing identities): idempotent, never overwri
   }
 });
 
+test('W7 the outcome SAYS which pieces were left out: a relabelled GENUINE piece recovers with a named warning (never silent), a relabelled FOREIGN piece is refused', async () => {
+  const { vault, shards } = await made(3, 5);
+  const other = await made(3, 5);
+  // all good: nothing left out, found by the list
+  const clean = await recoverFromShardsReported(vault, pick(shards, [0, 1, 2]));
+  assert.deepEqual(clean.bundle, BUNDLE);
+  assert.deepEqual([clean.method, clean.left_out], ['list', []]);
+  // exactly M, one of them GENUINE bytes under the wrong label: recovers (the hash proves it), and the report NAMES it
+  const relabelled = await recoverFromShardsReported(vault, [{ ...shards[0], index: 4 }, shards[1], shards[2]]);
+  assert.deepEqual(relabelled.bundle, BUNDLE);
+  assert.equal(relabelled.method, 'hash-search', 'the list could not vouch for it, the vault hash did');
+  assert.deepEqual(relabelled.left_out, [{ index: 4, reason: 'mismatch' }], 'a relabelled piece is named, not passed silently');
+  // M+1 with a bad piece left out by the list: success AND the report says which one and why
+  const withBad = await recoverFromShardsReported(vault, [shards[0], flip(shards[1]), shards[2], shards[3]]);
+  assert.deepEqual(withBad.bundle, BUNDLE);
+  assert.deepEqual([withBad.method, withBad.left_out], ['list', [{ index: 2, reason: 'mismatch' }]]);
+  // a repeat is named too
+  const repeat = await recoverFromShardsReported(vault, [shards[0], shards[0], shards[1], shards[2]]);
+  assert.deepEqual(repeat.left_out, [{ index: 1, reason: 'duplicate' }]);
+  // a relabelled FOREIGN piece (bytes of another split under a label): refused, never a success
+  for (const label of [1, 2, 3, 4, 9]) {
+    await assert.rejects(() => recoverFromShardsReported(vault, [shards[0], shards[1], { ...other.shards[2], index: label }]), (e: unknown) => e instanceof RecoveryPiecesRefused, `foreign piece relabelled ${label}`);
+  }
+  // a legacy vault has no list, so it cannot name anything: it still says HOW it recovered
+  const legacy = await recoverFromShardsReported(withoutList(vault), [{ ...shards[0], index: 4 }, shards[1], shards[2]]);
+  assert.deepEqual([legacy.bundle, legacy.method, legacy.left_out], [BUNDLE, 'hash-search', []]);
+  // the bare function is the same bundle, with nothing said: that is why no screen may call it (see W6)
+  assert.deepEqual(await recoverFromShards(vault, [{ ...shards[0], index: 4 }, shards[1], shards[2]]), BUNDLE);
+});
+
 test('W6 refusals carry no data and checkPieces names index + reason only; and no screen calls recoverFromShards yet: the day one does, the refusal codes need a screen sentence', async () => {
   const { vault, shards } = await made(3, 5);
   const handed = [shards[0], flip(shards[1]), shards[2]];
@@ -215,7 +245,7 @@ test('W6 refusals carry no data and checkPieces names index + reason only; and n
   // recovery-pieces-insufficient / recovery-pieces-search-too-large (and recovery-code-wrong) to a sentence, by code, in classifyRestoreFailure.
   const SRC = resolve(__dirname, '..', '..');
   const hits: string[] = [];
-  const walk = (dir: string) => { for (const n of readdirSync(dir)) { const p = join(dir, n); if (statSync(p).isDirectory()) { if (n !== 'node_modules') walk(p); } else if (/\.(ts|tsx)$/.test(n) && !/\.(test|spec|selftest)\.tsx?$/.test(n)) { const code = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, ''); if (/\brecoverFromShards\(/.test(code)) hits.push(p.slice(SRC.length + 1)); } } };
+  const walk = (dir: string) => { for (const n of readdirSync(dir)) { const p = join(dir, n); if (statSync(p).isDirectory()) { if (n !== 'node_modules') walk(p); } else if (/\.(ts|tsx)$/.test(n) && !/\.(test|spec|selftest)\.tsx?$/.test(n)) { const code = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, ''); if (/\brecoverFromShards(Reported)?\(/.test(code)) hits.push(p.slice(SRC.length + 1)); } } };
   walk(SRC);
   assert.deepEqual(hits.sort(), ['lib/crypto/recovery.ts'], 'a new caller of recoverFromShards: give the new refusal codes a screen sentence (classifyRestoreFailure + a copy row) before this guard is updated');
 });

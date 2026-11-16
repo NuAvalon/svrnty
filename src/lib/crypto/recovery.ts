@@ -358,30 +358,50 @@ async function secretByHash(vault: KeyVault, shards: Shard[], threshold: number 
   return null;
 }
 
+/** What a recovery from pieces says about itself. A screen MUST show `left_out` (it is how "recovered, but piece 3 carried the wrong label" reaches the person). */
+export interface RecoveryReport {
+  bundle: PrivateKeyBundle;
+  /** Pieces the backup's list did not accept, by label and reason only. Empty when the backup has no list (it cannot name anything). */
+  left_out: NamedBadPiece[];
+  /** 'list': the pieces the list accepted opened it. 'hash-search': the list could not vouch for enough pieces (or there is none) and the vault hash found the secret. */
+  method: 'list' | 'hash-search';
+}
+
 /**
- * Recover keys from Shamir shards. A backup that carries a list of piece commitments has the pieces checked against it BEFORE combining (checkPieces), so a bad,
- * relabelled, foreign or repeated piece is left out and can be named, and M+1 pieces with one bad still open it. A backup without one, or a list that
- * does not hold up, falls back to searching subsets by the vault hash. Either way the vault's own hash decides: a wrong bundle is never returned.
+ * Recover keys from Shamir shards, and SAY how. A backup that carries a list of piece commitments has the pieces checked against it BEFORE combining (checkPieces),
+ * so a bad, relabelled, foreign or repeated piece is left out and named, and M+1 pieces with one bad still open it. A backup without one, or a list that does not
+ * hold up, falls back to searching subsets by the vault hash. Either way the vault's own hash decides: a wrong bundle is never returned. A relabelled piece with
+ * genuine bytes can still recover (the label guards nothing about the secret), but it is never passed silently: it is in `left_out`.
  */
-export async function recoverFromShards(
+export async function recoverFromShardsReported(
   vault: KeyVault,
   shards: Shard[]
-): Promise<PrivateKeyBundle> {
+): Promise<RecoveryReport> {
   const threshold = readThreshold(vault);
   const need = threshold ?? 2;
   const checked = checkPieces(vault, shards);
   if (checked.listed && checked.good.length >= need) {
     const secret = await reconstructFromShards(checked.good).catch(() => null);
     // The hash decides, not the list: if it does not match, the list marked a bad piece good, and the search below finds the real secret or refuses.
-    if (secret !== null && hashMasterSecret(secret) === vault.master_secret_hash) return decryptVault(vault, secret);
+    if (secret !== null && hashMasterSecret(secret) === vault.master_secret_hash) {
+      return { bundle: await decryptVault(vault, secret), left_out: checked.bad, method: 'list' };
+    }
   }
   const found = await secretByHash(vault, shards, threshold);
-  if (found) return decryptVault(vault, found);
+  if (found) return { bundle: await decryptVault(vault, found), left_out: checked.bad, method: 'hash-search' };
   const distinct = new Set(shards.filter((s) => typeof s?.data === 'string').map((s) => s.data)).size;
   if (checked.bad.length > 0 || distinct < need) {
     throw new RecoveryPiecesRefused('recovery-pieces-insufficient', 'Not enough pieces that fit this backup to rebuild the recovery key.');
   }
   throw new RestoreThrow('recovery-code-wrong', 'Invalid master secret — hash mismatch');
+}
+
+/** The bundle alone. It says nothing about pieces that were left out, so no screen may call it: use recoverFromShardsReported (a test enforces this). */
+export async function recoverFromShards(
+  vault: KeyVault,
+  shards: Shard[]
+): Promise<PrivateKeyBundle> {
+  return (await recoverFromShardsReported(vault, shards)).bundle;
 }
 
 /**
