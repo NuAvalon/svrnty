@@ -160,6 +160,24 @@ test('C6 the stored list is parsed strictly: right shape in, anything else out, 
   assert.equal(parseCommitments({ ...list, set_id: list.set_id.toUpperCase() })?.set_id, list.set_id, 'a set id in upper case is read as lower case');
 });
 
+test('C6b a commitment that is not 64 hex: parseCommitments refuses it, and sortPieces on an UNPARSED list fails closed (throws or reports the piece bad, never good)', async () => {
+  const shards = await createShards(generateMasterSecret(), 3, 5, FP);
+  const list = commitSet(newSetId(), shards);
+  for (const v of ['', 'zz', 'g'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), ' ' + 'a'.repeat(63), 'a'.repeat(62) + '0x', 7, null, undefined]) {
+    const forged = { ...list, commitments: { ...list.commitments, '1': v } };
+    assert.equal(parseCommitments(forged), null, `parse refuses ${String(v).slice(0, 12)}`);
+    // the contract: callers parse first. A list that skipped the parse and carries garbage FAILS CLOSED: it throws, or it reports the piece as bad, and never as good.
+    let good = -1;
+    try { good = sortPieces(forged as unknown as PieceCommitments, [shards[0]]).good.length; } catch { good = 0; }
+    assert.equal(good, 0, `sortPieces on an unparsed list with ${String(v).slice(0, 12)} must not pass a piece`);
+  }
+  // an upper-case 64-hex value is a spelling of the same hash: read as lower case, and it still matches
+  const upper = { ...list, commitments: Object.fromEntries(Object.entries(list.commitments).map(([k, v]) => [k, v.toUpperCase()])) };
+  const parsed = parseCommitments(upper);
+  assert.deepEqual(parsed, list);
+  assert.equal(sortPieces(parsed!, shards).good.length, 5);
+});
+
 test('C7 inputs are validated, newSetId is fresh, and the module is a leaf that compares in constant time', async () => {
   const [p] = await createShards(generateMasterSecret(), 2, 2, FP);
   for (const s of ['', 'abc', 'g'.repeat(64), SET + '00', SET.slice(2)]) assert.throws(() => commitPiece(s, 1, p.data), /set id/i, s);
