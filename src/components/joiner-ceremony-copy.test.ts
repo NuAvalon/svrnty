@@ -7,6 +7,8 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { errorTag } from '@/lib/error-tag';
+import { ContactUpdateRefused } from '@/lib/identity/contact-identity';
+import { CONTACT_REFUSAL_MESSAGES } from '@/lib/contacts/contact-refusal';
 import { JOINER_FAILURE_MESSAGES, joinerFailureMessage, type JoinerFailureSite } from './joiner-ceremony-copy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -52,4 +54,56 @@ test('JC3 THE COMPONENT: no error text is read, the three catches use the site m
   assert.equal((jc.match(/joinerFailureMessage\(/g) ?? []).length, 3);
   assert.ok(!/Could not add them to your Gate\./.test(jc) && !/Could not accept the piece\./.test(jc), 'the old fallbacks are gone');
   assert.ok(!jc.includes("This link isn't available."), 'the link-unavailable sentence lives only in the constants file');
+});
+
+// The refusals the contact store makes on purpose, as the add-to-Gate site can receive them. Recognised by code and reason, so look-alikes are built as plain objects too.
+const REFUSALS: ReadonlyArray<readonly [string, unknown, string]> = [
+  ['update refused: binding (a real ContactUpdateRefused)', new ContactUpdateRefused('binding', 'HOSTILE ' + HOSTILE), CONTACT_REFUSAL_MESSAGES.updateBinding],
+  ['update refused: verify-before-trust (real class)', new ContactUpdateRefused('verify-before-trust', HOSTILE), CONTACT_REFUSAL_MESSAGES.verifyBeforeTrust],
+  ['update refused: identity-immutable (real class)', new ContactUpdateRefused('identity-immutable', HOSTILE), CONTACT_REFUSAL_MESSAGES.identityImmutable],
+  ['contact refused: binding, by code', Object.assign(new Error(HOSTILE), { code: 'contact-refused', reason: 'binding' }), CONTACT_REFUSAL_MESSAGES.updateBinding],
+  ['trust refused: blocked, by code', Object.assign(new Error(HOSTILE), { code: 'trust-refused', reason: 'blocked' }), CONTACT_REFUSAL_MESSAGES.blocked],
+];
+
+test('JC4 a contact refusal at the add-to-Gate site shows ITS OWN sentence, never the site\'s "didn\'t finish, try again"; nothing of the thrower\'s text', () => {
+  const real = console.error; console.error = () => { /* a refusal is not logged as an unknown failure */ };
+  try {
+    for (const [name, err, sentence] of REFUSALS) {
+      const m = joinerFailureMessage(err, 'addToGate');
+      assert.equal(m, sentence, name);
+      assert.notEqual(m, JOINER_FAILURE_MESSAGES.addToGate, name);
+      assert.ok(!m.includes('HOSTILE') && !m.includes('Failed to fetch') && !m.includes('\u202E'), name);
+    }
+  } finally { console.error = real; }
+});
+
+test('JC5 only a refusal CODE counts: a plain Error with refusal-like text, or an unknown reason, gets the site sentence; the other two sites never map a refusal', () => {
+  const real = console.error; console.error = () => {};
+  try {
+    for (const err of [new Error('fingerprint does not match key'), new Error(CONTACT_REFUSAL_MESSAGES.updateBinding), Object.assign(new Error('x'), { code: 'contact-update-refused', reason: 'novel' }), Object.assign(new Error('x'), { code: 'other', reason: 'binding' })]) {
+      assert.equal(joinerFailureMessage(err, 'addToGate'), JOINER_FAILURE_MESSAGES.addToGate);
+    }
+    // openLink and keepPiece never reach the contact store: a refusal-coded error there is NOT mapped (if one ever can reach them, this fails and the site must map it).
+    for (const site of ['openLink', 'keepPiece'] as const) {
+      assert.equal(joinerFailureMessage(new ContactUpdateRefused('binding', 'x'), site), JOINER_FAILURE_MESSAGES[site]);
+    }
+  } finally { console.error = real; }
+});
+
+test('JC6 a refusal is not logged as an unknown failure (it is an expected stop), and an unknown error still is, by tag only', () => {
+  const calls: unknown[][] = [];
+  const real = console.error; console.error = (...a: unknown[]) => { calls.push(a); };
+  try {
+    joinerFailureMessage(new ContactUpdateRefused('binding', 'x'), 'addToGate');
+    assert.equal(calls.length, 0);
+    joinerFailureMessage(new TypeError(HOSTILE), 'addToGate');
+    assert.deepEqual(calls, [['Joiner addToGate failed:', 'TypeError']]);
+  } finally { console.error = real; }
+});
+
+test('JC7 THE LEAF STAYS LIGHT: the joiner copy module imports only the two leaf modules (error-tag, contact-refusal), so the public page loads no store code', () => {
+  const src = code('joiner-ceremony-copy.ts');
+  // every way a module can be pulled in: `import x from 'm'`, a bare `import 'm'` (side effect), `import('m')`, `require('m')`
+  const specs = [...src.matchAll(/(?:^|[\s;])import\s+(?:[^'"()]*?\s+from\s+)?['"]([^'"]+)['"]/g), ...src.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1]).sort();
+  assert.deepEqual(specs, ['@/lib/contacts/contact-refusal', '@/lib/error-tag']);
 });
