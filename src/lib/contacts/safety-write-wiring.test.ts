@@ -51,7 +51,7 @@ test('removing a contact takes the contact lock around its write, in both places
   const ui = src('../../components/ContactManagement.tsx');
   const del = body(ui, 'const handleDeleteContact', 'const handleToggleTrust');
   assert.match(del, /await withSafetyWrite\(contactId, \(\) => removeContact\(contactId\)\);/);
-  assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? \(err instanceof Error \? err\.message : 'Failed to delete contact'\)\)/);
+  assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? contactFailureMessage\(err, 'remove'\)\)/);
   const page = noComments(src('../../../app/page.tsx'));
   assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContact\(edge\.id\)\);/);
   assert.match(page, /const words = describeSafetyWriteFailure\(err, 'Remove'\);\s*throw words \? new Error\(words\) : err;/);
@@ -70,7 +70,7 @@ test('no protecting write is nested inside another lock holder (a nested request
 test('a protecting write that could not be saved is told in plain words, not as a raw error', () => {
   const ui = src('../../components/ContactManagement.tsx');
   const block = body(ui, 'const handleSetBlocked', 'const confirmTarget');
-  assert.match(block, /setError\(describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\) \?\? \(err instanceof Error \? err\.message : 'Failed to update block'\)\)/);
+  assert.match(block, /setError\(describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\) \?\? contactFailureMessage\(err, blocked \? 'block' : 'unblock'\)\)/);
   const share = body(ui, 'const handleShareSettingsChange', '// --- Render ---');
   assert.match(share, /const words = describeSafetyWriteFailure\(err, 'Sharing setting'\);\s*if \(!words\) throw err;\s*setError\(words\);\s*return;/);
 });

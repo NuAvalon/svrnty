@@ -23,7 +23,7 @@ import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './b
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
-import { assertFingerprintUnchanged } from './contact-identity';
+import { assertFingerprintUnchanged, ContactUpdateRefused } from './contact-identity';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -1381,7 +1381,7 @@ async function buildStoredContact(record: ContactRecord): Promise<Record<string,
  */
 export class ContactRefused extends Error {
   readonly code = 'contact-refused' as const;
-  constructor(message: string) { super(message); this.name = 'ContactRefused'; }
+  constructor(public readonly reason: 'binding' | 'verify-before-trust', message: string) { super(message); this.name = 'ContactRefused'; }
 }
 
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
@@ -1401,7 +1401,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   }))) {
     // C2 / Invariant-1: fail-closed when a key is present —
     // refuse mismatched attacker-key + victim-fingerprint pairs.
-    throw new ContactRefused('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
+    throw new ContactRefused('binding', 'fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
   const id = crypto.randomUUID();
   const record: ContactRecord = {
@@ -1422,7 +1422,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   {
     const addTrusted = record.trust_level === 'trusted' || record.trust_level === 'verified' || (record as { trusted?: boolean }).trusted === true;
     if (addTrusted && !ownerHasVerified(record as Parameters<typeof ownerHasVerified>[0])) {
-      throw new ContactRefused('verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
+      throw new ContactRefused('verify-before-trust', 'verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
     }
   }
   const stored = await buildStoredContact(record);
@@ -1498,7 +1498,7 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
     kem_public_key: next.pq_kem_public_key,
     sig_public_key: next.pq_sig_public_key,
   }))) {
-    throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
+    throw new ContactUpdateRefused('binding', 'fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
   // pt5 verify-before-trust (survivor-safety SINK gate — Flint seal-criteria #158146 / Archie #92153):
   // block the unverified/known → trusted PROMOTION unless a REAL owner-verification backs it. Every
@@ -1510,7 +1510,7 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
   const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
   const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
   if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
-    throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
+    throw new ContactUpdateRefused('verify-before-trust', 'verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
   }
   return next;
 }
