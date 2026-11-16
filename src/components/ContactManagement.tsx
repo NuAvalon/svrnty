@@ -72,6 +72,7 @@ import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import { ContactBookTooLarge, contactBookEntries, contactBookFile, importContactBook, importMessage } from '@/lib/contacts/book-import';
 import { errorTag, plainPasteFailureMessage } from '@/lib/contacts/contact-io-errors';
+import { ContactInputError, contactFailureMessage } from './contact-management-copy';
 import { SEALED_BOOK_MESSAGES, looksSealed, namesDifferentOwner, openSealedBook, sealedFailureMessage, splitMissingKeys, splitUnbindable } from '@/lib/contacts/sealed-book-import';
 import {
   ClassicalFieldsEditor,
@@ -286,7 +287,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const records = await getAllContacts(fingerprint);
       setContacts(records.map(recordToContact));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load contacts');
+      setError(contactFailureMessage(err, 'load'));
       setContacts([]);
     } finally {
       setLoading(false);
@@ -417,13 +418,13 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     setInviteUrl(null);
     try {
       const key = await loadKey(fingerprint);
-      if (!key) throw new Error('Unlock your identity first to build an invite.');
+      if (!key) throw new ContactInputError('invite-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const packed = JSON.stringify(signed);
       const result = await createRelay(packed);
       setInviteUrl(result.url);
     } catch (e) {
-      setInviteError(e instanceof Error ? e.message : 'Could not prepare invite.');
+      setInviteError(contactFailureMessage(e, 'invite'));
     } finally {
       setInviteLoading(false);
     }
@@ -438,10 +439,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setLoading(true);
       setError(null);
       if (!newContactForm.name || !newContactForm.fingerprint) {
-        throw new Error('Name and fingerprint are required');
+        throw new ContactInputError('add-missing');
       }
       if (newContactForm.fingerprint === fingerprint) {
-        throw new Error('You cannot add yourself as a contact');
+        throw new ContactInputError('add-self');
       }
       await addContact(fingerprint, {
         name: newContactForm.name,
@@ -455,7 +456,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add contact');
+      setError(contactFailureMessage(err, 'add'));
     } finally {
       setLoading(false);
     }
@@ -467,12 +468,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setLoading(true);
       setError(null);
       if (!editContactForm.name) {
-        throw new Error('Name is required');
+        throw new ContactInputError('edit-no-name');
       }
       const info = fieldsToContactInfo(bookFields);
       // Classical-only edit — refuse to mutate SVRNTY profile fields here.
       if (selectedContact && isSvrnNetworkContact(selectedContact)) {
-        throw new Error('SVRNTY contacts are key-bound — edit is locked. Change trust, groups, or share settings instead.');
+        throw new ContactInputError('edit-key-bound');
       }
       // Built from the record held when the write runs: tags, connection method and the rest of the metadata are whatever the store has now.
       await updateContact(editContactForm.id, (fresh) =>
@@ -482,7 +483,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update contact');
+      setError(contactFailureMessage(err, 'edit'));
     } finally {
       setLoading(false);
     }
@@ -513,7 +514,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(describeSafetyWriteFailure(err, 'Remove') ?? (err instanceof Error ? err.message : 'Failed to delete contact'));
+      setError(describeSafetyWriteFailure(err, 'Remove') ?? contactFailureMessage(err, 'remove'));
     } finally {
       setLoading(false);
     }
@@ -552,7 +553,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       }
       await loadContacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update trust');
+      setError(contactFailureMessage(err, 'trust'));
     } finally {
       setLoading(false);
     }
@@ -569,7 +570,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await updateContact(contact.id, (fresh) => ownerVerifyHeldPatch(fresh, method));
       await loadContacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to record verification');
+      setError(contactFailureMessage(err, 'verify'));
     } finally {
       setLoading(false);
     }
@@ -601,7 +602,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock') ?? (err instanceof Error ? err.message : 'Failed to update block'));
+      setError(describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock') ?? contactFailureMessage(err, blocked ? 'block' : 'unblock'));
     } finally {
       setLoading(false);
     }
@@ -680,12 +681,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // an untrusted carrier — the card MUST be signed so the receiver can re-verify pq wasn't swapped
       // (an unsigned card is the HNDL hole). Signing needs the unlocked private key.
       const key = await loadKey(fingerprint);
-      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      if (!key) throw new ContactInputError('share-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       setExchangePackage(JSON.stringify(signed, null, 2));
       setShowShareIdentityDialog(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create exchange package');
+      setError(contactFailureMessage(err, 'share'));
     } finally {
       setLoading(false);
     }
@@ -699,10 +700,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const card = JSON.parse(exchangeImportData.trim());
       const contactIdentity = card.identity || card;
       if (!contactIdentity.fingerprint || !contactIdentity.public_key) {
-        throw new Error('Invalid exchange package: missing fingerprint or public key');
+        throw new ContactInputError('import-incomplete');
       }
       if (contactIdentity.fingerprint === fingerprint) {
-        throw new Error('You cannot import yourself as a contact');
+        throw new ContactInputError('import-self');
       }
 
       // Fail-closed disposition — copy/paste is an untrusted carrier, so it re-verifies the card
@@ -768,7 +769,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       if (err instanceof SyntaxError) {
         setExchangeResult({ success: false, message: 'Invalid JSON — paste a valid identity exchange package' });
       } else {
-        setExchangeResult({ success: false, message: err instanceof Error ? err.message : 'Failed to import' });
+        setExchangeResult({ success: false, message: contactFailureMessage(err, 'import') });
       }
     } finally {
       setLoading(false);
@@ -814,7 +815,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         URL.revokeObjectURL(url);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to export');
+      setError(contactFailureMessage(err, 'export'));
     } finally {
       setLoading(false);
     }
@@ -916,7 +917,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const fp = linkFingerprint.trim();
       const pk = linkPublicKey.trim();
       if (!fp || !pk) {
-        throw new Error('Paste their SVRNTY fingerprint and public key.');
+        throw new ContactInputError('link-empty');
       }
       // The async step is only the key binding; the write itself is a synchronous function of the held record, which keeps the classical
       // channels on the living card as contact_info + classical_extras.
@@ -929,7 +930,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setLinkError(err instanceof Error ? err.message : 'Could not link contact');
+      setLinkError(contactFailureMessage(err, 'link'));
     } finally {
       setLoading(false);
     }
@@ -1375,7 +1376,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                                 setBulkGroupNote(`Renamed “${tag}” → “${next}” (local only).`);
                                 await loadContacts();
                               } catch (err) {
-                                setError(err instanceof Error ? err.message : 'Could not rename group');
+                                setError(contactFailureMessage(err, 'renameGroup'));
                               }
                             }}
                           >
@@ -1456,7 +1457,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                                 setBulkGroupNote(`Removed group “${tag}”.`);
                                 await loadContacts();
                               } catch (err) {
-                                setError(err instanceof Error ? err.message : 'Could not remove group');
+                                setError(contactFailureMessage(err, 'removeGroup'));
                               }
                             }}
                           >
@@ -1566,7 +1567,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       setBulkGroupName('');
                       setSelectedIds(new Set());
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : 'Could not assign group');
+                      setError(contactFailureMessage(err, 'assignGroup'));
                     } finally {
                       setLoading(false);
                     }
