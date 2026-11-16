@@ -9,7 +9,8 @@
 // Run: npx tsx --test src/components/raw-error-text-ratchet.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,11 +46,11 @@ function walk(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-export function countsByPath(): Record<string, number> {
+export function countsByPath(root: string = ROOT): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const p of walk(join(ROOT, 'src', 'components'))) {
+  for (const p of walk(join(root, 'src', 'components'))) {
     const n = rawErrorTextLines(readFileSync(p, 'utf8')).length;
-    if (n > 0) counts[relative(ROOT, p).split(sep).join('/')] = n;
+    if (n > 0) counts[relative(root, p).split(sep).join('/')] = n;
   }
   return counts;
 }
@@ -103,6 +104,26 @@ test('RT3 the ratchet logic (controls): growth, a new path, a stale baseline, an
   assert.deepEqual(ratchet({ a: 1 }, { a: 2 }), { grew: [], shrank: ['a: 1 < baseline 2'] }, 'a removed line must lower the baseline');
   assert.deepEqual(ratchet({}, { a: 2 }), { grew: [], shrank: ['a: 0 < baseline 2'] }, 'a drained or deleted file must leave the baseline');
   assert.deepEqual(ratchet({ a: 3, b: 1 }, { a: 4 }), { grew: ['b: 1 > baseline 0'], shrank: ['a: 3 < baseline 4'] }, 'both at once');
+});
+
+test('RT5 the walk, the scan and the ratchet together, on a synthetic tree: .tsx and .ts, nested folders, tests ignored, a new file, a removed line', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rawerr-'));
+  try {
+    const put = (rel: string, body: string) => { const p = join(root, rel); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body); };
+    put('src/components/A.tsx', "try {} catch (err) {\n  setError(err.message);\n  setNote(err instanceof Error ? err.message : 'x');\n}\n");
+    put('src/components/sub/deeper/B.ts', "p.catch((reason) => log(reason.message));\n");
+    put('src/components/C.test.ts', "setError(err.message);\n");
+    put('src/components/D.d.ts', "declare const x: { message: string };\n");
+    put('src/components/E.tsx', "setError(typedSentence);\n");
+    put('src/lib/F.ts', "setError(err.message);\n");
+    const base = { 'src/components/A.tsx': 2, 'src/components/sub/deeper/B.ts': 1 };
+    assert.deepEqual(countsByPath(root), base, 'counts .tsx and nested .ts; ignores tests, .d.ts, clean files and anything outside src/components');
+    assert.deepEqual(ratchet(countsByPath(root), base), { grew: [], shrank: [] });
+    put('src/components/G.tsx', "catch (e) { setError(e.message); }\n");
+    assert.deepEqual(ratchet(countsByPath(root), base).grew, ['src/components/G.tsx: 1 > baseline 0'], 'a new file with one line');
+    put('src/components/A.tsx', "try {} catch (err) {\n  setError(err.message);\n}\n");
+    assert.deepEqual(ratchet(countsByPath(root), { ...base, 'src/components/G.tsx': 1 }).shrank, ['src/components/A.tsx: 1 < baseline 2'], 'a removed line');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('RT4 THE RATCHET ON THE TREE: no file shows more of an error\'s own text than its baseline, and the baseline is exact', () => {
