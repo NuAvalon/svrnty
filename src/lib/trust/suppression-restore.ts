@@ -1,20 +1,60 @@
 // src/lib/trust/suppression-restore.ts: what a restore does with a carried suppression record (and removed list), and the person's one confirmation. PURE over injected ports:
-// no storage, clock or randomness of its own. DARK: nothing imports it outside tests yet; the storage wiring comes after it is reviewed.
+// no storage, clock or randomness of its own. The storage wiring is in the identity store, which is this module's only importer.
 //
 // The rules (the design ruling for the piece-2 restore gate):
 //  - The carried value is accepted ONLY by parseCarriedSuppression, and the caller passes it from a source the passphrase authenticated (never a plaintext file). Anything else is "none".
 //  - A device with a READABLE record: MERGE by tightening, never reduce. A device with NO record: write the carried persons and groups with global ON; a backup's global-off waits for
 //    the person's confirmation on a screen that names the backup's date, because a backup can be stale and a file password can craft one.
 //  - A record that exists but cannot be read is NEVER overwritten: it stays as it is (an unreadable record reads as "suppress everyone").
-//  - The fresh-device write is put-if-absent: if another writer got there first, this falls back to the merge, so a restore never replaces a record it did not read.
+//  - EVERY change to a stored record is ONE atomic read-modify-write: the port reads the record, runs `decide` on what it read, and commits only if the record is still exactly that;
+//    otherwise it runs `decide` again on the newer record. So a write that lands in between (a second tab, a Remove) is never overwritten by a stale result, and the unguarded
+//    read-then-replace form is not in the port at all. `decide` is therefore PURE: it can run more than once.
 //  - The record is written BEFORE the pending confirmation: if the second write fails the person is simply never asked and stays private.
 //  - confirmGlobalOff is the ONLY path that writes global:false after a restore, and it needs the pending marker this restore left.
 //  - The removed list merges by union; over the cap it REFUSES; an unreadable stored list is never overwritten.
 import type { SuppressionRecord } from './suppression';
-import { confirmGlobalOff, freshDeviceWrite, mergeByTightening, mergeRemoved, parseCarriedSuppression, type CarriedSuppression } from './suppression-carry';
+import { carrySuppression, confirmGlobalOff, freshDeviceWrite, mergeByTightening, mergeRemoved, parseCarriedSuppression, type CarriedSuppression } from './suppression-carry';
 
 /** What a sealed owner record reads as: a value, no row at all, or a row that could not be opened or understood. */
 export type SealedRead<T> = { state: 'ok'; value: T } | { state: 'absent' } | { state: 'unreadable' };
+
+/** What a `decide` returns: a new value to commit (with the result to hand back), or just the result (nothing is written). */
+export type Decision<T, R> = { write: T; result: R } | { result: R };
+
+/**
+ * One atomic read-modify-write over a sealed record. The port reads it (ok / absent / unreadable), calls `decide`, and commits a `write` only if the record is STILL exactly what it read;
+ * a lost comparison runs `decide` again on the newer record. After a bounded number of lost comparisons it throws with nothing written. A port refuses (throws) a `write` decided on an
+ * UNREADABLE record: an unreadable record is never overwritten.
+ */
+export type Update<T> = <R>(decide: (held: SealedRead<T>) => Decision<T, R>) => Promise<R>;
+
+/**
+ * How a store plugs in. `read` returns the record's current state AND a token for exactly what was read (the raw stored row); `commit` writes `value` only if the record is STILL exactly that
+ * token (one atomic compare-and-swap in the store) and says whether it did.
+ */
+export interface UpdateIO<T> {
+  read(): Promise<{ token: unknown; held: SealedRead<T> }>;
+  commit(token: unknown, value: T): Promise<boolean>;
+}
+
+export const UPDATE_MAX_ATTEMPTS = 5;
+
+/**
+ * The atomic read-modify-write over one sealed record: read, decide, and commit only if the record is unchanged; a lost comparison decides again on the newer record. After
+ * `maxAttempts` lost comparisons it throws with nothing written, never last-writer-wins. A `write` decided on an UNREADABLE record is refused (throws): an unreadable record is never overwritten.
+ */
+export function makeUpdate<T>(io: UpdateIO<T>, maxAttempts: number = UPDATE_MAX_ATTEMPTS): Update<T> {
+  return async <R,>(decide: (held: SealedRead<T>) => Decision<T, R>): Promise<R> => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const { token, held } = await io.read();
+      const decision = decide(held);
+      if (!('write' in decision)) return decision.result;
+      if (held.state === 'unreadable') throw new Error('Refusing to overwrite a sealed record that cannot be read');
+      if (await io.commit(token, decision.write)) return decision.result;
+    }
+    throw new Error('A sealed record changed too often while it was being updated; nothing was written');
+  };
+}
 
 /** Left by a restore onto a device with no record, when the backup said global:false. The date is the vault's own timestamp as text, or null when it was not a plain ISO time. */
 export interface PendingGlobalOff {
@@ -55,19 +95,37 @@ export function planRemovedAppend(held: SealedRead<string[]>, durableId: string)
   return merged.ok ? { kind: 'write', list: merged.removed } : { kind: 'refuse', why: 'too-large' };
 }
 
+/** Record one Remove atomically (the plan is decided on the record the port read, and re-decided if another write landed first). The caller throws on a refusal, so its Remove fails. */
+export function recordRemoval(update: Update<string[]>, durableId: string): Promise<RemovedAppend> {
+  return update<RemovedAppend>((held) => {
+    const plan = planRemovedAppend(held, durableId);
+    return plan.kind === 'write' ? { write: plan.list, result: plan } : { result: plan };
+  });
+}
+
+/** The sentence for a Remove that could not be recorded, or null when it was (written, or already there). The caller throws it, so its Remove fails and writes no latch. */
+export function removalRefusal(plan: RemovedAppend): string | null {
+  return plan.kind === 'refuse' ? `Cannot record this Remove (${plan.why}): refusing, so no latch is written without it` : null;
+}
+
+/**
+ * What the sealed vault carries, from what the store read. All or nothing: an unreadable removed list means NOTHING is carried (undefined), and so does a record that could not be read or
+ * that the strict parser would refuse. An absent removed list is an empty one.
+ */
+export function suppressionToCarry(record: SuppressionRecord | null, removed: SealedRead<string[]>): CarriedSuppression | undefined {
+  if (removed.state === 'unreadable') return undefined;
+  return carrySuppression(record, removed.state === 'ok' ? removed.value : []);
+}
+
 export interface RestorePorts {
-  readSuppression(): Promise<SealedRead<SuppressionRecord>>;
-  /** Put-if-absent, atomic: true when it wrote, false when a record was already there. */
-  writeSuppressionIfAbsent(rec: SuppressionRecord): Promise<boolean>;
-  replaceSuppression(rec: SuppressionRecord): Promise<void>;
-  readRemoved(): Promise<SealedRead<string[]>>;
-  writeRemoved(list: string[]): Promise<void>;
+  updateSuppression: Update<SuppressionRecord>;
+  updateRemoved: Update<string[]>;
   readPending(): Promise<SealedRead<PendingGlobalOff>>;
   writePending(p: PendingGlobalOff): Promise<void>;
   clearPending(): Promise<void>;
 }
 
-export type SuppressionOutcome = 'none-no-carried-record' | 'kept-unreadable' | 'merged' | 'written-fresh' | 'merged-after-race' | 'race-unreadable';
+export type SuppressionOutcome = 'none-no-carried-record' | 'kept-unreadable' | 'merged' | 'written-fresh';
 export type RemovedOutcome = 'none-no-carried-record' | 'none-nothing-new' | 'kept-unreadable' | 'written' | 'refused-too-large';
 
 export interface RestoreReport {
@@ -85,59 +143,43 @@ export async function restoreSuppression(carriedRaw: unknown, backupAt: unknown,
   const carried = parseCarriedSuppression(carriedRaw);
   if (carried === null) return { suppression: 'none-no-carried-record', pendingGlobalOff: false, removed: 'none-no-carried-record' };
 
-  const report: RestoreReport = { suppression: 'kept-unreadable', pendingGlobalOff: false, removed: 'none-nothing-new' };
-  const held = await ports.readSuppression();
-  if (held.state === 'ok') {
-    await ports.replaceSuppression(mergeByTightening(held.value, carried));
-    report.suppression = 'merged';
-  } else if (held.state === 'absent') {
-    const fresh = freshDeviceWrite(carried);
-    if (await ports.writeSuppressionIfAbsent(fresh.record)) {
-      report.suppression = 'written-fresh';
-      if (fresh.globalOffWaitsForConfirm) {
-        await ports.writePending({ v: 1, backup_at: isoOrNull(backupAt) });
-        report.pendingGlobalOff = true;
-      }
-    } else {
-      // Another writer got there first: never replace what this restore did not read. Read it and merge, or leave it alone if it cannot be read.
-      const now = await ports.readSuppression();
-      if (now.state === 'ok') {
-        await ports.replaceSuppression(mergeByTightening(now.value, carried));
-        report.suppression = 'merged-after-race';
-      } else {
-        report.suppression = 'race-unreadable';
-      }
+  const done = await ports.updateSuppression<'merged' | 'written-fresh' | 'written-fresh-waiting' | 'kept-unreadable'>((held) => {
+    if (held.state === 'ok') return { write: mergeByTightening(held.value, carried), result: 'merged' };
+    if (held.state === 'absent') {
+      const fresh = freshDeviceWrite(carried);
+      return { write: fresh.record, result: fresh.globalOffWaitsForConfirm ? 'written-fresh-waiting' : 'written-fresh' };
     }
-  }
+    return { result: 'kept-unreadable' };
+  });
+  const waiting = done === 'written-fresh-waiting';
+  if (waiting) await ports.writePending({ v: 1, backup_at: isoOrNull(backupAt) });
 
-  report.removed = await restoreRemoved(carried, ports);
-  return report;
+  return { suppression: waiting ? 'written-fresh' : done, pendingGlobalOff: waiting, removed: await restoreRemoved(carried, ports) };
 }
 
-async function restoreRemoved(carried: CarriedSuppression, ports: RestorePorts): Promise<RemovedOutcome> {
-  const held = await ports.readRemoved();
-  if (held.state === 'unreadable') return 'kept-unreadable';
-  const existing = held.state === 'ok' ? held.value : [];
-  const merged = mergeRemoved(existing, carried.removed);
-  if (!merged.ok) return 'refused-too-large';
-  if (merged.removed.length === existing.length) return 'none-nothing-new';
-  await ports.writeRemoved(merged.removed);
-  return 'written';
+function restoreRemoved(carried: CarriedSuppression, ports: RestorePorts): Promise<RemovedOutcome> {
+  return ports.updateRemoved<RemovedOutcome>((held) => {
+    if (held.state === 'unreadable') return { result: 'kept-unreadable' };
+    const existing = held.state === 'ok' ? held.value : [];
+    const merged = mergeRemoved(existing, carried.removed);
+    if (!merged.ok) return { result: 'refused-too-large' };
+    if (merged.removed.length === existing.length) return { result: 'none-nothing-new' };
+    return { write: merged.removed, result: 'written' };
+  });
 }
 
 export type ConfirmOutcome = 'confirmed' | 'no-pending' | 'pending-unreadable' | 'record-unreadable';
 
 /**
  * The person's confirmation: switch global OFF and clear the marker. It needs the marker a restore left, so a screen that calls it by mistake cannot turn global off by itself.
- * The record is written BEFORE the marker is cleared, so a failure in between leaves a marker that can be confirmed again (idempotent), never a lost one.
+ * The record is changed atomically and BEFORE the marker is cleared, so a failure in between leaves a marker that can be confirmed again (idempotent), never a lost one.
  */
 export async function confirmPendingGlobalOff(ports: RestorePorts): Promise<ConfirmOutcome> {
   const pending = await ports.readPending();
   if (pending.state === 'absent') return 'no-pending';
   if (pending.state === 'unreadable') return 'pending-unreadable';
-  const held = await ports.readSuppression();
-  if (held.state !== 'ok') return 'record-unreadable';
-  await ports.replaceSuppression(confirmGlobalOff(held.value));
+  const changed = await ports.updateSuppression<boolean>((held) => (held.state === 'ok' ? { write: confirmGlobalOff(held.value), result: true } : { result: false }));
+  if (!changed) return 'record-unreadable';
   await ports.clearPending();
   return 'confirmed';
 }

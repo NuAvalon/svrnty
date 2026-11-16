@@ -283,9 +283,9 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test('DARK pin: nothing outside tests imports suppression-carry except the restore module, which has its own dark pin', () => {
+test('WIRING pin: the only non-test importers of suppression-carry are the restore module and the identity store (the export side)', () => {
   const roots = ['src', 'app'].map((d) => join(process.cwd(), d)).filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
   assert.ok(roots.length >= 1);
   const importers = roots.flatMap((r) => walk(r)).filter((f) => !/\.test\.[a-z]+$/.test(f) && !f.endsWith('suppression-carry.ts') && /suppression-carry/.test(readFileSync(f, 'utf8')));
-  assert.deepEqual(importers.map((f) => f.slice(f.lastIndexOf('/') + 1)), ['suppression-restore.ts']);
+  assert.deepEqual(importers.map((f) => f.slice(f.indexOf('/src/') + 1)).sort(), ['src/lib/identity/client-store.ts', 'src/lib/trust/suppression-restore.ts']);
 });

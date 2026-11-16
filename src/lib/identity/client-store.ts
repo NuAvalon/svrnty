@@ -16,6 +16,8 @@ import type { VaultContents } from '../sync/vault';
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { CONTACT_ENC_VERSION, deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
+import type { CarriedSuppression } from '../trust/suppression-carry';
+import { confirmPendingGlobalOff, makeUpdate, parsePendingGlobalOff, parseRemovedList, recordRemoval, removalRefusal, restoreSuppression, suppressionToCarry, type ConfirmOutcome, type PendingGlobalOff, type RestorePorts, type RestoreReport, type SealedRead, type Update } from '../trust/suppression-restore';
 import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
@@ -648,6 +650,132 @@ export async function setSuppressionRecord(ownerFingerprint: string, rec: Suppre
   await txPut('settings', { key: suppressionSettingKey(ownerFingerprint), value: payload });
 }
 
+// ── Restoring the owner's suppression: two more sealed records, and the export, restore, record-a-Remove and confirm entry points ──────────────────────
+// The logic is in ../trust/suppression-restore.ts (pure, tested over in-memory ports); this is the storage under it. Two records, the same pattern as above (the `settings` store,
+// encryptContactRecord under a reserved AAD id, the owner as authenticated data), both listed in OWNER_SEALED_SETTINGS:
+//  - the REMOVED list: durable ids of contacts the owner removed. A Remove deletes the contact and its latch row keeps only a one-way pair id, so without this list nothing could rebuild a
+//    latch after a restore. Only Removes recorded AFTER it exists are in it; an earlier one cannot be recovered.
+//  - the PENDING marker: left by a restore onto a device with no suppression record when the backup said global off; the person's confirmation consumes it.
+// A carried record is read ONLY from the passphrase-authenticated vault (importVaultContentsReport), never from a plaintext file, and exportAll never carries it.
+// EVERY change to the suppression record or the removed list is ONE compare-and-swap (updateSealed): read the stored row, decide on it, and commit only if the row is still exactly what was
+// read, else decide again. Never read-then-replace: a write that lands in between (a second tab, a Remove) would be overwritten by the stale result, and that loosens.
+const REMOVED_RECORD_ID = 'piece2:removed'; // reserved AAD id
+function removedSettingKey(ownerFingerprint: string): string {
+  return `removed_contacts:${ownerFingerprint}`;
+}
+const SUPPRESSION_PENDING_RECORD_ID = 'piece2:suppression-pending'; // reserved AAD id
+function suppressionPendingSettingKey(ownerFingerprint: string): string {
+  return `suppression_pending:${ownerFingerprint}`;
+}
+
+type SealedRow = { key: string; value: { iv: string; ciphertext: string; enc_version?: number } };
+
+/** A stored settings row as ok / absent / unreadable (locked, a decrypt or tag failure, or a shape its strict parser refuses). A row that cannot be read is never taken for "absent". */
+async function decodeSealed<T>(row: SealedRow | null, ownerFingerprint: string, recordId: string, parse: (x: unknown) => T | null): Promise<SealedRead<T>> {
+  if (!_sessionKey) return { state: 'unreadable' };
+  try {
+    if (!row?.value) return { state: 'absent' };
+    const parsed = parse(await decryptContactRecord<unknown>(_sessionKey, recordId, ownerFingerprint, row.value));
+    return parsed === null ? { state: 'unreadable' } : { state: 'ok', value: parsed };
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
+async function readSealed<T>(ownerFingerprint: string, settingKey: string, recordId: string, parse: (x: unknown) => T | null): Promise<SealedRead<T>> {
+  try {
+    return await decodeSealed(await txGet<SealedRow>('settings', settingKey), ownerFingerprint, recordId, parse);
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
+export const readRemovedList = (ownerFingerprint: string): Promise<SealedRead<string[]>> =>
+  readSealed(ownerFingerprint, removedSettingKey(ownerFingerprint), REMOVED_RECORD_ID, parseRemovedList);
+export const readPendingGlobalOff = (ownerFingerprint: string): Promise<SealedRead<PendingGlobalOff>> =>
+  readSealed(ownerFingerprint, suppressionPendingSettingKey(ownerFingerprint), SUPPRESSION_PENDING_RECORD_ID, parsePendingGlobalOff);
+
+// One seal function per record, each with its own direct call, so the sealed-record list test can see which reserved id every write uses.
+async function sealSuppression(ownerFingerprint: string, rec: SuppressionRecord): Promise<unknown> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store suppression record unencrypted (§C/enc-b fail-closed)');
+  return encryptContactRecord(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, rec);
+}
+async function sealRemoved(ownerFingerprint: string, list: string[]): Promise<unknown> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the removed list unencrypted (fail-closed)');
+  return encryptContactRecord(_sessionKey, REMOVED_RECORD_ID, ownerFingerprint, list);
+}
+
+/**
+ * The storage under the atomic update (makeUpdate, in ../trust/suppression-restore.ts, is the loop): `read` returns the stored row as the token and its decoded state; `commit` seals the new
+ * value and writes it only if the row is STILL exactly the token (commitIfUnchanged: the compare and the write are one transaction, the same commit the contact writes use). A row that could
+ * not be read is never overwritten (makeUpdate refuses a write decided on it).
+ */
+function updateSealed<T>(ownerFingerprint: string, settingKey: string, recordId: string, parse: (x: unknown) => T | null, seal: (value: T) => Promise<unknown>): Update<T> {
+  return makeUpdate<T>({
+    read: async () => {
+      const row = await txGet<SealedRow>('settings', settingKey);
+      return { token: row, held: await decodeSealed(row, ownerFingerprint, recordId, parse) };
+    },
+    commit: async (token, value) => {
+      const payload = await seal(value);
+      return commitIfUnchanged(await openDB(), [{ store: 'settings', key: settingKey, expected: token as StoredRow }], [{ store: 'settings', value: { key: settingKey, value: payload } }]);
+    },
+  });
+}
+
+async function writePendingGlobalOff(ownerFingerprint: string, marker: PendingGlobalOff): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the restore marker unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, SUPPRESSION_PENDING_RECORD_ID, ownerFingerprint, marker);
+  await txPut('settings', { key: suppressionPendingSettingKey(ownerFingerprint), value: payload });
+}
+
+async function clearPendingGlobalOff(ownerFingerprint: string): Promise<void> {
+  await txDelete('settings', suppressionPendingSettingKey(ownerFingerprint));
+}
+
+function createRestorePorts(ownerFingerprint: string): RestorePorts {
+  return {
+    updateSuppression: updateSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null), (v) => sealSuppression(ownerFingerprint, v)),
+    updateRemoved: updateSealed<string[]>(ownerFingerprint, removedSettingKey(ownerFingerprint), REMOVED_RECORD_ID, parseRemovedList, (v) => sealRemoved(ownerFingerprint, v)),
+    readPending: () => readPendingGlobalOff(ownerFingerprint),
+    writePending: (marker) => writePendingGlobalOff(ownerFingerprint, marker),
+    clearPending: () => clearPendingGlobalOff(ownerFingerprint),
+  };
+}
+
+/**
+ * The export side, for the SEALED vault only (VaultExportDialog). All or nothing: an unreadable record or an unreadable removed list is not carried (undefined), and so is anything the strict
+ * parser would refuse. exportAll never calls this: the plaintext export must not be able to carry a list of people someone removed.
+ */
+export async function exportSuppressionCarry(ownerFingerprint: string): Promise<CarriedSuppression | undefined> {
+  return suppressionToCarry(await getSuppressionRecord(ownerFingerprint), await readRemovedList(ownerFingerprint));
+}
+
+/**
+ * The restore side: apply what the passphrase-authenticated vault carried (anything: it is parsed strictly). Best-effort, because a failure leaves the device as dark as it was, which is the safe
+ * state, and a restore must not fail over it. Null means it threw.
+ */
+export async function restoreCarriedSuppression(ownerFingerprint: string, carried: unknown, backupAt: unknown): Promise<RestoreReport | null> {
+  try {
+    return await restoreSuppression(carried, backupAt, createRestorePorts(ownerFingerprint));
+  } catch (e) {
+    console.warn('[restore] suppression record not applied (the device stays private)', e);
+    return null;
+  }
+}
+
+/**
+ * Record one Remove. It THROWS when it cannot be recorded (an unreadable list, a full list, a malformed id), so the caller's Remove fails and writes no latch: a Remove that leaves no durable id is
+ * the loss this list exists to stop. NOT CALLED YET: no Remove path reaches the beacon latch today, so whoever wires one must call this FIRST, before the latch write.
+ */
+export async function recordRemovedContact(ownerFingerprint: string, durableId: string): Promise<void> {
+  const refusal = removalRefusal(await recordRemoval(createRestorePorts(ownerFingerprint).updateRemoved, durableId));
+  if (refusal !== null) throw new Error(refusal);
+}
+
+/** The person's confirmation after a restore: switch global OFF. Needs the marker a restore left; see confirmPendingGlobalOff. */
+export const confirmGlobalOffAfterRestore = (ownerFingerprint: string): Promise<ConfirmOutcome> => confirmPendingGlobalOff(createRestorePorts(ownerFingerprint));
+
 // ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
 // Anna's received+verified affirmatives {signer durable_id → {validUntil,epoch}} (held-affirmatives.ts).
 // The reveal AND-gate (trust map) READS this; the receive-path (next layer, over Athena's /onion transport)
@@ -1052,6 +1180,9 @@ export async function importBeaconKeyRecord(ownerFingerprint: string, candidate:
  *    restore the client re-deposits (beacon-seeds.ts). Whether the relay still holds such a deposit, and for how long, is not checked here.
  *  - 'beacon-key': this device's own key material, neither. The restore path imports it only when none is held (importBeaconKeyRecord).
  *  - 'beacon-confirmed': a permission, not a stop. Absent means no request is made for the pair, so losing it is safe (the pair has to be confirmed again).
+ *  - 'removed-contacts': TIGHTENING. The durable ids of contacts the owner removed, the only thing a restore can rebuild a Remove latch from (a latch row holds a one-way pair id and a kind).
+ *    It travels in the passphrase-authenticated vault only, and only Removes recorded after it existed are in it.
+ *  - 'suppression-pending': not a stop. Left by a restore when the backup said global off and this device had no record; losing it means the person is never asked and stays private.
  */
 export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: string; settingKey: (ownerFingerprint: string) => string }> = [
   { name: 'suppression', recordId: SUPPRESSION_RECORD_ID, settingKey: suppressionSettingKey },
@@ -1061,6 +1192,8 @@ export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: stri
   { name: 'beacon-seeds', recordId: BEACON_SEEDS_RECORD_ID, settingKey: beaconSeedsSettingKey },
   { name: 'beacon-key', recordId: BEACON_KEY_RECORD_ID, settingKey: beaconKeySettingKey },
   { name: 'beacon-confirmed', recordId: BEACON_CONFIRMED_RECORD_ID, settingKey: beaconConfirmedSettingKey },
+  { name: 'removed-contacts', recordId: REMOVED_RECORD_ID, settingKey: removedSettingKey },
+  { name: 'suppression-pending', recordId: SUPPRESSION_PENDING_RECORD_ID, settingKey: suppressionPendingSettingKey },
 ];
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
@@ -2587,6 +2720,9 @@ export async function importVaultContentsReport(
   const carried = (contents.trustGraph as unknown as { delivery_receipts_default?: unknown } | null)?.delivery_receipts_default;
   const carriedParsed = parseDeliveryDefault({ v: 1, value: carried });
   await writeDeliveryDefaultIfAbsent(fp, { v: 1, value: carriedParsed.state === 'ok' ? carriedParsed.rec.value : 'unknown' });
+  // The owner's suppression record and removed list ride the PASSPHRASE-AUTHENTICATED vault only (importAll, the plaintext path, never reads them). Strictly parsed and applied by tightening only:
+  // a device with no record gets the carried persons and groups with global ON, and a backup's global-off waits for the person's confirmation. Best-effort (see restoreCarriedSuppression).
+  await restoreCarriedSuppression(fp, (contents.trustGraph as unknown as { suppression?: unknown } | null)?.suppression, contents.sync?.lastModified);
 
   const classical = contents.keys?.classical;
   if (classical?.privateKey) {

@@ -90,10 +90,12 @@ export function VaultExportDialog({
     setLoading(true);
     setError(null);
     try {
-      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord } = await import(
+      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord, exportSuppressionCarry } = await import(
         '@/lib/identity/client-store'
       );
       const backup = await exportAll(fingerprint, true);
+      // The owner's suppression record and removed list go ONLY in this password-sealed vault (never in exportAll's plaintext output); left out when it cannot be read whole.
+      const suppression = await exportSuppressionCarry(fingerprint);
       const pqKeys = await loadPQKeys(fingerprint);
       const vaultData = await loadVault(fingerprint);
 
@@ -123,6 +125,7 @@ export function VaultExportDialog({
         contacts: backup.contacts,
         // task #714 R2a: the global delivery-receipt default rides the vault so a restore keeps it (absent when it could not be read).
         delivery_receipts_default: backup.delivery_receipts_default,
+        ...(suppression ? { suppression } : {}),
       };
 
       const { createVaultContents, packVault, downloadVault } = await import(
