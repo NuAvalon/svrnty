@@ -71,6 +71,7 @@ import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import { ContactBookTooLarge, contactBookEntries, contactBookFile, importContactBook, importMessage } from '@/lib/contacts/book-import';
+import { errorTag, plainPasteFailureMessage } from '@/lib/contacts/contact-io-errors';
 import { SEALED_BOOK_MESSAGES, looksSealed, namesDifferentOwner, openSealedBook, sealedFailureMessage, splitMissingKeys, splitUnbindable } from '@/lib/contacts/sealed-book-import';
 import {
   ClassicalFieldsEditor,
@@ -878,13 +879,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setImportPassword('');
       setShowImportDialog(false);
     } catch (err) {
-      if (err instanceof ContactBookTooLarge) {
-        setImportError(err.message);
-      } else if (err instanceof SyntaxError) {
-        setImportError('Invalid JSON format');
-      } else {
-        setImportError(err instanceof Error ? err.message : 'Failed to import');
-      }
+      if (!(err instanceof ContactBookTooLarge || err instanceof SyntaxError)) console.error('Contact import failed:', errorTag(err));
+      setImportError(plainPasteFailureMessage(err));
     } finally {
       setLoading(false);
     }
