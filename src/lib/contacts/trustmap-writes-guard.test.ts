@@ -30,7 +30,11 @@ test('GUARD: the trust-map block is an owner-protecting write: under the safety 
   assert.ok(a > 0 && b > a, 'the block handler was found');
   const h = code.slice(a, b);
   assert.match(h, /await withSafetyWrite\(edge\.id, \(\) => updateContact\(edge\.id, \(fresh\) => blockPatch\(fresh, blocked\)\)\);/);
-  assert.match(h, /describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\);\s*throw words \? new Error\(words\) : err;/);
+  // the plain words for a failed protecting write are made where the failure is worded, BY CLASS (copy ledger row 257), so the page rethrows the original error and does not wrap it
+  assert.doesNotMatch(h, /throw words \? new Error\(words\) : err;/);
+  const actions = readFileSync(new URL('../../components/trust-actions/trust-actions.ts', import.meta.url), 'utf8');
+  assert.match(actions, /const SAFETY_WHAT: Partial<Record<TrustActionKind, string>> = \{ remove: 'Remove', block: 'Block', unblock: 'Unblock' \};/);
+  assert.match(actions, /describeSafetyWriteFailure\(err, what\)/);
   assert.match(h, /const afterBlock = await getContact\(edge\.id\);/);
   assert.match(h, /consent: afterBlock \? consentFromRecord\(afterBlock\) : NO_CONSENT,/);
   assert.doesNotMatch(h, /getAllContacts|recMeta/, 'the block no longer reads a snapshot of the book');

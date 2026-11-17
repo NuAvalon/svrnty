@@ -37,7 +37,7 @@ const FAILURE: ReadonlyArray<readonly [ContactFailureSite, string]> = [
   ["remove", "Removing the contact didn't finish. Check your contacts before you try again."],
   ["trust", "Changing trust didn't finish. Check the contact before you try again."],
   ["verify", "Recording your verification didn't finish. Check the contact before you try again."],
-  ["block", "This person may not be blocked. Check the contact and try again."],
+  ["block", "Blocking didn't finish, so this person might not be blocked yet. Check the contact and try again."],
   ["unblock", "Unblocking didn't finish. Check the contact and try again."],
   ["share", "Your card couldn't be prepared for sharing. Try again."],
   ["import", "Importing this card didn't finish. Check your contacts before you try again."],
@@ -59,7 +59,7 @@ test('CM2 the sixteen fixed sentences are the copy owner\'s words, byte for byte
   assert.deepEqual(Object.keys(CONTACT_FAILURE_MESSAGES).sort(), FAILURE.map(([s]) => s).sort());
   assert.equal(CONTACT_FAILURE_MESSAGES.export, CONTACT_IO_MESSAGES.exportUnknown, 'reused, not retyped');
   assert.ok(code('contact-management-copy.ts').includes('export: CONTACT_IO_MESSAGES.exportUnknown,'), 'the module takes it from the shared constant, it does not retype it');
-  assert.match(CONTACT_FAILURE_MESSAGES.block, /^This person may not be blocked\./);
+  assert.match(CONTACT_FAILURE_MESSAGES.block, /might not be blocked yet\./);
   assert.notEqual(CONTACT_FAILURE_MESSAGES.block, CONTACT_FAILURE_MESSAGES.unblock, 'Block and Unblock are two sentences');
   assert.ok(Object.isFrozen(CONTACT_FAILURE_MESSAGES));
   for (const s of [...Object.values(CONTACT_INPUT_MESSAGES), ...Object.values(CONTACT_FAILURE_MESSAGES)]) assert.ok([...s].every((c) => c.charCodeAt(0) < 128), 'plain ASCII');
