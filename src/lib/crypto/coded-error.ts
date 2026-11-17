@@ -12,7 +12,8 @@ export type RestoreThrowCode =
   | 'vault-no-recovery'          // recovery codes were never set up for this backup
   | 'vault-truncated'            // the file ends before its own header or body does
   | 'vault-recovery-unreadable'  // the recovery vault inside the backup cannot be read, or is malformed
-  | 'identity-older-format';     // an identity from before post-quantum identities
+  | 'identity-older-format'      // an identity from before post-quantum identities
+  | 'backup-shards-malformed';   // the recovery-pieces record inside a plaintext backup is not a usable set
 
 /** The message is the thrower's own text and is for the console only. */
 export class RestoreThrow extends Error {
