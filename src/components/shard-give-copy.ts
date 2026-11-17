@@ -7,11 +7,17 @@
 //     keepers together hold enough to rebuild the recovery key, and that collecting them back is not built.
 //   - SHARD_READ_FAILED and SHARD_LINK_FAILED are the two failure sentences (reading the pieces on this device; creating the recovery link). The dialog shows these and never an error's own text
 //     (the real error is logged by class and code only).
+//   - shardReadyLine is the line above the "tear off a piece" button. It said that giving a piece lets any N of your keepers restore you. It now says the same true thing as the all-given
+//     line, in one form for a single piece and one for several, and drops the contact's name (it comes from the contact's card).
 // Run: npx tsx --test src/components/shard-give-copy.test.ts
 export const SHARD_LINK_NOTE = "The piece is encrypted in your browser. The server only holds the encrypted copy; the key is in the link itself, so anyone with this link or QR code can open the piece. Send it only through a channel you trust.";
 
 export function shardAllGivenLine(total: number, threshold: number): string {
   return `You've given out all ${total} of your pieces. Any ${threshold} of your keepers together hold enough to rebuild your recovery key. Collecting the pieces back isn't in the app yet.`;
+}
+
+export function shardReadyLine(remaining: number, total: number, threshold: number): string {
+  return `You hold ${remaining} un-given ${remaining === 1 ? 'piece' : 'pieces'} of ${total}. Any ${threshold} of your keepers together hold enough to rebuild your recovery key; no single piece can, not even theirs. Collecting the pieces back isn't in the app yet.`;
 }
 
 export const SHARD_READ_FAILED = "Your recovery pieces could not be read on this device.";

@@ -13,7 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { HeartCrack, Link2, Copy, Check, Clock, ShieldCheck } from 'lucide-react';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
-import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';
+import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardReadyLine } from './shard-give-copy';
 import { errorTag } from '@/lib/error-tag';
 import { createRelay } from '@/lib/sync/relay';
 import { loadShards, markShardGiven, SHARD_CUSTODY_TYPE } from '@/lib/identity/client-store';
@@ -219,11 +219,7 @@ export function ShardGiveDialog({
           {phase === 'ready' && contact && (
             <div className="space-y-4">
               <div className="rounded-lg p-4 bg-gray-900 border border-gray-800 text-sm text-gray-400">
-                You hold <span className="text-gray-200">{remaining}</span> un-given
-                {' '}{remaining === 1 ? 'piece' : 'pieces'} of {total}. Giving one to{' '}
-                <span className="text-gray-200">{contact.name}</span> lets any{' '}
-                <span className="text-amber-400">{threshold}</span> of your keepers restore you —
-                no single piece can, not even theirs.
+                {shardReadyLine(remaining, total, threshold)}
               </div>
               {error && <p className="text-sm text-red-400">{error}</p>}
               <Button

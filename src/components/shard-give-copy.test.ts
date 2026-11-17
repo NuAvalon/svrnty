@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';
+import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardReadyLine } from './shard-give-copy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, '..');
@@ -30,18 +30,19 @@ test('SG1 the link note is the copy owner\'s words byte for byte (row 226a): its
 test('SG2 THE COMPONENT imports the module, renders each constant once with the right arguments, and keeps no piece of either sentence inline', () => {
   const c = component();
   const once = (needle: string): void => assert.equal(c.split(needle).length - 1, 1, `exactly once in the component: ${needle}`);
-  once("import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';");
+  once("import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardReadyLine } from './shard-give-copy';");
   once('{SHARD_LINK_NOTE}');
   once('{shardAllGivenLine(total, threshold)}');          // the arguments are pinned: swapping them would print the wrong numbers
+  once('{shardReadyLine(remaining, total, threshold)}');
   once('setError(SHARD_READ_FAILED);');
   once('setError(SHARD_LINK_FAILED);');
-  for (const name of ['SHARD_LINK_NOTE', 'shardAllGivenLine', 'SHARD_READ_FAILED', 'SHARD_LINK_FAILED']) {
+  for (const name of ['SHARD_LINK_NOTE', 'shardAllGivenLine', 'shardReadyLine', 'SHARD_READ_FAILED', 'SHARD_LINK_FAILED']) {
     assert.equal(c.split(name).length - 1, 2, `${name} appears only in the import and the one use`);
   }
   // No retyped piece of either sentence: the pieces are taken from the module's own text (split at the numbers and at . ; ,), so any part of it is covered.
   const flat = (t: string): string => t.replace(/\s+/g, ' ');
-  const pieces = [SHARD_LINK_NOTE, shardAllGivenLine(777, 555), SHARD_READ_FAILED, SHARD_LINK_FAILED]
-    .flatMap((t) => t.split(/777|555|[.;,]/))
+  const pieces = [SHARD_LINK_NOTE, shardAllGivenLine(777, 555), shardReadyLine(333, 777, 555), shardReadyLine(1, 777, 555), SHARD_READ_FAILED, SHARD_LINK_FAILED]
+    .flatMap((t) => t.split(/777|555|333|[.;,]/))
     .map((t) => flat(t).trim())
     .filter((t) => t.length >= 18);
   assert.ok(pieces.length >= 5, `expected several pieces to check, got ${pieces.length}`);
@@ -51,7 +52,7 @@ test('SG2 THE COMPONENT imports the module, renders each constant once with the 
 
 test('SG3 THE OLD PHRASES CANNOT RETURN: nowhere in the non-test source', () => {
   const OLD = ['the server never sees the piece', 'never sees the piece', 'can help you restore', 'It\'s encrypted in your browser',
-    'Could not read your recovery shards', 'Failed to create the recovery link'];
+    'Could not read your recovery shards', 'Failed to create the recovery link', 'of your keepers restore you', 'lets any'];
   const hits: string[] = [];
   const walk = (dir: string): void => {
     for (const n of readdirSync(dir)) {
@@ -104,4 +105,29 @@ test('SG8 THE DIALOG SHOWS NO ERROR TEXT: it reads no .message, and its two catc
   assert.equal(c.split("console.error('Recovery pieces read failed:', errorTag(err));").length - 1, 1);
   assert.equal(c.split("console.error('Recovery link failed:', errorTag(err));").length - 1, 1);
   assert.equal(c.split("import { errorTag } from '@/lib/error-tag';").length - 1, 1);
+});
+
+test('SG9 the ready line is the copy owner\'s words byte for byte (row 249a): hashes, plain ASCII, exact interpolation, one form per count', () => {
+  const sha = (t: string): string => createHash('sha256').update(t).digest('hex');
+  const one = shardReadyLine(1, 5, 3);
+  const many = shardReadyLine(5, 5, 3);
+  assert.equal(one, "You hold 1 un-given piece of 5. Any 3 of your keepers together hold enough to rebuild your recovery key; no single piece can, not even theirs. Collecting the pieces back isn't in the app yet.");
+  assert.equal(many, "You hold 5 un-given pieces of 5. Any 3 of your keepers together hold enough to rebuild your recovery key; no single piece can, not even theirs. Collecting the pieces back isn't in the app yet.");
+  // the frozen hashes are of the TEMPLATE with its placeholders literal
+  assert.ok(sha(one.replace('1 un-given piece of 5', '{remaining} un-given piece of {total}').replace('Any 3', 'Any {threshold}')).startsWith('cdedd700e20d8d8b'));
+  assert.ok(sha(many.replace('5 un-given pieces of 5', '{remaining} un-given pieces of {total}').replace('Any 3', 'Any {threshold}')).startsWith('a66e2f17e5863486'));
+  for (const [r, t, th] of [[2, 5, 3], [3, 3, 2], [4, 10, 7]] as const) {
+    assert.equal(shardReadyLine(r, t, th), `You hold ${r} un-given pieces of ${t}. Any ${th} of your keepers together hold enough to rebuild your recovery key; no single piece can, not even theirs. Collecting the pieces back isn't in the app yet.`);
+  }
+  for (const t of [one, many]) assert.ok(/^[\x20-\x7e]+$/.test(t), 'pure ASCII');
+});
+
+test('SG10 THE THREE PLACES SAY THE SAME THING: the ready line and the all-given line share one clause about what the keepers hold, and neither promises a restore (row 237 drops its second sentence when collect-back ships)', () => {
+  const clause = 'of your keepers together hold enough to rebuild your recovery key';
+  assert.ok(shardReadyLine(5, 5, 3).includes(clause));
+  assert.ok(shardAllGivenLine(5, 3).includes(clause));
+  for (const t of [shardReadyLine(1, 5, 3), shardReadyLine(5, 5, 3)]) {
+    assert.ok(t.includes("Collecting the pieces back isn't in the app yet."));
+    for (const bad of ['restore', 'can help', 'recover your', 'get them back']) assert.ok(!t.toLowerCase().includes(bad), `the ready line must not say "${bad}"`);
+  }
 });
