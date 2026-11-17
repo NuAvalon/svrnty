@@ -57,9 +57,9 @@ test('GG3 THE COMPONENT: no error text is read, the two catches use the site map
 
 test('GG4 a contact refusal at the ADMIT site shows ITS OWN sentence, never "didn\'t finish, try again"; nothing of the thrower\'s text; it is not logged as an unknown failure', () => {
   const REFUSALS: ReadonlyArray<readonly [string, unknown, string]> = [
-    ['binding, the real ContactRefused class (a Gate arrival whose fingerprint does not match its key)', new ContactRefused('binding', 'HOSTILE ' + HOSTILE), CONTACT_REFUSAL_MESSAGES.updateBinding],
+    ['binding, the real ContactRefused class (a Gate arrival whose fingerprint does not match its key)', new ContactRefused('binding', 'HOSTILE ' + HOSTILE), CONTACT_REFUSAL_MESSAGES.importBinding],
     ['verify-before-trust, the real class', new ContactRefused('verify-before-trust', HOSTILE), CONTACT_REFUSAL_MESSAGES.verifyBeforeTrust],
-    ['binding, by code', Object.assign(new Error(HOSTILE), { code: 'contact-refused', reason: 'binding' }), CONTACT_REFUSAL_MESSAGES.updateBinding],
+    ['binding, by code', Object.assign(new Error(HOSTILE), { code: 'contact-refused', reason: 'binding' }), CONTACT_REFUSAL_MESSAGES.importBinding],
     ['blocked, by code', Object.assign(new Error(HOSTILE), { code: 'trust-refused', reason: 'blocked' }), CONTACT_REFUSAL_MESSAGES.blocked],
   ];
   for (const [name, err, sentence] of REFUSALS) {
@@ -72,7 +72,7 @@ test('GG4 a contact refusal at the ADMIT site shows ITS OWN sentence, never "did
 });
 
 test('GG5 only a refusal CODE counts: refusal-like text or an unknown reason gets the site sentence; the DISMISS site never maps a refusal', () => {
-  for (const err of [new Error('fingerprint does not match key'), new Error(CONTACT_REFUSAL_MESSAGES.updateBinding), Object.assign(new Error('x'), { code: 'contact-refused', reason: 'novel' }), Object.assign(new Error('x'), { reason: 'binding' })]) {
+  for (const err of [new Error('fingerprint does not match key'), new Error(CONTACT_REFUSAL_MESSAGES.importBinding), Object.assign(new Error('x'), { code: 'contact-refused', reason: 'novel' }), Object.assign(new Error('x'), { reason: 'binding' })]) {
     assert.equal(quiet(() => growGateFailureMessage(err, 'admit')).out, GROW_GATE_FAILURE_MESSAGES.admit);
   }
   // dismiss removes an arrival from the Gate and writes no contact: a refusal-coded error there is NOT mapped (if one ever can reach it, this fails and the site must map it)
@@ -93,4 +93,12 @@ test('GG7 the copy module imports only the three leaf modules (error-tag, contac
   const src = code('grow-gate-copy.ts');
   const specs = [...src.matchAll(/(?:^|[\s;])import\s+(?:[^'"()]*?\s+from\s+)?['"]([^'"]+)['"]/g), ...src.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1]).sort();
   assert.deepEqual(specs, ['@/lib/contacts/contact-refusal', '@/lib/db-upgrade-blocked', '@/lib/error-tag']);
+});
+
+test('GG8 A BINDING REFUSAL AT ADMIT IS WORDED AS A CARD REFUSAL (ledger row 254): every Gate arrival comes from a card, so the sentence carries the tamper clause, not the update or typed-key wording', () => {
+  const sentence = quiet(() => growGateFailureMessage(new ContactRefused('binding', 'x'), 'admit')).out;
+  assert.equal(sentence, 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one. This can mean it was changed after they signed it.');
+  assert.ok(sentence.includes('This can mean it was changed after they signed it.'));
+  assert.notEqual(sentence, CONTACT_REFUSAL_MESSAGES.updateBinding);
+  assert.notEqual(sentence, CONTACT_REFUSAL_MESSAGES.addBinding);
 });

@@ -4,7 +4,8 @@
 // error is logged by its class name and code only (error-tag), never its message.
 //   - admit: letting someone in writes a contact, then removes them from the Gate, then refreshes, so a failure may have run part of that: the sentence says "check" before "try again".
 //     This is the one site that reaches the contact store's own refusals (a fingerprint that does not match its key): a refusal means nothing was written, so it shows the refusal's own
-//     sentence (chosen by its code and reason, from the same leaf the contact book uses) and never "didn't finish, try again", which would hide the warning.
+//     sentence (chosen by its code and reason, from the same leaf the contact book uses) and never "didn't finish, try again", which would hide the warning. Every Gate arrival is built from a card the person
+//     received and admit creates the contact from it, so the refusal is worded as a card refusal (context 'import', ledger row 254): it names the risk that the card was changed after it was signed.
 //   - dismiss: removing the arrival from the Gate; the same "check your Gate" advice. It writes no contact, so it never maps a refusal.
 // Run: npx tsx --test src/components/grow-gate-copy.test.ts
 import { errorTag } from '@/lib/error-tag';
@@ -20,7 +21,7 @@ export type GrowGateFailureSite = keyof typeof GROW_GATE_FAILURE_MESSAGES;
 
 /** A contact refusal's own sentence (admit only), else the site's fixed sentence; the real error is logged by tag only. */
 export function growGateFailureMessage(err: unknown, site: GrowGateFailureSite): string {
-  const refusal = site === 'admit' ? contactRefusalMessage(err) : null;   // only this site writes a contact
+  const refusal = site === 'admit' ? contactRefusalMessage(err, 'import') : null;   // only this site writes a contact, and it creates it from a card (context 'import', ledger row 254)
   if (refusal) return refusal;
   const blocked = dbUpgradeBlockedMessage(err);   // both sites touch the store, so both map it; an expected stop, so not logged
   if (blocked !== null) return blocked;
