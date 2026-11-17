@@ -126,6 +126,6 @@ test('TA8 THE PAGE (row 257b): the trust map\'s remove and block callbacks rethr
   for (const [name, body] of [['remove', remove], ['block', block]] as const) {
     assert.ok(!body.includes('describeSafetyWriteFailure'), `${name}: no safety words are built in the page`);
     assert.ok(!/throw words|new Error\(words\)/.test(body), `${name}: the error is not wrapped`);
-    assert.ok(!/\bcatch \(err\)/.test(body), `${name}: no catch around the safety write`);
+    assert.ok(!/\bcatch\b/.test(body), `${name}: no catch (bare, with a binding, or .catch) around the safety write: a failed write must propagate`);
   }
 });

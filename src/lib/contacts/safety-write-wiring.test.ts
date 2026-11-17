@@ -55,6 +55,9 @@ test('removing a contact takes the contact lock around its write, in both places
   const page = noComments(src('../../../app/page.tsx'));
   assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContact\(edge\.id\)\);/);
   assert.doesNotMatch(page, /throw words \? new Error\(words\) : err;/);
+  const rm = page.slice(page.indexOf('onRemoveContact={async'), page.indexOf('onBlockContact={async'));
+  assert.ok(rm.length > 100, 'the remove handler was found');
+  assert.doesNotMatch(rm, /\bcatch\b/, 'a failed block or remove must PROPAGATE: no catch (and no .catch) in the handler, so applyTrustAction words the failure and the map does not clear focus as if it had worked');
   // the plain words for a failed protecting write are made where the failure is worded, BY CLASS (copy ledger row 257), so the page rethrows the original error and does not wrap it
   const actions = noComments(src('../../components/trust-actions/trust-actions.ts'));
   assert.match(actions, /const SAFETY_WHAT: Partial<Record<TrustActionKind, string>> = \{ remove: 'Remove', block: 'Block', unblock: 'Unblock' \};/);
@@ -87,6 +90,7 @@ test('the trust-map block is an owner-protecting write: under the safety lock, o
   const h = page.slice(a, b);
   assert.match(h, /await withSafetyWrite\(edge\.id, \(\) => updateContact\(edge\.id, \(fresh\) => blockPatch\(fresh, blocked\)\)\);/);
   assert.doesNotMatch(h, /throw words \? new Error\(words\) : err;/);
+  assert.doesNotMatch(h, /\bcatch\b/, 'a failed block or remove must PROPAGATE: no catch (and no .catch) in the handler, so applyTrustAction words the failure and the map does not clear focus as if it had worked');
   // the plain words for a failed protecting write are made where the failure is worded, BY CLASS (copy ledger row 257), so the page rethrows the original error and does not wrap it
   const actions = noComments(src('../../components/trust-actions/trust-actions.ts'));
   assert.match(actions, /const SAFETY_WHAT: Partial<Record<TrustActionKind, string>> = \{ remove: 'Remove', block: 'Block', unblock: 'Unblock' \};/);
