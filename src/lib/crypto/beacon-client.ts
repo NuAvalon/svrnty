@@ -544,11 +544,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     if (await removed(rec.pairId)) {                                  // G6: latch seen before the fetch leaves —
       if (freshMint) {                                                // drop the fresh mint + release its seed; NO withdraw
         dropRow(rec, row);
-        await deps.secrets.releaseRow(row.rowId);
       } else {
         queueWithdraw(rec, row.rowId, 0);                             // stored 'unknown': an earlier call may have sent it
       }
       try { await commit(rec); } catch { return 'unsaved'; }
+      if (freshMint) await deps.secrets.releaseRow(row.rowId);        // released only once the drop is durable
       return 'latched';
     }
     const a = await post('deposit', built.body);
@@ -578,6 +578,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
           // commits when closeEpochs reports a change, so without this the store keeps the row
           // standing with a queued withdraw for a seed that no longer exists.
           await commit(rec);
+          await deps.secrets.releaseRow(row.rowId);                   // released only once the record holds it
         }
         return 'latched';
       }
@@ -587,8 +588,8 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     if (a.kind === 'withdrawn') {
       if (!rec.spentEpochs.includes(e)) rec.spentEpochs.push(e);      // (slot,N) spent for the epoch: no retry
       dropRow(rec, row);
-      await deps.secrets.releaseRow(row.rowId);
-      await commit(rec);
+      await commit(rec);                                              // the record holds it first —
+      await deps.secrets.releaseRow(row.rowId);                       // THEN the seed is released
       return stopped ? 'latched' : a;
     }
     if (a.kind === 'refused') {
@@ -599,8 +600,8 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       if (final && !(rec.refusedEpochs ??= []).includes(e)) rec.refusedEpochs.push(e);  // L12b: owed next epoch
       if (freshMint) {
         dropRow(rec, row);
-        await deps.secrets.releaseRow(row.rowId);
-        await commit(rec);
+        await commit(rec);                                            // commit the drop first —
+        await deps.secrets.releaseRow(row.rowId);                     // the seed goes only after
         return stopped ? 'latched' : a;
       }
       // a pinned retry refused: keep row + seed; a final refusal is recorded above and the row
@@ -621,8 +622,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     if (a.kind === 'withdrawn') {
       row.state = 'withdrawn';
       if (!rec.spentEpochs.includes(row.epoch)) rec.spentEpochs.push(row.epoch);   // own confirmed withdraw spends (slot,N)
-      await deps.secrets.releaseRow(row.rowId);                       // confirmed: the seed may go
-      return 'done';
+      return 'done';                                                  // the caller commits, then releases the seed
     }
     if (a.kind === 'match') {
       row.state = 'matched';                                          // inert, NOT an error; the match counts (v2 s3)
@@ -632,7 +632,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       const gen = rec.tap?.gen ?? 0;
       if ((!rec.firstMatchEpoch || rec.firstMatchEpoch.gen !== gen) && !(await removed(rec.pairId)))
         rec.firstMatchEpoch = { epoch: row.epoch, gen };
-      await deps.secrets.releaseRow(row.rowId);                       // confirmed: the seed may go
       return 'done';
     }
     return 'queued';                                                  // refused-after-retry / busy / unreadable
@@ -640,15 +639,16 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
 
   /** v3 L11: a row whose epoch closed (not visible, at least one epoch old) is released + deleted.
    * observedMatch is a lifetime fact and survives; spentEpochs prunes entries older than two
-   * epochs. 'unreachable' rows retire here too. */
-  async function closeEpochs(rec: PairRecord): Promise<boolean> {
+   * epochs. 'unreachable' rows retire here too. Dropped rows are pushed to `toRelease` — the
+   * caller releases their seeds only after its commit lands (commit first, release second). */
+  async function closeEpochs(rec: PairRecord, toRelease: string[]): Promise<boolean> {
     const live = visibleEpochs(now());
     const cur = epochAt(now());
     let dirty = false;
     for (const row of [...rec.rows]) {
       if (!live.has(row.epoch) && Number(row.epoch) <= cur - 1) {
         dropRow(rec, row);
-        await deps.secrets.releaseRow(row.rowId);
+        toRelease.push(row.rowId);
         dirty = true;
       }
     }
@@ -695,17 +695,19 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock
     rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: false };         // L13: intent false under a new gen
     const live = visibleEpochs(now());
+    const dropped: string[] = [];
     for (const row of rec.rows) {
       // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
       if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
       if (!live.has(row.epoch)) {                                     // epoch closed: drop + release (L11)
         dropRow(rec, row);
-        await deps.secrets.releaseRow(row.rowId);
+        dropped.push(row.rowId);                                      // released once the Remove commit lands
         continue;
       }
       queueWithdrawNow(rec, row.rowId);                               // L6e: durable queue entry, due NOW
     }
     await commitIntent(rec, false);
+    for (const rowId of dropped) await deps.secrets.releaseRow(rowId); // commit first, release second
     // L6d: a Remove retires every live row of the MERGED record. Its own commit merges in rows a
     // concurrent deposit wrote — they have no queue entry, and the drain walks only the queue.
     // Bounded passes (the 8-swap rule): queue every live unqueued row of the merged record, commit
@@ -758,18 +760,22 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     throw new Error(`beacon write-ahead: CAS lost 8 attempts for ${rec.pairId}`);
   };
 
-  /** The Remove queue drain: a confirmed withdraw removes its entry (idempotent on the server). */
-  const drainQueuedWithdraws = async (rec: PairRecord): Promise<void> => {
+  /** The Remove queue drain: a confirmed withdraw removes its entry (idempotent on the server).
+   * Retired rows go to `toRelease` — the caller releases their seeds after the record commits. */
+  const drainQueuedWithdraws = async (rec: PairRecord, toRelease: string[]): Promise<void> => {
     const live = visibleEpochs(now());
     const cur = epochAt(now());
     for (const w of [...rec.pendingWithdraws]) {
       const row = rec.rows.find((r) => r.rowId === w.rowId);
       if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {
         unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
-        if (row) await deps.secrets.releaseRow(row.rowId);
+        if (row) toRelease.push(row.rowId);
         continue;
       }
-      if ((await withdrawRow(rec, row)) === 'done') unqueueWithdraw(rec, row.rowId, row.epoch);
+      if ((await withdrawRow(rec, row)) === 'done') {
+        unqueueWithdraw(rec, row.rowId, row.epoch);
+        toRelease.push(row.rowId);
+      }
     }
   };
 
@@ -902,8 +908,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         await deps.latch.setLatched(pairId, 'local');                   // L1: first and durably, before any network
         const rec = await getRec(pairId);
         await removeCommitBody(rec);                                    // ONE durable commit BEFORE the first fetch
-        await drainQueuedWithdraws(rec);                                // confirmed withdraws retire their entries
+        const toRelease: string[] = [];
+        await drainQueuedWithdraws(rec, toRelease);                     // confirmed withdraws retire their entries
         await commit(rec);
+        for (const rowId of toRelease) await deps.secrets.releaseRow(rowId); // seeds released only once retired
         return { observedMatch: rec.observedMatch };
       } finally {
         removing.delete(pairId);
@@ -952,7 +960,11 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       for (const epoch of depositableEpochs(now())) {
         await depositEpoch(rec, epoch);
       }
-      if (await closeEpochs(rec)) await commit(rec);
+      const toRelease: string[] = [];
+      if (await closeEpochs(rec, toRelease)) {
+        await commit(rec);
+        for (const rowId of toRelease) await deps.secrets.releaseRow(rowId);
+      }
       await this.pollNow(pairId);
       await this.drainPendingWithdraws();
     },
@@ -1002,6 +1014,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         if (await repairHalfDoneRemove(stored.pairId)) { /* committed inside repair; rec reload below */ }
         const rec = (await deps.store.get(stored.pairId)) ?? stored;      // refresh after a repair
         let dirty = false;
+        const toRelease: string[] = [];                                 // seeds go only after the commit lands
         const resched = new Map<string, { attempts: number; nextAt: number }>();
         // G2/G7: a 'removed' latch observed on a WRITE path tombstones the match clock —
         // covers latches set outside removeAtTap (remote un-trust notes). Reads never do it.
@@ -1017,7 +1030,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
           const row = rec.rows.find((r) => r.rowId === w.rowId);
           if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {   // epoch closed: drop + release (L11)
             unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
-            if (row) await deps.secrets.releaseRow(row.rowId);
+            if (row) toRelease.push(row.rowId);
             dirty = true;
             continue;
           }
@@ -1026,10 +1039,13 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
           const out = await withdrawRow(rec, row);
           dirty = dirty || out === 'done' || rec.observedMatch !== before;
           if (out === 'queued') { resched.set(w.rowId, { attempts: w.attempts, nextAt: w.nextAt }); w.attempts += 1; w.nextAt = now() + backoff(w.attempts); }   // the drain's own reschedule
-          else unqueueWithdraw(rec, w.rowId, row.epoch);
+          else { unqueueWithdraw(rec, w.rowId, row.epoch); toRelease.push(row.rowId); }
         }
-        if (await closeEpochs(rec)) dirty = true;
-        if (dirty) await commit(rec, resched);
+        if (await closeEpochs(rec, toRelease)) dirty = true;
+        if (dirty) {
+          await commit(rec, resched);
+          for (const rowId of toRelease) await deps.secrets.releaseRow(rowId);
+        }
       }
     },
   };
