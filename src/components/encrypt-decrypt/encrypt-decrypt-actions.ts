@@ -9,6 +9,7 @@ import {
   type MyKeys,
   type SenderKeys,
 } from '@/lib/crypto/contact-message';
+import { isContactKeysMismatch } from '@/lib/crypto/contact-keys-mismatch';
 import { ENCDEC_COPY } from './encrypt-decrypt-copy';
 
 export type EncryptResult =
@@ -29,8 +30,7 @@ export async function encryptMessageToContact(
     if (!armored || typeof armored !== 'string') return { ok: false, error: ENCDEC_COPY.encryptFailed };
     return { ok: true, armored };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : '';
-    if (/anti-poison|does not match/i.test(msg)) return { ok: false, error: ENCDEC_COPY.encryptPoisoned };
+    if (isContactKeysMismatch(e)) return { ok: false, error: ENCDEC_COPY.encryptPoisoned };   // by CODE, never by the error's text
     return { ok: false, error: ENCDEC_COPY.encryptFailed };
   }
 }

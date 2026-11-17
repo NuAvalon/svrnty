@@ -9,6 +9,7 @@
 // Run: npx tsx --test src/lib/contacts/sealed-book-import.test.ts
 import { openWithPassword } from '@/lib/crypto/password-envelope';
 import { RESTORE_MESSAGES } from '@/lib/identity/restore-errors';
+import { dbUpgradeBlockedMessage } from '@/lib/db-upgrade-blocked';
 import { MAX_FILE_CHARS } from './book-import';
 
 export const SEALED_BOOK_MESSAGES = Object.freeze({
@@ -96,6 +97,8 @@ export function splitMissingKeys<F extends { reason: string }>(failed: F[]): { m
 
 /** The sentence for a failed open: by the refusal's code, never by any error's text. Anything unexpected is "can't read this file", never "wrong password". */
 export function sealedFailureMessage(err: unknown): string {
+  const blocked = dbUpgradeBlockedMessage(err);
+  if (blocked !== null) return blocked;
   const code = err instanceof SealedBookRefused ? err.code : null;
   if (code === 'wrong-password') return RESTORE_MESSAGES.wrongPassword;
   if (code === 'too-large') return SEALED_BOOK_MESSAGES.tooLarge;

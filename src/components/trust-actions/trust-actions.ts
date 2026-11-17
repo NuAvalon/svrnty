@@ -6,7 +6,16 @@
  * Do NOT invent crypto, visibility gates, or wire formats here.
  */
 
+import { describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
+import { contactFailureMessage, type ContactFailureSite } from '../contact-management-copy';
+
 export type TrustActionKind = 'trust' | 'break' | 'remove' | 'block' | 'unblock';
+
+// When the local update fails (copy ledger row 257) the failure is worded by its CLASS, never by an error's own text: a protecting write that lost a lock or compare race has its own words
+// ("Block not saved. Try again.", from the thing the person did), and everything else gets the contact book's sentence for the same action (a store refusal by its code, a blocked upgrade, else the
+// fixed one). These are the two tables that pick them.
+const SAFETY_WHAT: Partial<Record<TrustActionKind, string>> = { remove: 'Remove', block: 'Block', unblock: 'Unblock' };
+const FAILURE_SITE: Record<TrustActionKind, ContactFailureSite> = { trust: 'trust', break: 'trust', remove: 'remove', block: 'block', unblock: 'unblock' };
 
 export type TrustActionTarget = {
   id: string;
@@ -248,10 +257,11 @@ export async function applyTrustAction(
   try {
     await deps.applyLocal(buildLocalPatch(kind, opts?.reason));
   } catch (err) {
+    const what = SAFETY_WHAT[kind];
     return {
       ok: false,
       reason: 'local-failed',
-      message: err instanceof Error ? err.message : 'Local update failed.',
+      message: (what ? describeSafetyWriteFailure(err, what) : null) ?? contactFailureMessage(err, FAILURE_SITE[kind]),
     };
   }
 

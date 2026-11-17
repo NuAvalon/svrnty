@@ -57,6 +57,7 @@ export {
   // Key recovery (Shamir + seed phrase)
   createKeyVault,
   recoverFromShards,
+  recoverFromShardsReported,
   recoverFromSeedPhrase,
   generateMasterSecret,
   encryptVault,
@@ -66,6 +67,7 @@ export {
   masterSecretToSeedPhrase,
   seedPhraseToMasterSecret,
   type KeyVault,
+  type RecoveryReport,
   type Shard,
   type PrivateKeyBundle,
 } from './recovery';

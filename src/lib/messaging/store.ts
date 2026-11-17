@@ -5,6 +5,7 @@
 import type { NoteRecord, NoteThread, RingChannel } from './types';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
+import { DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
 import { isAllowedSettingsPrefix, isAllowedSettingsRowKey } from './settings-row-keys';
 import { needsLastActivityHeal, healedLastActivity, activityMs } from './thread-activity';
 
@@ -79,6 +80,8 @@ function openDb(): Promise<IDBDatabase> {
       resolve(_db);
     };
     req.onerror = () => reject(req.error);
+    // A version upgrade held up by another open tab must not leave open() waiting silently: it rejects with the coded error every helper maps to one sentence.
+    req.onblocked = () => reject(new DbUpgradeBlocked());
   });
 }
 

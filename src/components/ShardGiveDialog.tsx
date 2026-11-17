@@ -13,8 +13,14 @@ import {
 import { Button } from '@/components/ui/button';
 import { HeartCrack, Link2, Copy, Check, Clock, ShieldCheck } from 'lucide-react';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
+import { SHARD_COUNT_UNUSABLE, SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardCountUsable, shardReadyLine } from './shard-give-copy';
+import { errorTag } from '@/lib/error-tag';
 import { createRelay } from '@/lib/sync/relay';
 import { loadShards, markShardGiven, SHARD_CUSTODY_TYPE } from '@/lib/identity/client-store';
+
+// Shown when this device holds no record of the identity's recovery pieces: an identity made before pieces existed, or a restore that left a damaged record out.
+// The copy owner's words, byte for byte (a test pins them). It does not tell anyone to make a new identity or to give new pieces.
+const NO_PIECES_RECORD_SENTENCE = 'This device has no record of recovery pieces for this identity, so there are none to give from here. If you restored it from a backup, another copy of that backup may bring the record back.';
 
 interface ContactLike {
   id: string;
@@ -36,7 +42,7 @@ type Phase =
   | 'loading'
   | 'ready'        // a piece is available to give
   | 'link'         // link generated, the tear is given
-  | 'none'         // this identity has no shards (created pre-feature)
+  | 'none'         // this device holds no record of the pieces (an older identity, or a restore that left a damaged record out)
   | 'all-given'    // every piece already handed out
   | 'already-held' // this contact already holds one of your pieces
   | 'error';
@@ -50,6 +56,8 @@ export function ShardGiveDialog({
   const [threshold, setThreshold] = useState(0);
   const [total, setTotal] = useState(0);
   const [remaining, setRemaining] = useState(0);
+  // ONE decision per render about the stored pieces record: every line below whose numbers come from it asks this, and none re-derives it.
+  const countUsable = shardCountUsable(total, threshold);
   const [generating, setGenerating] = useState(false);
   const [link, setLink] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
@@ -96,7 +104,8 @@ export function ShardGiveDialog({
         setPhase('ready');
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Could not read your recovery shards.');
+        console.error('Recovery pieces read failed:', errorTag(err));
+        setError(SHARD_READ_FAILED);
         setPhase('error');
       }
     })();
@@ -145,7 +154,8 @@ export function ShardGiveDialog({
       setPhase('link');
       onGiven?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create the recovery link.');
+      console.error('Recovery link failed:', errorTag(err));
+      setError(SHARD_LINK_FAILED);
     } finally {
       setGenerating(false);
     }
@@ -179,28 +189,27 @@ export function ShardGiveDialog({
 
         <div className="py-2">
           {phase === 'loading' && (
-            <p className="text-sm text-gray-500 text-center py-8">Reading your recovery shards…</p>
+            <p className="text-sm text-gray-500 text-center py-8">Reading your recovery pieces…</p>
           )}
 
           {phase === 'none' && (
             <div className="rounded-lg p-4 bg-gray-900 border border-gray-800 text-sm text-gray-400">
-              This identity has no recovery shards stored. Shards are minted for identities
-              created with social recovery — create a new identity to use the tear.
+              {NO_PIECES_RECORD_SENTENCE}
             </div>
           )}
 
           {phase === 'already-held' && contact && (
             <div className="rounded-lg p-4 bg-teal-500/6 border border-teal-500/15 text-sm text-gray-300 flex items-start gap-2">
               <ShieldCheck className="h-4 w-4 text-teal-400 flex-shrink-0 mt-0.5" />
-              <span>{contact.name} already holds a piece of your recovery. One piece per
-              contact keeps any single person below your restore threshold.</span>
+              <span>{contact.name} already holds a piece of your recovery. {countUsable
+                ? 'One piece per contact keeps any single person below your restore threshold.'
+                : SHARD_COUNT_UNUSABLE}</span>
             </div>
           )}
 
           {phase === 'all-given' && (
             <div className="rounded-lg p-4 bg-amber-500/6 border border-amber-500/15 text-sm text-gray-300">
-              You've given out all {total} of your pieces. Any {threshold} of your keepers
-              can help you restore.
+              {shardAllGivenLine(total, threshold)}
             </div>
           )}
 
@@ -213,11 +222,7 @@ export function ShardGiveDialog({
           {phase === 'ready' && contact && (
             <div className="space-y-4">
               <div className="rounded-lg p-4 bg-gray-900 border border-gray-800 text-sm text-gray-400">
-                You hold <span className="text-gray-200">{remaining}</span> un-given
-                {' '}{remaining === 1 ? 'piece' : 'pieces'} of {total}. Giving one to{' '}
-                <span className="text-gray-200">{contact.name}</span> lets any{' '}
-                <span className="text-amber-400">{threshold}</span> of your keepers restore you —
-                no single piece can, not even theirs.
+                {shardReadyLine(remaining, total, threshold)}
               </div>
               {error && <p className="text-sm text-red-400">{error}</p>}
               <Button
@@ -242,7 +247,7 @@ export function ShardGiveDialog({
                   <span className="text-xs font-medium text-teal-400">A piece of you is ready for {contact.name}</span>
                 </div>
                 <p className="text-xs text-gray-500">
-                  Send them this link. It's encrypted in your browser — the server never sees the piece.
+                  {SHARD_LINK_NOTE}
                 </p>
               </div>
 
@@ -274,7 +279,9 @@ export function ShardGiveDialog({
               </div>
 
               <p className="text-xs text-gray-500 text-center">
-                Share this link only with {contact.name}. It stays valid for up to 7 days. {contact.name} now holds 1 of your {total} pieces.
+                Share this link only with {contact.name}. It stays valid for up to 7 days. {countUsable
+                  ? <>{contact.name} now holds 1 of your {total} pieces.</>
+                  : SHARD_COUNT_UNUSABLE}
               </p>
             </div>
           )}
