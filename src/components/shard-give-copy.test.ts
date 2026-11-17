@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHARD_LINK_NOTE, shardAllGivenLine } from './shard-give-copy';
+import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, '..');
@@ -30,14 +30,17 @@ test('SG1 the link note is the copy owner\'s words byte for byte (row 226a): its
 test('SG2 THE COMPONENT imports the module, renders each constant once with the right arguments, and keeps no piece of either sentence inline', () => {
   const c = component();
   const once = (needle: string): void => assert.equal(c.split(needle).length - 1, 1, `exactly once in the component: ${needle}`);
-  once("import { SHARD_LINK_NOTE, shardAllGivenLine } from './shard-give-copy';");
+  once("import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';");
   once('{SHARD_LINK_NOTE}');
   once('{shardAllGivenLine(total, threshold)}');          // the arguments are pinned: swapping them would print the wrong numbers
-  assert.equal(c.split('SHARD_LINK_NOTE').length - 1, 2, 'the name appears only in the import and the one render');
-  assert.equal(c.split('shardAllGivenLine').length - 1, 2, 'the name appears only in the import and the one call');
+  once('setError(SHARD_READ_FAILED);');
+  once('setError(SHARD_LINK_FAILED);');
+  for (const name of ['SHARD_LINK_NOTE', 'shardAllGivenLine', 'SHARD_READ_FAILED', 'SHARD_LINK_FAILED']) {
+    assert.equal(c.split(name).length - 1, 2, `${name} appears only in the import and the one use`);
+  }
   // No retyped piece of either sentence: the pieces are taken from the module's own text (split at the numbers and at . ; ,), so any part of it is covered.
   const flat = (t: string): string => t.replace(/\s+/g, ' ');
-  const pieces = [SHARD_LINK_NOTE, shardAllGivenLine(777, 555)]
+  const pieces = [SHARD_LINK_NOTE, shardAllGivenLine(777, 555), SHARD_READ_FAILED, SHARD_LINK_FAILED]
     .flatMap((t) => t.split(/777|555|[.;,]/))
     .map((t) => flat(t).trim())
     .filter((t) => t.length >= 18);
@@ -47,7 +50,8 @@ test('SG2 THE COMPONENT imports the module, renders each constant once with the 
 });
 
 test('SG3 THE OLD PHRASES CANNOT RETURN: nowhere in the non-test source', () => {
-  const OLD = ['the server never sees the piece', 'never sees the piece', 'can help you restore', 'It\'s encrypted in your browser'];
+  const OLD = ['the server never sees the piece', 'never sees the piece', 'can help you restore', 'It\'s encrypted in your browser',
+    'Could not read your recovery shards', 'Failed to create the recovery link'];
   const hits: string[] = [];
   const walk = (dir: string): void => {
     for (const n of readdirSync(dir)) {
@@ -83,4 +87,21 @@ test('SG6 the copy module is a leaf: no imports in any form', () => {
   const text = stripComments(readFileSync(join(HERE, 'shard-give-copy.ts'), 'utf8'));
   assert.ok(!/(?:^|[\s;])import\s+(?:[^'"()]*?\s+from\s+)?['"]/m.test(text), 'no import statement');
   assert.ok(!/\b(?:import|require)\s*\(/.test(text), 'no dynamic import or require');
+});
+
+test('SG7 the two failure sentences are the copy owner\'s words byte for byte (row 249b): hashes and plain ASCII', () => {
+  const sha = (t: string): string => createHash('sha256').update(t).digest('hex');
+  assert.equal(SHARD_READ_FAILED, 'Your recovery pieces could not be read on this device.');
+  assert.equal(SHARD_LINK_FAILED, 'The recovery link could not be created. Try again.');
+  assert.ok(sha(SHARD_READ_FAILED).startsWith('87cec57c2e11733c'));
+  assert.ok(sha(SHARD_LINK_FAILED).startsWith('9d75021f49626660'));
+  for (const t of [SHARD_READ_FAILED, SHARD_LINK_FAILED]) assert.ok(/^[\x20-\x7e]+$/.test(t), 'pure ASCII');
+});
+
+test('SG8 THE DIALOG SHOWS NO ERROR TEXT: it reads no .message, and its two catches log by tag only and show the fixed sentence', () => {
+  const c = component();
+  assert.ok(!/\.message\b/.test(c), 'the dialog must not read an error\'s own text');
+  assert.equal(c.split("console.error('Recovery pieces read failed:', errorTag(err));").length - 1, 1);
+  assert.equal(c.split("console.error('Recovery link failed:', errorTag(err));").length - 1, 1);
+  assert.equal(c.split("import { errorTag } from '@/lib/error-tag';").length - 1, 1);
 });
