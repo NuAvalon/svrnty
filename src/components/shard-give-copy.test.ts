@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SHARD_COUNT_UNUSABLE, SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardCountUsable, shardReadyLine } from './shard-give-copy';
+import { SHARD_COUNT_MAX, SHARD_COUNT_UNUSABLE, SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardCountUsable, shardReadyLine } from './shard-give-copy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = resolve(HERE, '..');
@@ -134,8 +134,8 @@ test('SG10 THE THREE PLACES SAY THE SAME THING: the ready line and the all-given
 
 // ---- #893: the render-time guard (copy ledger row 258a). Pairs are [total, threshold]; the second list holds what a stored record could hold that the types say it cannot.
 const UNUSABLE: Array<[unknown, unknown]> = [[5, 1], [5, 0], [5, -1], [5, 6], [5, 3.5], [5, NaN], [5, Infinity], [5, -Infinity], [5, '3'], [5, null], [5, undefined], [5, true], [5, [3]], [5, {}],
-  [NaN, 3], [5.5, 3], ['5', 3], [undefined, 3], [null, 3], [Infinity, 3], [0, 0], [1, 1], [2, 3], [-5, 2], [undefined, undefined]];
-const USABLE: Array<[number, number]> = [[5, 3], [3, 2], [2, 2], [10, 10], [10, 2], [5, 5], [100, 51]];
+  [NaN, 3], [5.5, 3], ['5', 3], [undefined, 3], [null, 3], [Infinity, 3], [0, 0], [1, 1], [2, 3], [-5, 2], [undefined, undefined], [256, 3], [256, 256], [1e20, 3], [1000, 3]];
+const USABLE: Array<[number, number]> = [[5, 3], [3, 2], [2, 2], [10, 10], [10, 2], [5, 5], [100, 51], [255, 3], [255, 255], [254, 3]];
 
 test('SG11 THE FALLBACK SENTENCE is the copy owner\'s words byte for byte (row 258a): 189 plain-ASCII characters, the frozen hash, no digit, no "no single piece" clause, and the honest tail of row 237', () => {
   assert.equal(SHARD_COUNT_UNUSABLE, "This set of recovery pieces doesn't record a usable count, so this device can't tell how many keepers it takes to rebuild your recovery key. Collecting the pieces back isn't in the app yet.");
@@ -205,4 +205,18 @@ test('SG16 WHICH SENTENCES THE GUARD SUPPRESSES (row 281): only the ones whose c
   // 281a + all-given: the whole line comes from the leaf (SG13), and the dialog adds nothing around it
   assert.equal(count('{shardReadyLine(remaining, total, threshold)}'), 1);
   assert.equal(count('{shardAllGivenLine(total, threshold)}'), 1);
+});
+
+test('SG17 THE UPPER BOUND (row 286): a total above what createShards can make is unusable, the boundary is exact, and the constant is the one recovery.ts enforces', () => {
+  assert.equal(SHARD_COUNT_MAX, 255);
+  assert.equal(shardCountUsable(255, 3), true, 'exactly the maximum');
+  assert.equal(shardCountUsable(255, 255), true);
+  assert.equal(shardCountUsable(256, 3), false, 'one above');
+  assert.equal(shardCountUsable(256, 256), false, 'threshold equal to an impossible total');
+  assert.equal(shardCountUsable(1e20, 3), false, 'a corrupted or hand-edited total');
+  assert.equal(shardCountUsable(254, 3), true);
+  assert.equal(shardReadyLine(5, 256, 3), SHARD_COUNT_UNUSABLE);
+  assert.equal(shardAllGivenLine(1e20, 3), SHARD_COUNT_UNUSABLE);
+  const recovery = readFileSync(join(SRC, 'lib', 'crypto', 'recovery.ts'), 'utf8');
+  assert.ok(recovery.includes(`if (totalShares > ${SHARD_COUNT_MAX}) throw`), 'the limit createShards enforces is the same number, so the two cannot drift apart unseen');
 });
