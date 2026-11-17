@@ -22,6 +22,7 @@ import {
   type ContactMethodSendResult,
 } from './contact-method-send';
 import { appendMethodRevision } from './method-history';
+import { methodSaveFailureMessage, methodSendFailureMessage } from './method-revise-copy';
 import { solarEmber as E } from '../recovery/solar-ember';
 
 export type AudienceContact = {
@@ -174,7 +175,7 @@ export function ContactMethodReviseDialog({
       setLocalNote('Saved on this device.');
       setBusy(false);
     } catch (e) {
-      setLocalNote(e instanceof Error ? e.message : 'Could not save locally.');
+      setLocalNote(methodSaveFailureMessage(e));
       setBusy(false);
     }
   };
@@ -200,11 +201,7 @@ export function ContactMethodReviseDialog({
       setStatus(result);
       setBusy(false);
     } catch (e) {
-      setStatus({
-        ok: false,
-        reason: 'error',
-        message: e instanceof Error ? e.message : 'Send failed.',
-      });
+      setStatus({ ok: false, reason: 'error', message: methodSendFailureMessage(e) });
       setBusy(false);
     }
   };
