@@ -20,6 +20,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Download, Eye, EyeOff, RefreshCw, ShieldCheck } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { ExportAuthGate } from './ExportAuthGate';
+import { vaultExportFailureMessage } from './vault-export-copy';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/crypto/kdf';
 import { PASSPHRASE_LOSS_NOTICE_BACKUP } from '@/lib/identity/passphrase-loss-notice';
 
@@ -140,7 +141,7 @@ export function VaultExportDialog({
       setStep('done');
       onDownloaded?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Vault export failed');
+      setError(vaultExportFailureMessage(err));
     } finally {
       setLoading(false);
     }

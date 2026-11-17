@@ -67,7 +67,8 @@ test('J1 [static] on the join link the gate branch checks the pin conflict BEFOR
   assert.ok(merge < enqueue, 'the merge (and its conflict check) comes first');
   const between = s.slice(merge, enqueue);
   assert.match(between, /pinMerge\.conflict/);
-  assert.match(between, /authorityPinConflictMessage\(peer\.name\)/);
+  assert.match(between, /gateAuthorityPinConflictMessage\(\)/, 'the Gate conflict carries no name (every Gate name came from a card)');
+  assert.doesNotMatch(between, /peer\.name\)/, 'the card name never reaches the warning');
   assert.match(between, /return;/, 'a conflict returns before the enqueue');
   assert.match(s.slice(enqueue, enqueue + 900), /nextAuthorityCommitment: pinMerge\.pin/, 'the arrival carries the MERGED pin (a held pin is never dropped)');
 });

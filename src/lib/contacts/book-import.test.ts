@@ -14,6 +14,8 @@ import { ownerHasVerified } from '@/lib/trust/trust-recipe';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import { toContactBookJson } from './book-export';
 import { ContactBookTooLarge, MAX_CONTACTS_PER_FILE, MAX_FILE_CHARS, contactBookEntries, importContactBook, importMessage, toImportedContact } from './book-import';
+import { plainPasteFailureMessage } from './contact-io-errors';
+import { SEALED_BOOK_MESSAGES } from './sealed-book-import';
 
 async function identity(name: string): Promise<ContactRecord> {
   const passphrase = `pw-${name}`;
@@ -269,13 +271,14 @@ test('SIZE (text): a normal book is unaffected, and the refusal does not look at
   assert.throws(() => contactBookEntries(`[${' '.repeat(MAX_FILE_CHARS)}]`), ContactBookTooLarge);
 });
 
-test('PIN: the import handler shows the too-large message itself, before the SyntaxError branch', () => {
+test('PIN: the import handler shows the sentence chosen by the error\'s type (too large first, then not-JSON), never the error\'s own text', () => {
   const start = ui.indexOf('const handleImportContacts = async');
   const body = ui.slice(start, ui.indexOf('const openEditDialog', start));
-  const iLarge = body.indexOf('err instanceof ContactBookTooLarge');
-  const iSyntax = body.indexOf('err instanceof SyntaxError');
-  assert.ok(iLarge > 0 && iLarge < iSyntax, 'the too-large branch comes first');
-  assert.match(body, /setImportError\(err\.message\);/);
+  assert.match(body, /setImportError\(plainPasteFailureMessage\(err\)\);/);
+  assert.ok(!/err\.message/.test(body), 'no raw error text in the handler');
+  assert.equal(plainPasteFailureMessage(new ContactBookTooLarge()), SEALED_BOOK_MESSAGES.tooLarge, 'too large is the sealed path\'s sentence');
+  assert.equal(plainPasteFailureMessage(new SyntaxError('x')), 'Invalid JSON format');
+  assert.notEqual(plainPasteFailureMessage(new ContactBookTooLarge()), new ContactBookTooLarge().message, 'not the class\'s own text');
 });
 
 test('SIZE (agreement): a full export of MAX_CONTACTS_PER_FILE canonical contacts is NOT refused by the size check, and the cap keeps at least 1.5x headroom over it', async () => {

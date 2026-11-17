@@ -27,7 +27,8 @@ import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/be
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
-import { assertFingerprintUnchanged } from './contact-identity';
+import { assertFingerprintUnchanged, ContactUpdateRefused } from './contact-identity';
+import { DbUpgradeBlocked } from '../db-upgrade-blocked';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -47,6 +48,7 @@ import {
 } from '../crypto/mailbox-keys';
 import { deriveMailboxFp, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope';
 import { mailboxPublicOf, type DeviceMailboxPublic } from './device-mailbox';
+import { backupShardsProblem } from './backup-shards-shape';
 
 const DB_NAME = 'svrnty';
 // v4: device_mailbox store (piece-2). One record per identity (keyed by fingerprint), holding the
@@ -451,7 +453,7 @@ function openDB(): Promise<IDBDatabase> {
     // Without this, a version upgrade blocked by another open connection hangs
     // open() forever — freezing the app at its "RESOLVING…" loading state.
     // Settling the promise lets the caller degrade gracefully instead.
-    request.onblocked = () => reject(new Error('svrnty database is upgrading — close other svrnty tabs and reload'));
+    request.onblocked = () => reject(new DbUpgradeBlocked());
   });
 }
 
@@ -1645,7 +1647,7 @@ async function buildStoredContact(record: ContactRecord): Promise<Record<string,
  */
 export class ContactRefused extends Error {
   readonly code = 'contact-refused' as const;
-  constructor(message: string) { super(message); this.name = 'ContactRefused'; }
+  constructor(public readonly reason: 'binding' | 'verify-before-trust', message: string) { super(message); this.name = 'ContactRefused'; }
 }
 
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
@@ -1665,7 +1667,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   }))) {
     // C2 / Invariant-1: fail-closed when a key is present —
     // refuse mismatched attacker-key + victim-fingerprint pairs.
-    throw new ContactRefused('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
+    throw new ContactRefused('binding', 'fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
   const id = crypto.randomUUID();
   const record: ContactRecord = {
@@ -1686,7 +1688,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   {
     const addTrusted = record.trust_level === 'trusted' || record.trust_level === 'verified' || (record as { trusted?: boolean }).trusted === true;
     if (addTrusted && !ownerHasVerified(record as Parameters<typeof ownerHasVerified>[0])) {
-      throw new ContactRefused('verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
+      throw new ContactRefused('verify-before-trust', 'verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
     }
   }
   const stored = await buildStoredContact(record);
@@ -1762,7 +1764,7 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
     kem_public_key: next.pq_kem_public_key,
     sig_public_key: next.pq_sig_public_key,
   }))) {
-    throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
+    throw new ContactUpdateRefused('binding', 'fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
   // pt5 verify-before-trust (survivor-safety SINK gate — Flint seal-criteria #158146 / Archie #92153):
   // block the unverified/known → trusted PROMOTION unless a REAL owner-verification backs it. Every
@@ -1774,7 +1776,7 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
   const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
   const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
   if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
-    throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
+    throw new ContactUpdateRefused('verify-before-trust', 'verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
   }
   return next;
 }
@@ -2283,6 +2285,8 @@ export type PlaintextImportReport = {
   alreadyPresent?: number;
   /** Existing rows whose block this restore SET because the backup had them blocked (it never clears one). */
   blockTightened?: number;
+  /** The file's recovery-pieces record was not a usable set, so it was left out and the rest was restored, AND this device holds no record of its own after the import. The screen says so; this device does not know who holds the pieces. */
+  shardsDropped?: true;
 };
 
 /** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
@@ -2432,6 +2436,9 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     throw new PlaintextImportNeedsSession();
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  // The pieces record is stored as the file has it, so it is judged here with the other reads, before anything is written. One that is not a usable set is NOT stored, and the rest of the
+  // backup still restores: the identity and keys matter more than a record of who holds the pieces. It is never silent when the device is left with no record: the report says so and the screen tells the person.
+  const shardsUsable = !backup.shards || backupShardsProblem(backup.shards, fingerprint) === null;
   await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
@@ -2447,7 +2454,7 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   if (backup.vault) {
     await storeVault(fingerprint, backup.vault);
   }
-  if (backup.shards) {
+  if (backup.shards && shardsUsable) {
     await storeShards(fingerprint, backup.shards);
   }
   if (backup.device_mailbox) {
@@ -2471,7 +2478,13 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   const { kept, skipped, alreadyPresent, blockTightened } = await importPlaintextContacts(fingerprint, backup.contacts);
 
   await setActiveFingerprint(fingerprint);
-  return { fingerprint, kept, skipped, alreadyPresent, blockTightened };
+  // A record left out matters only if the device ends up with NO record of its own. Restoring onto a device that already holds a good one (the import is safe to run again) keeps it, and nothing was lost from this
+  // device's view, so the screen says nothing. Read after every write; a record this device cannot read counts as none, and a failed read must not fail a restore that has already written.
+  let shardsDropped = false;
+  if (backup.shards && !shardsUsable) {
+    try { shardsDropped = (await loadShards(fingerprint)) === null; } catch { shardsDropped = true; }
+  }
+  return { fingerprint, kept, skipped, alreadyPresent, blockTightened, ...(shardsDropped ? { shardsDropped: true as const } : {}) };
 }
 
 export type DeviceUnlock = 'already-open' | 'file-password' | 'new-password';

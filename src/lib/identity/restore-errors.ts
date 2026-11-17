@@ -9,6 +9,7 @@
 // password.)
 
 import { DEVICE_PASSWORD_MIN } from './device-password';
+import { DB_UPGRADE_BLOCKED_MESSAGE, isDbUpgradeBlocked } from '../db-upgrade-blocked';
 
 /** The restore screen could not recognise the file's shape at all. */
 export class RestoreFormatUnrecognized extends Error {
@@ -51,6 +52,7 @@ export type RestoreFailureCode =
   | 'legacy-v2'
   | 'v3-no-recovery'
   | 'no-recovery-vault'
+  | 'db-upgrade-blocked'
   | 'unknown';
 
 export interface RestoreFailure { code: RestoreFailureCode; message: string }
@@ -72,6 +74,8 @@ export const RESTORE_MESSAGES = Object.freeze({
   stoppedNothingSaved: 'The restore stopped before any of your data was saved. Run the restore again with the same file.',
   mayHaveBeenSaved: 'Part of it may have been saved on this device. Run the restore again with the same file.',
   keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
+  // The file restored, but its recovery-pieces record was not a usable set and was left out (copy ledger row 262). Never a suggestion to give new pieces: a new set from the same key does not cancel the old one.
+  piecesRecordNotRestored: "Your identity was restored, but this backup's record of your recovery pieces was damaged and wasn't restored. This device doesn't know who holds your pieces. If you have another copy of the backup, restoring it may bring that record back.",
   unsupportedFormat: "This backup uses a format this version of the app can't read.",
   unrecognizedFormat: "This app can't open this file. It isn't a backup it recognizes.",
   // The recovery-code (seed) restore: decided by the thrower's code (coded-error.ts), copy rows 181-183.
@@ -100,6 +104,7 @@ export const RESTORE_MESSAGES = Object.freeze({
  *  - anything else is 'unknown': one generic sentence.
  */
 export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } = {}): RestoreFailure {
+  if (isDbUpgradeBlocked(err)) return { code: 'db-upgrade-blocked', message: DB_UPGRADE_BLOCKED_MESSAGE };   // another tab holds the database: a stop, not an unknown failure
   if (codeOf(err) === 'wrong-password' || codeOf(err) === 'vault-could-not-open') {
     return { code: 'wrong-password', message: ctx.v4Vault ? RESTORE_MESSAGES.wrongPasswordVaultV4 : RESTORE_MESSAGES.wrongPassword };
   }

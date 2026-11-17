@@ -23,6 +23,7 @@ import { applyImportPlan } from '@/lib/contacts/import-apply';
 import { mergeProvenance, type ChannelChange } from '@/lib/contacts/import-diff';
 import { getAllContacts, addContact, updateContact } from '@/lib/identity/client-store';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { vcfReadFailureMessage, vcfBookReadFailureMessage, vcfImportFailureMessage } from './import-contacts-copy';
 
 interface ImportContactsDialogProps {
   ownerFingerprint: string;
@@ -96,14 +97,20 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
   // Parse the chosen .vcf LOCALLY and build the dedup plan against the current book.
   const handleFile = async (file: File) => {
     reset();
+    let incoming: ReturnType<typeof fromVCard>;
     try {
       const text = await file.text();                 // in-browser read — nothing leaves the device
-      const incoming = fromVCard(text);
-      if (incoming.length === 0) { setError('No contacts found in that .vcf file.'); return; }
+      incoming = fromVCard(text);
+    } catch (err) {
+      setError(vcfReadFailureMessage(err));
+      return;
+    }
+    if (incoming.length === 0) { setError('No contacts found in that .vcf file.'); return; }
+    try {
       const existing = (await getAllContacts(ownerFingerprint)).map(recordToEdge);
       setPlan(dedupeContacts(incoming, existing));    // preview shown BEFORE any write (confirm-gate)
-    } catch (err: any) {
-      setError(err?.message || 'Could not read that file.');
+    } catch (err) {
+      setError(vcfBookReadFailureMessage(err));
     }
   };
 
@@ -142,8 +149,8 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
       }
       setImportedCount(ops.adds.length + ops.updates.length);
       onImported();
-    } catch (err: any) {
-      setError(err?.message || 'Import failed.');
+    } catch (err) {
+      setError(vcfImportFailureMessage(err));
     } finally {
       setLoading(false);
     }

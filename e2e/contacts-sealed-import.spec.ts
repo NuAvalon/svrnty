@@ -81,7 +81,11 @@ async function sealedExport(page: Page, opts: { includeKeys: boolean } = { inclu
   const dialog = page.getByRole('dialog', { name: /export contacts/i });
   await expect(dialog).toBeVisible({ timeout: 30_000 });
   if (!opts.includeKeys) await dialog.getByLabel(/include public keys/i).uncheck();
-  await dialog.getByPlaceholder(/Enter a password/i).fill(EXPORT_PW);
+  // The field is found by its LABEL (its accessible name), not by its placeholder: placeholders are copy that gets reworded. The short visible-wait makes a
+  // stale locator fail in seconds with a readable error instead of waiting out the whole test timeout.
+  const exportPw = dialog.getByLabel('Export password (required)', { exact: true });
+  await expect(exportPw).toBeVisible({ timeout: 10_000 });
+  await exportPw.fill(EXPORT_PW);
   await dialog.getByRole('button', { name: /^export contacts$/i }).click();
   const area = dialog.locator('textarea[readonly]');
   await expect(area).toBeVisible({ timeout: 120_000 });

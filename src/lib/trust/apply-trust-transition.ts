@@ -28,6 +28,7 @@ import { admitContact } from './admit-contact';
  * reconciled when this is thrown. Retracting trust (nextTrusted === false) is never refused.
  */
 export class TrustRefusedError extends Error {
+  readonly code = 'trust-refused' as const;
   readonly reason = 'blocked' as const;
   constructor() {
     super('This contact is blocked. Unblock them before trusting them.');

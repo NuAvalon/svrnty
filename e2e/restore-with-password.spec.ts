@@ -99,6 +99,11 @@ const ownerSettingKeys = (page: Page, fpr: string) => page.evaluate((f) => new P
   open.onerror = () => resolve([]);
   open.onsuccess = () => { const db = open.result; const r = db.transaction('settings').objectStore('settings').getAllKeys(); r.onsuccess = () => { db.close(); resolve((r.result as string[]).filter((k) => String(k).includes(f)).map(String).sort()); }; };
 }), fpr);
+/** The pieces row for this owner exactly as stored (ciphertext and all), or the string "null". Reads only. */
+const rawShardsRecord = (page: Page, fp: string) => page.evaluate((f) => new Promise<string>((resolve) => {
+  const open = indexedDB.open('svrnty');
+  open.onsuccess = () => { const db = open.result; const r = db.transaction('shards').objectStore('shards').get(f); r.onsuccess = () => { db.close(); resolve(JSON.stringify(r.result ?? null)); }; };
+}), fp);
 const rawKeyRecord = (page: Page, fp: string) => page.evaluate((f) => new Promise<string>((resolve) => {
   const open = indexedDB.open('svrnty');
   open.onsuccess = () => { const db = open.result; const r = db.transaction('keys').objectStore('keys').get(f); r.onsuccess = () => { db.close(); resolve(JSON.stringify(r.result ?? null)); }; };
@@ -118,7 +123,7 @@ async function openRestoreScreen(page: Page, file: string) {
   await page.setInputFiles('[data-testid="restore-file-input"]', file);
 }
 const PROMPT = (p: Page) => p.getByTestId('device-password-prompt');
-const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
+const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|can't be read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
 /** After pressing the restore button: wait for the first thing that settles the attempt. */
 async function settle(page: Page): Promise<'restored' | 'prompt' | 'error'> {
   const restored = page.getByRole('tab', { name: 'Contacts', exact: true });
@@ -741,4 +746,67 @@ test('f. a restore that stops after ANY write, run again with the same file, end
     await ctx.close();
   }
   console.log(`[restore-pw] f. summary: ${results.join(' | ')}`);
+});
+
+test('p. a recovery-pieces record that is not a usable set is left out and the rest of the backup restores, and the screen says so; a usable record restores and stores it', async ({ browser }, testInfo) => {
+  const piece = (i: number, t: number, o: Record<string, unknown> = {}) => ({ index: i + 1, data: 'AAAA', identity_fingerprint: fp, threshold: t, ...o });
+  const withShards = (shards: unknown): Record<string, unknown> => { const b = clean(noVault()) as Record<string, unknown>; b.shards = shards; return b; };
+  const set = (threshold: number, total: number, n: number, edit: (p: Record<string, unknown>, i: number) => Record<string, unknown> = (x) => x) => ({ threshold, total, shards: Array.from({ length: n }, (_, i) => edit(piece(i, threshold), i)) });
+  const bad: Array<[string, unknown]> = [
+    ['a threshold of 1 (the give-a-piece screen would print "Any 1 of your keepers ... no single piece can")', set(1, 2, 2)],
+    ['a piece that names another identity', set(3, 5, 5, (x, i) => (i === 2 ? { ...x, identity_fingerprint: 'f'.repeat(64) } : x))],
+    ['two pieces with the same index', set(3, 5, 5, (x, i) => (i === 3 ? { ...x, index: 1 } : x))],
+  ];
+  for (const [name, shards] of bad) {
+    const { ctx, page } = await newPage(browser);
+    expect(await restoreWith(page, writeFull(testInfo, 'full-p-bad.json', withShards(shards), FILE_PW), FILE_PW), `${name}: the rest of the backup restores`).toBe('restored');
+    await expect(page.getByTestId('plaintext-import-note'), `${name}: the screen says the record was not restored`).toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+    const st = await deviceState(page);
+    console.log(`[restore-pw] p. left out (${name}), device state:`, JSON.stringify(st));
+    expect(st.identities, name).toBe(1); expect(st.keys, name).toBe(1); expect(st.contacts, name).toBe(4); expect(st.salt, name).toBe(true);
+    expect(st.shards, `${name}: nothing was stored as the pieces record`).toBe(0);
+    await ctx.close();
+  }
+  // the control: the same backup with a usable 3-of-5 record restores, stores it, and says nothing about pieces
+  const ok = await newPage(browser);
+  expect(await restoreWith(ok.page, writeFull(testInfo, 'full-p-ok.json', withShards(set(3, 5, 5)), FILE_PW), FILE_PW)).toBe('restored');
+  await expect(ok.page.getByTestId('plaintext-import-note')).not.toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+  const stored = await deviceState(ok.page);
+  console.log('[restore-pw] p. control restored, device state:', JSON.stringify(stored));
+  expect(stored.keys).toBe(1); expect(stored.shards).toBe(1);
+  await ok.ctx.close();
+});
+
+test('q. a damaged pieces record in the backup, restored onto a device that already holds a good one: the device\'s record is kept byte for byte and the screen says nothing about pieces; with no record of its own the same restore says so', async ({ browser }, testInfo) => {
+  const piece = (i: number, t: number) => ({ index: i + 1, data: 'AAAA', identity_fingerprint: fp, threshold: t });
+  const set = (threshold: number, total: number, n: number) => ({ threshold, total, shards: Array.from({ length: n }, (_, i) => piece(i, threshold)) });
+  const damaged = (): Record<string, unknown> => { const b = clean(noVault()) as Record<string, unknown>; b.shards = set(1, 2, 2); return b; }; // a threshold of 1: not a usable set
+  const file = writeFull(testInfo, 'full-q.json', damaged(), UNLOCK_PW);
+  // the device already holds the owner AND its own good 3-of-5 record
+  const held = await newPage(browser);
+  await rh(held.page, 'seedKeyAndShards', fp, backup.keys, UNLOCK_PW, set(3, 5, 5));
+  await held.page.reload(); await held.page.addScriptTag({ content: HARNESS });
+  const before = await rawShardsRecord(held.page, fp);
+  expect(before, 'the device holds its own pieces record before the restore').not.toBe('null');
+  expect(await restoreWith(held.page, file, UNLOCK_PW)).toBe('restored');
+  const note = held.page.getByTestId('plaintext-import-note');
+  await expect(note, 'the restore note is on screen').toBeVisible();
+  await expect(note, 'a good record is already here: nothing is said about pieces').not.toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+  await expect(held.page.getByText(RESTORE_MESSAGES.piecesRecordNotRestored), 'and the sentence is nowhere on the screen').toHaveCount(0);
+  const after = await rawShardsRecord(held.page, fp);
+  console.log(`[restore-pw] q. held device: pieces row before ${before.length} chars, after ${after.length} chars, identical ${after === before}`);
+  expect(after, 'the device\'s own record is byte for byte what it was (not rewritten, not dropped)').toBe(before);
+  const st = await deviceState(held.page);
+  expect(st.shards, 'one pieces row, the device\'s own').toBe(1); expect(st.keys).toBe(1); expect(st.contacts, 'the rest of the backup restored').toBe(4);
+  await held.ctx.close();
+  // the control: the device holds the owner's key but NO pieces record: the same file now says so, and stores none
+  const bare = await newPage(browser);
+  await rh(bare.page, 'seedKeyAndShards', fp, backup.keys, UNLOCK_PW);
+  await bare.page.reload(); await bare.page.addScriptTag({ content: HARNESS });
+  expect(await rawShardsRecord(bare.page, fp)).toBe('null');
+  expect(await restoreWith(bare.page, file, UNLOCK_PW)).toBe('restored');
+  await expect(bare.page.getByTestId('plaintext-import-note'), 'no record of its own: the sentence is shown').toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+  const stBare = await deviceState(bare.page);
+  expect(stBare.shards, 'nothing was stored as the pieces record').toBe(0); expect(stBare.contacts).toBe(4);
+  await bare.ctx.close();
 });
