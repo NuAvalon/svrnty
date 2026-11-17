@@ -5,7 +5,8 @@
 //   - openLink is byte-identical to the fallback this screen already carried (and to the relay's own not-found sentence).
 //   - addToGate: the Gate entry or the contact write may have run before the throw, so it says "check" before "try again". This is the one site that reaches the contact store,
 //     which refuses on purpose (a fingerprint that does not match its key, a trust without a verification): a refusal means nothing was written, so it shows the refusal's
-//     own sentence (chosen by its code and reason, from the same leaf the contact book uses) and never "didn't finish, try again".
+//     own sentence (chosen by its code and reason, from the same leaf the contact book uses) and never "didn't finish, try again". The giver's card arrives like a pasted or scanned card, so a card whose
+//     fingerprint does not match its key shows the card sentence (with its warning that it may have been changed after they signed it), not the sentence for editing a stored contact.
 //   - keepPiece: storing the piece is one write and the piece stays in the page until it succeeds, so a retry is real.
 // Run: npx tsx --test src/components/joiner-ceremony-copy.test.ts
 import { errorTag } from '@/lib/error-tag';
@@ -22,7 +23,7 @@ export type JoinerFailureSite = keyof typeof JOINER_FAILURE_MESSAGES;
 
 /** A contact refusal's own sentence (add-to-Gate only), else the site's fixed sentence; the real error is logged by tag only. */
 export function joinerFailureMessage(err: unknown, site: JoinerFailureSite): string {
-  const refusal = site === 'addToGate' ? contactRefusalMessage(err) : null;   // only this site reaches the contact store
+  const refusal = site === 'addToGate' ? contactRefusalMessage(err, 'import') : null;   // only this site reaches the contact store; the giver's card arrives like a pasted or scanned card, so a card that fails its check says so
   if (refusal) return refusal;
   const blocked = dbUpgradeBlockedMessage(err);   // every site can touch the store, so every site maps it; an expected stop, so not logged
   if (blocked !== null) return blocked;
