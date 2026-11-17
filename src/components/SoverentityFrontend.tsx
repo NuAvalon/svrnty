@@ -723,6 +723,7 @@ export function SoverentityFrontend({
     const parts: string[] = [];
     if (report.kept + report.skipped > 0) parts.push(formatPlaintextImportReport(report));
     parts.push(...contactsReportLines(report));
+    if (report.shardsDropped) parts.push(RESTORE_MESSAGES.piecesRecordNotRestored);
     if (report.deviceUnlock === 'file-password') parts.push(RESTORE_MESSAGES.deviceUsesFilePassword);
     if (opts.legacyOpened) parts.push(LEGACY_PASSWORD_METHOD_NOTICE);
     if (parts.length > 0) setPlaintextImportNote(parts.join(' '));
