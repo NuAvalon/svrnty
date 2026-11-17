@@ -74,6 +74,8 @@ export const RESTORE_MESSAGES = Object.freeze({
   stoppedNothingSaved: 'The restore stopped before any of your data was saved. Run the restore again with the same file.',
   mayHaveBeenSaved: 'Part of it may have been saved on this device. Run the restore again with the same file.',
   keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
+  // The file restored, but its recovery-pieces record was not a usable set and was left out (copy ledger row 262). Never a suggestion to give new pieces: a new set from the same key does not cancel the old one.
+  piecesRecordNotRestored: "Your identity was restored, but this backup's record of your recovery pieces was damaged and wasn't restored. This device doesn't know who holds your pieces. If you have another copy of the backup, restoring it may bring that record back.",
   unsupportedFormat: "This backup uses a format this version of the app can't read.",
   unrecognizedFormat: "This app can't open this file. It isn't a backup it recognizes.",
   // The recovery-code (seed) restore: decided by the thrower's code (coded-error.ts), copy rows 181-183.
@@ -124,7 +126,6 @@ export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } 
   if (thrown === 'recovery-code-malformed') return { code: 'malformed-recovery-code', message: RESTORE_MESSAGES.malformedRecoveryCode };
   if (thrown === 'vault-truncated') return { code: 'file-truncated', message: RESTORE_MESSAGES.fileTruncated };
   if (thrown === 'vault-recovery-unreadable') return { code: 'backup-unreadable', message: RESTORE_MESSAGES.backupPartUnreadable };
-  if (thrown === 'backup-shards-malformed') return { code: 'backup-unreadable', message: RESTORE_MESSAGES.backupPartUnreadable };   // the recovery-pieces record inside the file is not a usable set; the same ruled sentence
   if (thrown === 'vault-not-a-vault') return { code: 'unrecognized-format', message: RESTORE_MESSAGES.unrecognizedFormat };
   if (thrown === 'identity-older-format') return { code: 'older-identity-format', message: RESTORE_MESSAGES.olderIdentityFormat };
   if (thrown === 'vault-legacy-v2') return { code: 'legacy-v2', message: RESTORE_MESSAGES.legacyV2 };
