@@ -22,7 +22,7 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
-import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
+import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
 import { blockPatch, ownerVerifyHeldPatch, distressWentHeldPatch, acceptIntroHeldPatch, addLabelHeldPatch, trustMapEditPatch } from '@/lib/contacts/metadata-patches';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
@@ -866,13 +866,8 @@ export default function Home() {
                   // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
                   const removedFp = edge.peer_fingerprint;
                   // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
-                  // The caller shows a failure's message, so a contention failure is rethrown in plain words.
-                  try {
-                    await withSafetyWrite(edge.id, () => removeContact(edge.id));
-                  } catch (err) {
-                    const words = describeSafetyWriteFailure(err, 'Remove');
-                    throw words ? new Error(words) : err;
-                  }
+                  // The caller words a failure by its class (applyTrustAction), so the original error is rethrown, not wrapped.
+                  await withSafetyWrite(edge.id, () => removeContact(edge.id));
                   if (removedFp) {
                     void reconcileAllowedOnConsentChange({
                       ownerFp: identity.identity.fingerprint,
@@ -885,14 +880,9 @@ export default function Home() {
                 onBlockContact={async (edge, blocked) => {
                   // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison, and it
                   // is built from the record held when it runs. Blocking clears trust and open_visibility so the peer leaves every PSI reveal set
-                  // (the read side is fail-closed too: ownerEdges !blocked). See blockPatch. The caller shows a failure's message, so a contention
-                  // failure is rethrown in plain words.
-                  try {
-                    await withSafetyWrite(edge.id, () => updateContact(edge.id, (fresh) => blockPatch(fresh, blocked)));
-                  } catch (err) {
-                    const words = describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock');
-                    throw words ? new Error(words) : err;
-                  }
+                  // (the read side is fail-closed too: ownerEdges !blocked). See blockPatch. The caller words a failure by its class (applyTrustAction), so the
+                  // original error is rethrown, not wrapped.
+                  await withSafetyWrite(edge.id, () => updateContact(edge.id, (fresh) => blockPatch(fresh, blocked)));
                   // TrustMap path: block -> DELETE the allowed_senders row, so a blocked peer cannot keep discovering the owner through a stale row.
                   // Unblock does NOT re-add: trust + open-vis must be re-granted explicitly. The consent is read back from the stored record.
                   const afterBlock = await getContact(edge.id);
