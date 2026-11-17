@@ -10,7 +10,7 @@
 //   - shardReadyLine is the line above the "tear off a piece" button. It said that giving a piece lets any N of your keepers restore you. It now says the same true thing as the all-given
 //     line, in one form for a single piece and one for several, and drops the contact's name (it comes from the contact's card).
 //   - SHARD_COUNT_UNUSABLE (copy ledger row 258a) is the ONE sentence both lines show when the stored pieces record does not hold a usable count: a threshold that is not an integer
-//     with 2 <= threshold <= total, or a total that is not an integer. A record like that can already be on a device (it was imported before the import checked its shape, or it was
+//     with 2 <= threshold <= total, or a total that is not an integer or is more than createShards will make (255). A record like that can already be on a device (it was imported before the import checked its shape, or it was
 //     written some other way), and the two lines above would print its numbers and a "no single piece can" claim that the record does not support. This sentence has no numbers and no such
 //     claim. The guard lives in the two line functions, so every caller gets it.
 // Run: npx tsx --test src/components/shard-give-copy.test.ts
@@ -19,8 +19,11 @@ export const SHARD_LINK_NOTE = "The piece is encrypted in your browser. The serv
 export const SHARD_COUNT_UNUSABLE = "This set of recovery pieces doesn't record a usable count, so this device can't tell how many keepers it takes to rebuild your recovery key. Collecting the pieces back isn't in the app yet.";
 
 // The arguments are typed as numbers, but they are read from a stored record, so at run time they can be anything (a string, NaN, undefined). Number.isInteger is false for all of those.
+// The most pieces createShards will make (src/lib/crypto/recovery.ts refuses more than this). A stored total above it is a record this code could not have written, so it is not usable.
+export const SHARD_COUNT_MAX = 255;
+
 export function shardCountUsable(total: number, threshold: number): boolean {
-  return Number.isInteger(total) && Number.isInteger(threshold) && threshold >= 2 && threshold <= total;
+  return Number.isInteger(total) && Number.isInteger(threshold) && threshold >= 2 && threshold <= total && total <= SHARD_COUNT_MAX;
 }
 
 export function shardAllGivenLine(total: number, threshold: number): string {
