@@ -13,7 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { HeartCrack, Link2, Copy, Check, Clock, ShieldCheck } from 'lucide-react';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
-import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardReadyLine } from './shard-give-copy';
+import { SHARD_COUNT_UNUSABLE, SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine, shardCountUsable, shardReadyLine } from './shard-give-copy';
 import { errorTag } from '@/lib/error-tag';
 import { createRelay } from '@/lib/sync/relay';
 import { loadShards, markShardGiven, SHARD_CUSTODY_TYPE } from '@/lib/identity/client-store';
@@ -56,6 +56,8 @@ export function ShardGiveDialog({
   const [threshold, setThreshold] = useState(0);
   const [total, setTotal] = useState(0);
   const [remaining, setRemaining] = useState(0);
+  // ONE decision per render about the stored pieces record: every line below whose numbers come from it asks this, and none re-derives it.
+  const countUsable = shardCountUsable(total, threshold);
   const [generating, setGenerating] = useState(false);
   const [link, setLink] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
@@ -199,8 +201,9 @@ export function ShardGiveDialog({
           {phase === 'already-held' && contact && (
             <div className="rounded-lg p-4 bg-teal-500/6 border border-teal-500/15 text-sm text-gray-300 flex items-start gap-2">
               <ShieldCheck className="h-4 w-4 text-teal-400 flex-shrink-0 mt-0.5" />
-              <span>{contact.name} already holds a piece of your recovery. One piece per
-              contact keeps any single person below your restore threshold.</span>
+              <span>{contact.name} already holds a piece of your recovery. {countUsable
+                ? 'One piece per contact keeps any single person below your restore threshold.'
+                : SHARD_COUNT_UNUSABLE}</span>
             </div>
           )}
 
@@ -276,7 +279,9 @@ export function ShardGiveDialog({
               </div>
 
               <p className="text-xs text-gray-500 text-center">
-                Share this link only with {contact.name}. It stays valid for up to 7 days. {contact.name} now holds 1 of your {total} pieces.
+                Share this link only with {contact.name}. It stays valid for up to 7 days. {countUsable
+                  ? <>{contact.name} now holds 1 of your {total} pieces.</>
+                  : SHARD_COUNT_UNUSABLE}
               </p>
             </div>
           )}
