@@ -13,7 +13,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { HeartCrack, Link2, Copy, Check, Clock, ShieldCheck } from 'lucide-react';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
-import { SHARD_LINK_NOTE, shardAllGivenLine } from './shard-give-copy';
+import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';
+import { errorTag } from '@/lib/error-tag';
 import { createRelay } from '@/lib/sync/relay';
 import { loadShards, markShardGiven, SHARD_CUSTODY_TYPE } from '@/lib/identity/client-store';
 
@@ -97,7 +98,8 @@ export function ShardGiveDialog({
         setPhase('ready');
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Could not read your recovery shards.');
+        console.error('Recovery pieces read failed:', errorTag(err));
+        setError(SHARD_READ_FAILED);
         setPhase('error');
       }
     })();
@@ -146,7 +148,8 @@ export function ShardGiveDialog({
       setPhase('link');
       onGiven?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create the recovery link.');
+      console.error('Recovery link failed:', errorTag(err));
+      setError(SHARD_LINK_FAILED);
     } finally {
       setGenerating(false);
     }
