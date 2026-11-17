@@ -133,6 +133,13 @@ export interface BeaconSecretsPort {
   rowAuth(rowId: string): Promise<{ pk: Uint8Array; sign: (msg: Uint8Array) => Promise<Uint8Array> } | undefined>;
   /** the seed is kept until the withdraw is CONFIRMED or the epoch has closed; this is the release. */
   releaseRow(rowId: string): Promise<void>;
+  /**
+   * OPTIONAL. The rows this pair holds a one-time seed for across every live epoch, recomputed from the pair's keys: they include a row the pair record does NOT
+   * list (a seed minted, and perhaps deposited, whose record was never saved). It PLANS only and drops NOTHING: a Remove adds each such row to the durable
+   * withdraw queue, signed with its seed, and the seed leaves only by releaseRow once the withdraw is confirmed or the epoch has closed. Absent = the pair
+   * record's rows are all there is.
+   */
+  planPairRows?(pairId: string): Promise<ReadonlyArray<{ rowId: string; epoch: string; H_e: string; N: string }>>;
 }
 export interface BeaconProverPort {
   buildDeposit(keys: DepositKeys): Promise<{ body: string; signals: Signals }>;
@@ -187,6 +194,20 @@ export interface BeaconClient {
 const fresh = (pairId: string): PairRecord =>
   ({ pairId, observedMatch: false, spentEpochs: [], refusedEpochs: [], rows: [], pendingWithdraws: [] });
 
+/**
+ * Epochs the server considers open (mirrors open_epochs): the current one, the previous one in the first GRACE_SECONDS, the next one in the last GRACE_SECONDS.
+ * THE one definition: the client's own scheduling and the secrets adapter's release of every live row for a pair both use it, so they cannot disagree
+ * about which deposits are still live.
+ */
+export function visibleEpochsAt(ms: number): Set<string> {
+  const w: any = wire;
+  const EPOCH_SECONDS: number = w.EPOCH_SECONDS, GRACE_SECONDS: number = w.GRACE_SECONDS;
+  const cur = Math.floor(ms / 1000 / EPOCH_SECONDS), start = cur * EPOCH_SECONDS * 1000, out = new Set([String(cur)]);
+  if (ms < start + GRACE_SECONDS * 1000) out.add(String(cur - 1));
+  if (ms > start + EPOCH_SECONDS * 1000 - GRACE_SECONDS * 1000) out.add(String(cur + 1));
+  return out;
+}
+
 export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const base = (deps.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const now = deps.now ?? (() => Date.now());
@@ -196,13 +217,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const EPOCH_SECONDS: number = w.EPOCH_SECONDS, GRACE_SECONDS: number = w.GRACE_SECONDS, MAX_DEPOSIT_BYTES: number = w.MAX_DEPOSIT_BYTES;
 
   const epochAt = (ms: number) => Math.floor(ms / 1000 / EPOCH_SECONDS);
-  /** Epochs the server considers open (mirrors open_epochs): cur, cur-1 in the first 600 s, cur+1 in the last. */
-  const visibleEpochs = (ms: number): Set<string> => {
-    const cur = epochAt(ms), start = cur * EPOCH_SECONDS * 1000, out = new Set([String(cur)]);
-    if (ms < start + GRACE_SECONDS * 1000) out.add(String(cur - 1));
-    if (ms > start + EPOCH_SECONDS * 1000 - GRACE_SECONDS * 1000) out.add(String(cur + 1));
-    return out;
-  };
+  const visibleEpochs = visibleEpochsAt;
   /** Epochs a deposit may be made for: cur, plus cur+1 inside the last-600 s window (v2 s0). */
   const depositableEpochs = (ms: number): bigint[] => {
     const cur = epochAt(ms), out = [BigInt(cur)];
@@ -704,6 +719,17 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         continue;
       }
       queueWithdrawNow(rec, row.rowId);                               // L6e: durable queue entry, due NOW
+    }
+    // Rows the sealed store holds a seed for but the record may not list (an orphan: a crash between minting a seed and saving the record, after a deposit may
+    // already have left). They join the record as rows whose answer is unknown ('unknown' withdraws too, and its seed is kept until confirmed), and the L6d pass
+    // below queues them with the rest. The record's merge keeps ONE row per id (a recorded row's state is never overwritten by a plan entry) and drops a
+    // tombstoned one, so nothing here needs to; test O4-12c pins both. Never dropped here: a seed dropped now would leave a row that may be standing at the
+    // relay with nothing to sign its withdraw.
+    if (deps.secrets.planPairRows) {
+      for (const t of await deps.secrets.planPairRows(rec.pairId)) {
+        if (!live.has(t.epoch)) continue;
+        rec.rows.push({ rowId: t.rowId, epoch: t.epoch, H_e: t.H_e, N: t.N, state: 'unknown' });
+      }
     }
     await commitIntent(rec, false);
     // L6d: a Remove retires every live row of the MERGED record. Its own commit merges in rows a
