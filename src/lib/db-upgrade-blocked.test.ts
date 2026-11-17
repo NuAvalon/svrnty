@@ -12,6 +12,7 @@ import { CONTACT_FAILURE_MESSAGES, contactFailureMessage, type ContactFailureSit
 import { FRONTEND_FAILURE_MESSAGES, frontendFailureMessage, type FrontendFailureSite } from '../components/soverentity-frontend-copy';
 import { JOINER_FAILURE_MESSAGES, joinerFailureMessage, type JoinerFailureSite } from '../components/joiner-ceremony-copy';
 import { exportFailureMessage, keyExportFailureMessage, plainPasteFailureMessage } from './contacts/contact-io-errors';
+import { vaultExportFailureMessage } from '../components/export/vault-export-copy';
 import { sealedFailureMessage } from './contacts/sealed-book-import';
 import { classifyRestoreFailure } from './identity/restore-errors';
 
@@ -65,10 +66,11 @@ const HELPERS: ReadonlyArray<readonly [string, (e: unknown) => string]> = [
   ['keyExportFailureMessage', keyExportFailureMessage],
   ['plainPasteFailureMessage', plainPasteFailureMessage],
   ['sealedFailureMessage', sealedFailureMessage],
+  ['vaultExportFailureMessage', vaultExportFailureMessage],
   ['classifyRestoreFailure', (e) => classifyRestoreFailure(e).message],
   ['classifyRestoreFailure(v4Vault)', (e) => classifyRestoreFailure(e, { v4Vault: true }).message],
 ];
-const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage'];
+const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage', 'vaultExportFailureMessage'];
 
 test('DU3 every helper shows THE sentence for the coded error (and a look-alike), never its generic one, and does not log it as an unknown failure', () => {
   const calls: unknown[][] = [];
@@ -92,6 +94,7 @@ test('DU4 THE HELPER LIST IS SCANNED: every exported *FailureMessage function an
   const found = new Set<string>();
   for (const { text } of sources()) for (const m of text.matchAll(/^export (?:async )?function ([A-Za-z]*FailureMessage|classifyRestoreFailure)\(/gm)) found.add(m[1]);
   assert.deepEqual([...found].sort(), [...HELPER_NAMES].sort(), 'a new failure-message helper must ask dbUpgradeBlockedMessage first and be added to HELPERS and HELPER_NAMES');
+  for (const n of HELPER_NAMES) assert.ok(HELPERS.some(([h]) => h === n || h.startsWith(`${n}(`)), `${n} is named in HELPER_NAMES but has no entry in HELPERS, so DU3 would never run it`);
 });
 
 test('DU5 EVERY indexedDB.open( call site in the source has an onblocked that rejects with the coded error (paired by variable), and the scan is not vacuous', () => {
