@@ -44,6 +44,7 @@ import {
 } from '../crypto/mailbox-keys';
 import { deriveMailboxFp, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope';
 import { mailboxPublicOf, type DeviceMailboxPublic } from './device-mailbox';
+import { assertBackupShardsShape } from './backup-shards-shape';
 
 const DB_NAME = 'svrnty';
 // v4: device_mailbox store (piece-2). One record per identity (keyed by fingerprint), holding the
@@ -2169,6 +2170,8 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     throw new PlaintextImportNeedsSession();
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  // The pieces record is stored as the file has it, so it is checked here with the other reads, before anything is written: a record that is not a usable set refuses the whole import.
+  if (backup.shards) assertBackupShardsShape(backup.shards);
   await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
@@ -2216,7 +2219,7 @@ export type DeviceUnlock = 'already-open' | 'file-password' | 'new-password';
 /**
  * Restore a backup on a device that may have no session yet. The order is the point: every check that only READS runs first, then the session key, then
  * importAll's writes, so a refusal leaves no salt and no session behind.
- *  1. the identity binds to its fingerprint;
+ *  1. the identity binds to its fingerprint, and the recovery-pieces record, if the file has one, is a usable set;
  *  2. the restore stays in the owner's passphrase domain (every held key record opens with the password that will be used);
  *  3. the session key is set from: the open session (nothing to do) | the file's own password if it is at least DEVICE_PASSWORD_MIN | a chosen device password.
  *     A device that already holds this owner is never asked for a new password: the file's password must already open what is held.
@@ -2227,6 +2230,7 @@ export async function importAllWithPassword(
   opts: { filePassword?: string; devicePassword?: string } = {},
 ): Promise<PlaintextImportReport & { deviceUnlock: DeviceUnlock }> {
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  if (backup.shards) assertBackupShardsShape(backup.shards);
   const filePassword = opts.filePassword ?? '';
   const devicePassword = opts.devicePassword ?? '';
   let use: string | null = null;
