@@ -11,6 +11,7 @@ import { DB_UPGRADE_BLOCKED_MESSAGE, DbUpgradeBlocked, dbUpgradeBlockedMessage, 
 import { CONTACT_FAILURE_MESSAGES, contactFailureMessage, type ContactFailureSite } from '../components/contact-management-copy';
 import { FRONTEND_FAILURE_MESSAGES, frontendFailureMessage, type FrontendFailureSite } from '../components/soverentity-frontend-copy';
 import { JOINER_FAILURE_MESSAGES, joinerFailureMessage, type JoinerFailureSite } from '../components/joiner-ceremony-copy';
+import { GROW_GATE_FAILURE_MESSAGES, growGateFailureMessage, type GrowGateFailureSite } from '../components/grow-gate-copy';
 import { exportFailureMessage, keyExportFailureMessage, plainPasteFailureMessage } from './contacts/contact-io-errors';
 import { sealedFailureMessage } from './contacts/sealed-book-import';
 import { classifyRestoreFailure } from './identity/restore-errors';
@@ -61,6 +62,7 @@ const HELPERS: ReadonlyArray<readonly [string, (e: unknown) => string]> = [
   ...(Object.keys(CONTACT_FAILURE_MESSAGES) as ContactFailureSite[]).map((site) => [`contactFailureMessage(${site})`, (e: unknown) => contactFailureMessage(e, site)] as const),
   ...(Object.keys(FRONTEND_FAILURE_MESSAGES) as FrontendFailureSite[]).map((site) => [`frontendFailureMessage(${site})`, (e: unknown) => frontendFailureMessage(e, site)] as const),
   ...(Object.keys(JOINER_FAILURE_MESSAGES) as JoinerFailureSite[]).map((site) => [`joinerFailureMessage(${site})`, (e: unknown) => joinerFailureMessage(e, site)] as const),
+  ...(Object.keys(GROW_GATE_FAILURE_MESSAGES) as GrowGateFailureSite[]).map((site) => [`growGateFailureMessage(${site})`, (e: unknown) => growGateFailureMessage(e, site)] as const),
   ['exportFailureMessage', exportFailureMessage],
   ['keyExportFailureMessage', keyExportFailureMessage],
   ['plainPasteFailureMessage', plainPasteFailureMessage],
@@ -68,7 +70,7 @@ const HELPERS: ReadonlyArray<readonly [string, (e: unknown) => string]> = [
   ['classifyRestoreFailure', (e) => classifyRestoreFailure(e).message],
   ['classifyRestoreFailure(v4Vault)', (e) => classifyRestoreFailure(e, { v4Vault: true }).message],
 ];
-const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage'];
+const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'growGateFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage'];
 
 test('DU3 every helper shows THE sentence for the coded error (and a look-alike), never its generic one, and does not log it as an unknown failure', () => {
   const calls: unknown[][] = [];
