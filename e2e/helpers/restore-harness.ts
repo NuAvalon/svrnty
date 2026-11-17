@@ -4,7 +4,7 @@
 import {
   initSessionKey, lockSession, exportAll, addContact, storeKey, storeVault, verifyPassphrase,
   loadIdentity, loadKey, loadPQKeys, loadDeviceMailbox, getAllContacts, storeIdentity, storeDeviceMailbox, writeDeliveryDefault,
-  setSuppressionRecord, setHeldAffirmatives, writeLensGrantBook, setBeaconSeeds, ensureBeaconKeyRecord,
+  setSuppressionRecord, setHeldAffirmatives, writeLensGrantBook, setBeaconSeeds, ensureBeaconKeyRecord, storeShards,
 } from '@/lib/identity/client-store';
 import { serializeMailboxKeypair } from '@/lib/crypto/mailbox-keys';
 import { emptySuppression } from '@/lib/trust/suppression';
@@ -47,6 +47,12 @@ window.__rh = {
     else if (name === 'beacon-seeds') await setBeaconSeeds(fp, {});
     else if (name === 'beacon-key') await ensureBeaconKeyRecord(fp);
     else throw new Error(`unknown sealed record ${name}`);
+    lockSession(); return true;
+  },
+  /** A device that holds the owner's key and, when given, a recovery-pieces record, both under `pw`. No identity row: the gate shows. */
+  async seedKeyAndShards(fp: string, keys: { privateKey: string; passphrase: string }, pw: string, shardsData?: Parameters<typeof storeShards>[1]) {
+    await initSessionKey(pw); await storeKey(fp, keys.privateKey, keys.passphrase);
+    if (shardsData) await storeShards(fp, shardsData);
     lockSession(); return true;
   },
   async verify(fp: string, pw: string) { return verifyPassphrase(fp, pw); },

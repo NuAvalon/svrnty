@@ -74,6 +74,8 @@ export const RESTORE_MESSAGES = Object.freeze({
   stoppedNothingSaved: 'The restore stopped before any of your data was saved. Run the restore again with the same file.',
   mayHaveBeenSaved: 'Part of it may have been saved on this device. Run the restore again with the same file.',
   keyOnlyRestored: 'Your identity key is saved on this device. This file holds only the key, not your profile or contacts. To bring those back, restore a full backup file.',
+  // The file restored, but its recovery-pieces record was not a usable set and was left out (copy ledger row 262). Never a suggestion to give new pieces: a new set from the same key does not cancel the old one.
+  piecesRecordNotRestored: "Your identity was restored, but this backup's record of your recovery pieces was damaged and wasn't restored. This device doesn't know who holds your pieces. If you have another copy of the backup, restoring it may bring that record back.",
   unsupportedFormat: "This backup uses a format this version of the app can't read.",
   unrecognizedFormat: "This app can't open this file. It isn't a backup it recognizes.",
   // The recovery-code (seed) restore: decided by the thrower's code (coded-error.ts), copy rows 181-183.

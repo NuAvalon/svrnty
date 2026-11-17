@@ -44,6 +44,7 @@ import {
 } from '../crypto/mailbox-keys';
 import { deriveMailboxFp, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope';
 import { mailboxPublicOf, type DeviceMailboxPublic } from './device-mailbox';
+import { backupShardsProblem } from './backup-shards-shape';
 
 const DB_NAME = 'svrnty';
 // v4: device_mailbox store (piece-2). One record per identity (keyed by fingerprint), holding the
@@ -2020,6 +2021,8 @@ export type PlaintextImportReport = {
   alreadyPresent?: number;
   /** Existing rows whose block this restore SET because the backup had them blocked (it never clears one). */
   blockTightened?: number;
+  /** The file's recovery-pieces record was not a usable set, so it was left out and the rest was restored, AND this device holds no record of its own after the import. The screen says so; this device does not know who holds the pieces. */
+  shardsDropped?: true;
 };
 
 /** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
@@ -2169,6 +2172,9 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     throw new PlaintextImportNeedsSession();
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  // The pieces record is stored as the file has it, so it is judged here with the other reads, before anything is written. One that is not a usable set is NOT stored, and the rest of the
+  // backup still restores: the identity and keys matter more than a record of who holds the pieces. It is never silent when the device is left with no record: the report says so and the screen tells the person.
+  const shardsUsable = !backup.shards || backupShardsProblem(backup.shards, fingerprint) === null;
   await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
 
   await storeIdentity(fingerprint, backup.identity);
@@ -2184,7 +2190,7 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   if (backup.vault) {
     await storeVault(fingerprint, backup.vault);
   }
-  if (backup.shards) {
+  if (backup.shards && shardsUsable) {
     await storeShards(fingerprint, backup.shards);
   }
   if (backup.device_mailbox) {
@@ -2208,7 +2214,13 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   const { kept, skipped, alreadyPresent, blockTightened } = await importPlaintextContacts(fingerprint, backup.contacts);
 
   await setActiveFingerprint(fingerprint);
-  return { fingerprint, kept, skipped, alreadyPresent, blockTightened };
+  // A record left out matters only if the device ends up with NO record of its own. Restoring onto a device that already holds a good one (the import is safe to run again) keeps it, and nothing was lost from this
+  // device's view, so the screen says nothing. Read after every write; a record this device cannot read counts as none, and a failed read must not fail a restore that has already written.
+  let shardsDropped = false;
+  if (backup.shards && !shardsUsable) {
+    try { shardsDropped = (await loadShards(fingerprint)) === null; } catch { shardsDropped = true; }
+  }
+  return { fingerprint, kept, skipped, alreadyPresent, blockTightened, ...(shardsDropped ? { shardsDropped: true as const } : {}) };
 }
 
 export type DeviceUnlock = 'already-open' | 'file-password' | 'new-password';
