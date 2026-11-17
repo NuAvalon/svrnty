@@ -12,7 +12,9 @@ export type RestoreThrowCode =
   | 'vault-no-recovery'          // recovery codes were never set up for this backup
   | 'vault-truncated'            // the file ends before its own header or body does
   | 'vault-recovery-unreadable'  // the recovery vault inside the backup cannot be read, or is malformed
-  | 'identity-older-format';     // an identity from before post-quantum identities
+  | 'identity-older-format'      // an identity from before post-quantum identities
+  | 'recovery-pieces-insufficient'     // too few pieces that match the backup's list (or its master hash) to rebuild the recovery key
+  | 'recovery-pieces-search-too-large'; // so many pieces handed, one of them bad, that trying the combinations is refused rather than cut short
 
 /** The message is the thrower's own text and is for the console only. */
 export class RestoreThrow extends Error {

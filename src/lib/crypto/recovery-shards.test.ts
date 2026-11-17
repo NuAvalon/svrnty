@@ -5,13 +5,14 @@
 //   R2  fewer than M pieces NEVER give the secret (today: wrong bytes, no error; the check is "never the secret", so it survives a later throw)
 //   R3  one flipped byte in a piece: every set that uses it misses the secret, every set that does not still recovers (Shamir has no integrity of its own)
 //   R4  a piece from ANOTHER split (same secret or not) does not recombine
-//   R5  the labels (index, threshold, identity_fingerprint) are not read by reconstructFromShards: the real x-coordinate is inside `data`. This is why a
-//       commitment must bind the label to the piece. PINS TODAY'S BEHAVIOUR; the wiring stage will change it on purpose.
+//   R5  the labels (index, threshold, identity_fingerprint) are not read by the RAW primitive reconstructFromShards: the real x-coordinate is inside `data`.
+//       This is why a commitment must bind the label to the piece. The app path, recoverFromShards, now checks the labels against the vault's list and names
+//       a relabelled piece (recovery-wiring.test.ts W2b); this test keeps documenting the primitive it is built on.
 //   R6  duplicates and truncated pieces are refused
 //   R7  createShards' guards and output shape
-//   R8  the whole chain through a real vault: M good pieces open it, a bad piece among exactly M never returns a bundle
-//   R9  restore with one bad piece among M+1: the information IS there (subset search + the vault's own hash check finds the good M), but
-//       recoverFromShards does not do it yet. The todo test below is the target of the wiring stage; it is expected to fail until then.
+//   R8  the whole chain through a real vault: M good pieces open it, a bad piece among exactly M is refused (and named) and never returns a bundle
+//   R9  restore with one bad piece among M+1: the information is there (subset search + the vault's own hash check finds the good M), and recoverFromShards
+//       now does it (R9b), by the vault's list when it has one and by that search when it does not.
 //       Two bad pieces among M+1 never recover (R9a, R9c), through one helper (flipTwoApart): the same byte flipped in both can cancel.
 // Run: npx tsx --test src/lib/crypto/recovery-shards.test.ts
 import { test } from 'node:test';
@@ -108,7 +109,7 @@ test('R4 a piece from another split does not recombine, with the same secret or 
   }
 });
 
-test('R5 (pins today) reconstructFromShards reads only `data`: the index, threshold and identity labels are ignored', async () => {
+test('R5 the RAW primitive reconstructFromShards reads only `data`: the index, threshold and identity labels are ignored (the app path checks them: see recovery-wiring.test.ts)', async () => {
   const secret = generateMasterSecret();
   const all = await createShards(secret, 3, 5, FP);
   const relabelled = pick(all, [0, 2, 4]).map((p, i) => ({ ...p, index: 90 + i, threshold: 2, identity_fingerprint: 'b'.repeat(64) }));
@@ -146,13 +147,13 @@ const BUNDLE: PrivateKeyBundle = {
   classical_passphrase: 'p', pq_signing_secret_key: 'c2lnbg==', pq_kem_secret_key: 'a2Vt',
 };
 
-test('R8 through a real vault: every M good pieces open it; a bad piece among exactly M never returns a bundle; M-1 never does', async () => {
+test('R8 through a real vault: every M good pieces open it; a bad piece among exactly M is refused and never returns a bundle; M-1 never does', async () => {
   const [n, m] = [5, 3];
   const { vault, shards } = await createKeyVault(BUNDLE, m, n, FP);
   for (const s of subsets(n, m)) assert.deepEqual(await recoverFromShards(vault, pick(shards, s)), BUNDLE, `subset ${s.join(',')}`);
   for (const s of subsets(n, m)) {
     const mangled = pick(shards, s).map((p, i) => (i === 0 ? flip(p, 3) : p));
-    await assert.rejects(() => recoverFromShards(vault, mangled), (e: unknown) => (e as { code?: string }).code === 'recovery-code-wrong', `bad piece in ${s.join(',')}`);
+    await assert.rejects(() => recoverFromShards(vault, mangled), (e: unknown) => (e as { code?: string }).code === 'recovery-pieces-insufficient', `bad piece in ${s.join(',')}`);
   }
   for (const s of subsets(n, m - 1)) await assert.rejects(() => recoverFromShards(vault, pick(shards, s)), `${m - 1} pieces ${s.join(',')}`);
 });
@@ -187,7 +188,7 @@ test('R9c two bad pieces among M+1 never give the secret, over 1000 fresh splits
   }
 });
 
-test('R9b TODO (wiring stage): recoverFromShards itself restores from M+1 pieces with one bad', { todo: 'the wiring stage skips a bad piece; today recoverFromShards uses every piece it is given' }, async () => {
+test('R9b recoverFromShards itself restores from M+1 pieces with one bad', async () => {
   const { vault, shards } = await createKeyVault(BUNDLE, 3, 5, FP);
   const handed = pick(shards, [0, 1, 2, 3]).map((p, i) => (i === 1 ? flip(p, 10) : p));
   assert.deepEqual(await recoverFromShards(vault, handed), BUNDLE);
