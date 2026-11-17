@@ -198,11 +198,12 @@ def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: 
 
 
 def default_epoch_cap(db_path: str, *, environ=os.environ, disk_usage=shutil.disk_usage) -> int:
-    """BEACON_PER_EPOCH_CAP if set, else what one full epoch can take of a tenth of this disk's free space. Between EPOCH_CAP_MIN and
-    EPOCH_CAP_MAX; an unreadable disk gets the maximum. Read once, at mount."""
+    """BEACON_PER_EPOCH_CAP if set (raised to EPOCH_CAP_MIN if lower: a cap of a few would let anyone fill an epoch and read "full"), else
+    what one full epoch can take of a tenth of this disk's free space. Between EPOCH_CAP_MIN and EPOCH_CAP_MAX; an unreadable disk gets
+    the maximum. Read once, at mount."""
     raw = environ.get("BEACON_PER_EPOCH_CAP", "")
     if _POSITIVE.fullmatch(raw):
-        return int(raw)
+        return max(EPOCH_CAP_MIN, int(raw))
     try:
         free = disk_usage(os.path.dirname(db_path) or ".").free
     except OSError:
