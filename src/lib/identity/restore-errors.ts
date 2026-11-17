@@ -124,6 +124,7 @@ export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } 
   if (thrown === 'recovery-code-malformed') return { code: 'malformed-recovery-code', message: RESTORE_MESSAGES.malformedRecoveryCode };
   if (thrown === 'vault-truncated') return { code: 'file-truncated', message: RESTORE_MESSAGES.fileTruncated };
   if (thrown === 'vault-recovery-unreadable') return { code: 'backup-unreadable', message: RESTORE_MESSAGES.backupPartUnreadable };
+  if (thrown === 'backup-shards-malformed') return { code: 'backup-unreadable', message: RESTORE_MESSAGES.backupPartUnreadable };   // the recovery-pieces record inside the file is not a usable set; the same ruled sentence
   if (thrown === 'vault-not-a-vault') return { code: 'unrecognized-format', message: RESTORE_MESSAGES.unrecognizedFormat };
   if (thrown === 'identity-older-format') return { code: 'older-identity-format', message: RESTORE_MESSAGES.olderIdentityFormat };
   if (thrown === 'vault-legacy-v2') return { code: 'legacy-v2', message: RESTORE_MESSAGES.legacyV2 };

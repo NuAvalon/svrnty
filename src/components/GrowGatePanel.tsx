@@ -18,6 +18,7 @@ import {
 import { formatFingerprintForVerify, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { loadGateArrivals, type GateArrival } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
+import { growGateFailureMessage } from './grow-gate-copy';
 
 type Props = {
   ownerFp: string;
@@ -121,7 +122,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       onAdmitted?.(fp);
       onClose?.();
     } catch (e: any) {
-      setError(e?.message || 'Could not admit them.');
+      setError(growGateFailureMessage(e, 'admit'));
     } finally {
       setBusy(false);
     }
@@ -135,7 +136,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       setFocus(null);
       await refresh();
     } catch (e: any) {
-      setError(e?.message || 'Could not dismiss.');
+      setError(growGateFailureMessage(e, 'dismiss'));
     } finally {
       setBusy(false);
     }
