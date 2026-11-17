@@ -12,6 +12,8 @@ import {
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
+import { errorTag } from '@/lib/error-tag';
+import { SHARE_LINK_FAILED, SHARE_NFC_FAILED } from './contact-share-copy';
 import { shareUrl } from '@/lib/config/domain';
 import {
   hydrateOwnerCard,
@@ -134,7 +136,8 @@ export function ContactShareDialog({
       setNfcStatus('success');
     } catch (err) {
       setNfcStatus('error');
-      setNfcError(err instanceof Error ? err.message : 'NFC write failed');
+      console.error('NFC write failed:', errorTag(err));
+      setNfcError(SHARE_NFC_FAILED);
     }
   }, [exchangePackage]);
 
@@ -155,10 +158,11 @@ export function ContactShareDialog({
         error: null,
       });
     } catch (err) {
+      console.error('Share link failed:', errorTag(err));
       setShortCode(prev => ({
         ...prev,
         loading: false,
-        error: err instanceof Error ? err.message : 'Failed to generate link',
+        error: SHARE_LINK_FAILED,
       }));
     }
   }, [exchangePackage]);
