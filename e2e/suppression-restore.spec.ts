@@ -20,6 +20,7 @@ const EXPORT_PW = 'export-e2e-pass-5678';
 const hex = (n: number): string => n.toString(16).padStart(64, '0');
 const P1 = hex(1), P2 = hex(2), P3 = hex(4), R1 = hex(8);
 const NOTICE = 'suppression-left-out-notice';
+const LEFT_OUT_SENTENCE = "This backup doesn't include your list of blocked and removed people, because it couldn't be added to the file. Your contacts are included. If you restore from this backup, you'll need to block or remove those people again; until then, the restored device stays private.";
 
 // circomlibjs is reached by client-store only through a dynamic import() on the flagged beacon path; esbuild must resolve it at build time and these harnesses never call it.
 const bundle = (file: string): string =>
@@ -177,7 +178,7 @@ test('4 left out: a record that exists but cannot be read shows the notice BEFOR
 
   await toPassphraseStep(page);
   await expect(page.getByTestId(NOTICE), 'the notice is on the screen before anything is saved').toBeVisible({ timeout: 10_000 });
-  await expect(page.getByTestId(NOTICE)).toContainText(/blocked or removed/i);
+  await expect(page.getByTestId(NOTICE)).toContainText(LEFT_OUT_SENTENCE); // the reviewed words, whole
   const dest = testInfo.outputPath('leftout.svrnty');
   await finishExport(page, dest); // the export still works
   await ctx.close();

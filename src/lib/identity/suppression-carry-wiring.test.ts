@@ -10,6 +10,7 @@
 // Run: npx tsx --test src/lib/identity/suppression-carry-wiring.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -143,3 +144,14 @@ test('W13 the notice does not block the export: handleExport never reads the fla
   assert.ok(a > 0 && b > a);
   assert.doesNotMatch(dialog.slice(a, b), /suppressionLeftOut/);
 });
+
+test('W14 the left-out notice is the reviewed sentence, byte for byte: ASCII, 269 characters, pinned by hash', () => {
+  const m = /export const SUPPRESSION_LEFT_OUT_NOTICE =\s*"((?:[^"\\]|\\.)*)"\s*\+\s*"((?:[^"\\]|\\.)*)";/.exec(dialog);
+  assert.ok(m, 'the constant is two string literals joined');
+  const text = m![1] + m![2];
+  assert.equal(text.length, 269);
+  assert.ok(/^[\x20-\x7e]+$/.test(text), 'plain ASCII');
+  assert.equal(createHash('sha256').update(text).digest('hex').slice(0, 16), '4d7af208e52252c7');
+  assert.doesNotMatch(dialog, /PROVISIONAL/, 'no provisional marker is left');
+});
+

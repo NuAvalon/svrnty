@@ -30,10 +30,11 @@ export const BEACON_KEY_UNREADABLE_NOTICE =
   + "If you restore from this backup, the trusts you've made would need to be made again.";
 
 // Shown BEFORE the file is saved, only when the owner's blocks and removed contacts cannot be put in it (an unreadable record or list, or one too large to carry), because then the backup
-// silently lacks them. It does not appear when there is nothing to carry and it does not block the export. PROVISIONAL wording: to be replaced by the reviewed copy before this ships.
+// silently lacks them. It does not appear when there is nothing to carry and it does not block the export. The words are the reviewed copy: they name neither cause (it can be either), name
+// both lists, and say that a restored device starts private, so nothing here implies exposure.
 export const SUPPRESSION_LEFT_OUT_NOTICE =
-  "This backup doesn't include the list of people you've blocked or removed, because it couldn't be read on this device. Your contacts are included. "
-  + "If you restore from this backup, you would need to block those people again.";
+  "This backup doesn't include your list of blocked and removed people, because it couldn't be added to the file. Your contacts are included. "
+  + "If you restore from this backup, you'll need to block or remove those people again; until then, the restored device stays private.";
 
 export interface VaultExportDialogProps {
   open: boolean;
