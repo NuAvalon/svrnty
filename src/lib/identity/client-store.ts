@@ -17,7 +17,7 @@ import type { VaultContents } from '../sync/vault';
 import { CONTACT_ENC_VERSION, deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import type { CarriedSuppression } from '../trust/suppression-carry';
-import { confirmPendingGlobalOff, makeUpdate, parsePendingGlobalOff, parseRemovedList, recordRemoval, removalRefusal, restoreSuppression, suppressionToCarry, type ConfirmOutcome, type PendingGlobalOff, type RestorePorts, type RestoreReport, type SealedRead, type Update } from '../trust/suppression-restore';
+import { confirmPendingGlobalOff, makeUpdate, parsePendingGlobalOff, parseRemovedList, recordRemoval, removalRefusal, restoreSuppression, suppressionCarryStatus, suppressionToCarry, type CarryStatus, type ConfirmOutcome, type PendingGlobalOff, type RestorePorts, type RestoreReport, type SealedRead, type Update } from '../trust/suppression-restore';
 import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
@@ -774,6 +774,15 @@ function createRestorePorts(ownerFingerprint: string): RestorePorts {
  */
 export async function exportSuppressionCarry(ownerFingerprint: string): Promise<CarriedSuppression | undefined> {
   return suppressionToCarry(await getSuppressionRecord(ownerFingerprint), await readRemovedList(ownerFingerprint));
+}
+
+/**
+ * Whether the sealed vault will carry the owner's blocks, for the export screen to say so BEFORE the file is saved. Unlike exportSuppressionCarry it tells "nothing to carry" (never blocked or removed
+ * anyone) from "left out" (an unreadable record or list, a list over the cap): only the second needs a notice. A locked session reads as unreadable, so it is left out.
+ */
+export async function readSuppressionCarryStatus(ownerFingerprint: string): Promise<CarryStatus> {
+  const record = await readSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null));
+  return suppressionCarryStatus(record, await readRemovedList(ownerFingerprint));
 }
 
 /**

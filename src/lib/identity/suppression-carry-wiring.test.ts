@@ -126,3 +126,20 @@ test('W11 the Block / Unblock write is the atomic update too: block-suppression 
   assert.match(block, /store\.updateSuppression\(ownerFingerprint\)<BlockSuppressionOutcome>\(\(held\) => decideBlock\(held, id, blocked\)\)/, 'the decision runs inside the update');
   assert.deepEqual(callersOf('setSuppressionRecord'), ['src/lib/trust/piece2-genesis.ts'], 'the unguarded setter has one caller left: genesis (an empty record at mint, never on a restore)');
 });
+
+test('W12 the export screen\'s look is the sealed read: it tells absent from unreadable, and only a LEFT-OUT result shows the notice', () => {
+  const body = fnBody('export async function readSuppressionCarryStatus(');
+  assert.match(body, /readSealed<SuppressionRecord>\(ownerFingerprint, suppressionSettingKey\(ownerFingerprint\), SUPPRESSION_RECORD_ID, \(x\) => \(isSuppressionRecord\(x\) \? x : null\)\);/, 'the record is read as ok / absent / unreadable, not through the null-for-everything getter');
+  assert.match(body, /return suppressionCarryStatus\(record, await readRemovedList\(ownerFingerprint\)\);/);
+  const d = codeOnly(dialog);
+  assert.match(d, /m\.readSuppressionCarryStatus\(fingerprint\)\)\s*\.then\(\(r\) => \{ if \(!cancelled\) setSuppressionLeftOut\(r === 'left-out'\); \}\)\s*\.catch\(\(\) => \{ if \(!cancelled\) setSuppressionLeftOut\(true\); \}\);/, 'only left-out shows it; a failed look is doubt and shows it');
+  assert.match(d, /\{suppressionLeftOut && \(\s*<Alert data-testid="suppression-left-out-notice"/);
+  assert.match(d, /setSuppressionLeftOut\(false\);\s*\};/, 'closing the dialog resets it');
+});
+
+test('W13 the notice does not block the export: handleExport never reads the flag', () => {
+  const a = dialog.indexOf('const handleExport = async');
+  const b = dialog.indexOf('\n  };\n', a);
+  assert.ok(a > 0 && b > a);
+  assert.doesNotMatch(dialog.slice(a, b), /suppressionLeftOut/);
+});

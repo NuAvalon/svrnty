@@ -29,6 +29,12 @@ export const BEACON_KEY_UNREADABLE_NOTICE =
   "This backup doesn't include your trust key, because it couldn't be read on this device. Your contacts are included. "
   + "If you restore from this backup, the trusts you've made would need to be made again.";
 
+// Shown BEFORE the file is saved, only when the owner's blocks and removed contacts cannot be put in it (an unreadable record or list, or one too large to carry), because then the backup
+// silently lacks them. It does not appear when there is nothing to carry and it does not block the export. PROVISIONAL wording: to be replaced by the reviewed copy before this ships.
+export const SUPPRESSION_LEFT_OUT_NOTICE =
+  "This backup doesn't include the list of people you've blocked or removed, because it couldn't be read on this device. Your contacts are included. "
+  + "If you restore from this backup, you would need to block those people again.";
+
 export interface VaultExportDialogProps {
   open: boolean;
   onClose: () => void;
@@ -55,6 +61,7 @@ export function VaultExportDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [beaconUnreadable, setBeaconUnreadable] = useState(false);
+  const [suppressionLeftOut, setSuppressionLeftOut] = useState(false);
 
   const match = password === confirm;
   const strongEnough = password.length >= MIN_PASSPHRASE_LENGTH;
@@ -67,6 +74,7 @@ export function VaultExportDialog({
     setLoading(false);
     setError(null);
     setBeaconUnreadable(false);
+    setSuppressionLeftOut(false);
   };
 
   const handleClose = () => {
@@ -82,6 +90,17 @@ export function VaultExportDialog({
       .then((m) => m.readBeaconKeyRecord(fingerprint))
       .then((r) => { if (!cancelled) setBeaconUnreadable(r.state === 'unreadable'); })
       .catch(() => { if (!cancelled) setBeaconUnreadable(true); });
+    return () => { cancelled = true; };
+  }, [step, fingerprint]);
+
+  // The same look for the blocks: a failed look is doubt, so it shows the notice; "nothing to carry" does not.
+  useEffect(() => {
+    if (step !== 'passphrase' || !fingerprint) return;
+    let cancelled = false;
+    import('@/lib/identity/client-store')
+      .then((m) => m.readSuppressionCarryStatus(fingerprint))
+      .then((r) => { if (!cancelled) setSuppressionLeftOut(r === 'left-out'); })
+      .catch(() => { if (!cancelled) setSuppressionLeftOut(true); });
     return () => { cancelled = true; };
   }, [step, fingerprint]);
 
@@ -209,6 +228,13 @@ export function VaultExportDialog({
               <Alert data-testid="beacon-key-unreadable-notice" style={{ borderColor: E.borderLit }}>
                 <AlertDescription className="text-sm" style={{ color: E.text }}>
                   {BEACON_KEY_UNREADABLE_NOTICE}
+                </AlertDescription>
+              </Alert>
+            )}
+            {suppressionLeftOut && (
+              <Alert data-testid="suppression-left-out-notice" style={{ borderColor: E.borderLit }}>
+                <AlertDescription className="text-sm" style={{ color: E.text }}>
+                  {SUPPRESSION_LEFT_OUT_NOTICE}
                 </AlertDescription>
               </Alert>
             )}

@@ -124,6 +124,19 @@ export function suppressionToCarry(record: SuppressionRecord | null, removed: Se
   return carrySuppression(record, removed.state === 'ok' ? removed.value : []);
 }
 
+/** What the sealed vault will do with the owner's blocks: carry them, have nothing to carry, or LEAVE THEM OUT (so the person should be told). */
+export type CarryStatus = 'carried' | 'nothing-to-carry' | 'left-out';
+
+/**
+ * The same all-or-nothing rule as suppressionToCarry, but with ABSENT told apart from unreadable (getSuppressionRecord returns null for both): a person who has never blocked or removed
+ * anyone has nothing to carry and needs no notice, while an unreadable record or list, a list the carry refuses (over the cap) or a Remove with no record are left OUT and are named.
+ */
+export function suppressionCarryStatus(record: SealedRead<SuppressionRecord>, removed: SealedRead<string[]>): CarryStatus {
+  if (suppressionToCarry(record.state === 'ok' ? record.value : null, removed) !== undefined) return 'carried';
+  const nothingHeld = record.state === 'absent' && (removed.state === 'absent' || (removed.state === 'ok' && removed.value.length === 0));
+  return nothingHeld ? 'nothing-to-carry' : 'left-out';
+}
+
 export interface RestorePorts {
   updateSuppression: Update<SuppressionRecord>;
   updateRemoved: Update<string[]>;
@@ -163,7 +176,11 @@ export async function restoreSuppression(carriedRaw: unknown, times: { backupAt:
   const waiting = done === 'written-fresh-waiting' && restoredAt !== null;
   if (waiting) await ports.writePending({ v: 1, backup_at: isoOrNull(times.backupAt), restored_at: restoredAt });
 
-  return { suppression: done === 'written-fresh-waiting' ? 'written-fresh' : done, pendingGlobalOff: waiting, removed: await restoreRemoved(carried, ports) };
+  const removed = await restoreRemoved(carried, ports);
+  // A backup that says global ON supersedes an earlier backup's "off" that is still waiting for the person: the marker is cleared, so that older "off" can no longer be confirmed. This only
+  // tightens. It runs AFTER the record and the removed list are handled, so a failure here leaves them written and the marker still there (the person is asked, never loosened).
+  if (carried.global && (await ports.readPending()).state !== 'absent') await ports.clearPending();
+  return { suppression: done === 'written-fresh-waiting' ? 'written-fresh' : done, pendingGlobalOff: waiting, removed };
 }
 
 function restoreRemoved(carried: CarriedSuppression, ports: RestorePorts): Promise<RemovedOutcome> {

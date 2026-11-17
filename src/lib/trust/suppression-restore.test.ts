@@ -22,6 +22,7 @@ import {
   recordRemoval,
   removalRefusal,
   restoreSuppression,
+  suppressionCarryStatus,
   suppressionToCarry,
   UPDATE_MAX_ATTEMPTS,
   type PendingGlobalOff,
@@ -416,6 +417,82 @@ test('a LATER restore leaves an existing marker and its restored_at exactly as t
   assert.equal(r.pendingGlobalOff, false);
   assert.deepEqual(w.pending, { state: 'ok', value: earlier });
   assert.ok(!log.includes('writePending') && !log.includes('clearPending'));
+});
+
+// ── a newer "on" supersedes an older waiting "off" ──────────────────────────────────────────────────────────────────────────────────────
+const EARLIER = { v: 1 as const, backup_at: AT, restored_at: '2026-11-10T08:00:00.000Z' };
+
+test('S1 a later restore whose backup says global ON clears an earlier backup\'s waiting "off": it can no longer be confirmed', async () => {
+  const { ports, w, log } = makePorts({ supp: { state: 'ok', value: rec({ global: true, persons: [X] }) }, pending: { state: 'ok', value: EARLIER } });
+  const r = await restoreSuppression(carried({ global: true, persons: [Y] }), { backupAt: '2026-11-16T01:00:00.000Z', restoredAt: NOW }, ports);
+  assert.equal(r.suppression, 'merged');
+  assert.equal(r.pendingGlobalOff, false);
+  assert.deepEqual(w.pending, { state: 'absent' });
+  assert.equal(await confirmPendingGlobalOff(ports), 'no-pending', 'the older off is no longer confirmable');
+  assert.equal(okRec(w).global, true);
+  assert.ok(log.indexOf('clearPending') > log.lastIndexOf('suppression:write'), 'the marker is cleared AFTER the record is written');
+});
+
+test('S1 the same on a device with NO record: the fresh write happens, an old marker is cleared, and none is left', async () => {
+  const { ports, w } = makePorts({ pending: { state: 'ok', value: EARLIER } });
+  const r = await restoreSuppression(carried({ global: true }), { backupAt: AT, restoredAt: NOW }, ports);
+  assert.equal(r.suppression, 'written-fresh');
+  assert.equal(r.pendingGlobalOff, false);
+  assert.deepEqual(w.pending, { state: 'absent' });
+});
+
+test('S1 an UNREADABLE marker is cleared too (tightening), and a restore with no marker at all makes no clear call', async () => {
+  const a = makePorts({ supp: { state: 'ok', value: rec({ global: true }) }, pending: { state: 'unreadable' } });
+  await restoreSuppression(carried({ global: true }), { backupAt: AT, restoredAt: NOW }, a.ports);
+  assert.deepEqual(a.w.pending, { state: 'absent' });
+  const b = makePorts({ supp: { state: 'ok', value: rec({ global: true }) } });
+  await restoreSuppression(carried({ global: true }), { backupAt: AT, restoredAt: NOW }, b.ports);
+  assert.ok(!b.log.includes('clearPending'), 'nothing to clear, so no write');
+});
+
+test('S1 a backup that says global OFF still leaves an earlier marker exactly as it was (the existing rule holds)', async () => {
+  const { ports, w } = makePorts({ supp: { state: 'ok', value: rec({ global: true }) }, pending: { state: 'ok', value: EARLIER } });
+  await restoreSuppression(carried({ global: false }), { backupAt: AT, restoredAt: NOW }, ports);
+  assert.deepEqual(w.pending, { state: 'ok', value: EARLIER });
+});
+
+test('S1 a failure clearing the marker leaves the record and the removed list WRITTEN and the marker still there (the person is asked, never loosened)', async () => {
+  const { ports, w } = makePorts({ supp: { state: 'ok', value: rec({ global: true }) }, pending: { state: 'ok', value: EARLIER }, failOn: 'clearPending' });
+  await assert.rejects(() => restoreSuppression(carried({ global: true, persons: [Y], removed: [Z] }), { backupAt: AT, restoredAt: NOW }, ports), /clearPending failed/);
+  assert.ok(suppressed(okRec(w), Y), 'the record was written first');
+  assert.deepEqual(okRemoved(w), [Z], 'and so was the removed list');
+  assert.deepEqual(w.pending, { state: 'ok', value: EARLIER });
+});
+
+// ── what the export screen says ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('S2 suppressionCarryStatus: carried when the whole record can go; nothing-to-carry only when BOTH are absent (or the list is empty); everything else is left-out', () => {
+  const ok = (v: SuppressionRecord): SealedRead<SuppressionRecord> => ({ state: 'ok', value: v });
+  const list = (v: string[]): SealedRead<string[]> => ({ state: 'ok', value: v });
+  const absent = { state: 'absent' } as const;
+  const bad = { state: 'unreadable' } as const;
+  assert.equal(suppressionCarryStatus(ok(rec({ persons: [X] })), absent), 'carried');
+  assert.equal(suppressionCarryStatus(ok(rec()), list([Y])), 'carried');
+  assert.equal(suppressionCarryStatus(absent, absent), 'nothing-to-carry');
+  assert.equal(suppressionCarryStatus(absent, list([])), 'nothing-to-carry');
+  assert.equal(suppressionCarryStatus(bad, absent), 'left-out', 'an unreadable record is not an absent one');
+  assert.equal(suppressionCarryStatus(bad, list([])), 'left-out');
+  assert.equal(suppressionCarryStatus(ok(rec({ persons: [X] })), bad), 'left-out', 'an unreadable removed list leaves everything out');
+  assert.equal(suppressionCarryStatus(absent, bad), 'left-out');
+  assert.equal(suppressionCarryStatus(absent, list([Y])), 'left-out', 'a Remove with no record cannot be carried');
+  assert.equal(suppressionCarryStatus(ok(rec()), list(ids(100, CARRY_MAX_ENTRIES + 1))), 'left-out', 'over the cap is left out');
+  assert.equal(suppressionCarryStatus(ok(rec()), list(ids(100, CARRY_MAX_ENTRIES))), 'carried', 'exactly the cap still goes');
+});
+
+test('S2 the status agrees with suppressionToCarry: carried exactly when it returns a value (400 seeded cases)', () => {
+  let seed = 7;
+  const next = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  const recs: SealedRead<SuppressionRecord>[] = [{ state: 'absent' }, { state: 'unreadable' }, { state: 'ok', value: rec({ persons: [X] }) }, { state: 'ok', value: rec({ global: true, groups: ['family'] }) }];
+  const lists: SealedRead<string[]>[] = [{ state: 'absent' }, { state: 'unreadable' }, { state: 'ok', value: [] }, { state: 'ok', value: [Y] }, { state: 'ok', value: ids(1000, CARRY_MAX_ENTRIES + 1) }];
+  for (let i = 0; i < 400; i++) {
+    const r = recs[next(recs.length)]; const l = lists[next(lists.length)];
+    const carriedValue = suppressionToCarry(r.state === 'ok' ? r.value : null, l);
+    assert.equal(suppressionCarryStatus(r, l) === 'carried', carriedValue !== undefined, JSON.stringify([r.state, l.state]));
+  }
 });
 
 // ── the removed list ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
