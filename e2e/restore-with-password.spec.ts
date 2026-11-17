@@ -118,7 +118,7 @@ async function openRestoreScreen(page: Page, file: string) {
   await page.setInputFiles('[data-testid="restore-file-input"]', file);
 }
 const PROMPT = (p: Page) => p.getByTestId('device-password-prompt');
-const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
+const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|can't be read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
 /** After pressing the restore button: wait for the first thing that settles the attempt. */
 async function settle(page: Page): Promise<'restored' | 'prompt' | 'error'> {
   const restored = page.getByRole('tab', { name: 'Contacts', exact: true });
@@ -487,4 +487,25 @@ test('f. a restore that stops after ANY write, run again with the same file, end
     await ctx.close();
   }
   console.log(`[restore-pw] f. summary: ${results.join(' | ')}`);
+});
+
+test('p. a recovery-pieces record that is not a usable set is refused before any write, with the "part of this backup can\'t be read" sentence; the same backup with a usable record restores and stores it', async ({ browser }, testInfo) => {
+  const piece = (i: number, t: number) => ({ index: i + 1, data: 'AAAA', identity_fingerprint: fp, threshold: t });
+  const withShards = (threshold: number, total: number, n: number) => { const b = clean(noVault()) as Record<string, unknown>; b.shards = { threshold, total, shards: Array.from({ length: n }, (_, i) => piece(i, threshold)) }; return b; };
+  // a threshold of 1: the give-a-piece screen would print "Any 1 of your keepers ... no single piece can", a contradiction
+  const bad = await newPage(browser);
+  expect(await restoreWith(bad.page, writeFull(testInfo, 'full-o-bad.json', withShards(1, 2, 2), FILE_PW), FILE_PW)).toBe('error');
+  await expect(bad.page.getByText("Part of this backup can't be read, so it can't be restored. If you have another copy, try that one.").first()).toBeVisible();
+  const refused = await deviceState(bad.page);
+  console.log('[restore-pw] p. refused, device state:', JSON.stringify(refused));
+  expect(refused.salt).toBeFalsy(); expect(refused.keys).toBe(0); expect(refused.identities).toBe(0); expect(refused.shards).toBe(0); expect(refused.contacts).toBe(0);
+  expect(await PROMPT(bad.page).count(), 'refused before the person is asked for a device password').toBe(0);
+  await bad.ctx.close();
+  // the control: the same backup with a usable 3-of-5 record restores, and the record is stored
+  const ok = await newPage(browser);
+  expect(await restoreWith(ok.page, writeFull(testInfo, 'full-o-ok.json', withShards(3, 5, 5), FILE_PW), FILE_PW)).toBe('restored');
+  const stored = await deviceState(ok.page);
+  console.log('[restore-pw] p. control restored, device state:', JSON.stringify(stored));
+  expect(stored.keys).toBe(1); expect(stored.shards).toBe(1);
+  await ok.ctx.close();
 });

@@ -30,6 +30,7 @@ import {
   type OwnerCardBag,
 } from '@/components/identity/owner-card';
 import { OwnerLensPicker } from '@/components/identity/OwnerLensPicker';
+import { ContactInputError, contactFailureMessage } from './contact-management-copy';
 
 type Props = {
   open: boolean;
@@ -76,7 +77,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
     try {
       const fp = identity.identity.fingerprint;
       const key = await loadKey(fp);
-      if (!key) throw new Error('Unlock your identity first.');
+      if (!key) throw new ContactInputError('invite-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const result = await createRelay(JSON.stringify(signed));
       const ch = channelRef.current;
@@ -88,7 +89,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
         /* non-fatal */
       }
     } catch (e: any) {
-      setError(e?.message || 'Could not prepare the invite.');
+      setError(contactFailureMessage(e, 'invite'));
     } finally {
       setBusy(false);
     }
