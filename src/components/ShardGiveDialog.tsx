@@ -13,8 +13,14 @@ import {
 import { Button } from '@/components/ui/button';
 import { HeartCrack, Link2, Copy, Check, Clock, ShieldCheck } from 'lucide-react';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
+import { SHARD_LINK_FAILED, SHARD_LINK_NOTE, SHARD_READ_FAILED, shardAllGivenLine } from './shard-give-copy';
+import { errorTag } from '@/lib/error-tag';
 import { createRelay } from '@/lib/sync/relay';
 import { loadShards, markShardGiven, SHARD_CUSTODY_TYPE } from '@/lib/identity/client-store';
+
+// Shown when this device holds no record of the identity's recovery pieces: an identity made before pieces existed, or a restore that left a damaged record out.
+// The copy owner's words, byte for byte (a test pins them). It does not tell anyone to make a new identity or to give new pieces.
+const NO_PIECES_RECORD_SENTENCE = 'This device has no record of recovery pieces for this identity, so there are none to give from here. If you restored it from a backup, another copy of that backup may bring the record back.';
 
 interface ContactLike {
   id: string;
@@ -36,7 +42,7 @@ type Phase =
   | 'loading'
   | 'ready'        // a piece is available to give
   | 'link'         // link generated, the tear is given
-  | 'none'         // this identity has no shards (created pre-feature)
+  | 'none'         // this device holds no record of the pieces (an older identity, or a restore that left a damaged record out)
   | 'all-given'    // every piece already handed out
   | 'already-held' // this contact already holds one of your pieces
   | 'error';
@@ -96,7 +102,8 @@ export function ShardGiveDialog({
         setPhase('ready');
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Could not read your recovery shards.');
+        console.error('Recovery pieces read failed:', errorTag(err));
+        setError(SHARD_READ_FAILED);
         setPhase('error');
       }
     })();
@@ -145,7 +152,8 @@ export function ShardGiveDialog({
       setPhase('link');
       onGiven?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create the recovery link.');
+      console.error('Recovery link failed:', errorTag(err));
+      setError(SHARD_LINK_FAILED);
     } finally {
       setGenerating(false);
     }
@@ -179,13 +187,12 @@ export function ShardGiveDialog({
 
         <div className="py-2">
           {phase === 'loading' && (
-            <p className="text-sm text-gray-500 text-center py-8">Reading your recovery shards…</p>
+            <p className="text-sm text-gray-500 text-center py-8">Reading your recovery pieces…</p>
           )}
 
           {phase === 'none' && (
             <div className="rounded-lg p-4 bg-gray-900 border border-gray-800 text-sm text-gray-400">
-              This identity has no recovery shards stored. Shards are minted for identities
-              created with social recovery — create a new identity to use the tear.
+              {NO_PIECES_RECORD_SENTENCE}
             </div>
           )}
 
@@ -199,8 +206,7 @@ export function ShardGiveDialog({
 
           {phase === 'all-given' && (
             <div className="rounded-lg p-4 bg-amber-500/6 border border-amber-500/15 text-sm text-gray-300">
-              You've given out all {total} of your pieces. Any {threshold} of your keepers
-              can help you restore.
+              {shardAllGivenLine(total, threshold)}
             </div>
           )}
 
@@ -242,7 +248,7 @@ export function ShardGiveDialog({
                   <span className="text-xs font-medium text-teal-400">A piece of you is ready for {contact.name}</span>
                 </div>
                 <p className="text-xs text-gray-500">
-                  Send them this link. It's encrypted in your browser — the server never sees the piece.
+                  {SHARD_LINK_NOTE}
                 </p>
               </div>
 

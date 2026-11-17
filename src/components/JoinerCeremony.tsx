@@ -56,6 +56,7 @@ import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { clampArrivalName, mergeArrivalPin } from '@/lib/trust/grow-gate';
+import { joinerFailureMessage } from './joiner-ceremony-copy';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -231,7 +232,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setPhase('card');
       } catch (err: any) {
         if (cancelled) return;
-        setError(err?.message || "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
+        setError(joinerFailureMessage(err, 'openLink'));
       }
     })();
 
@@ -315,7 +316,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       void depositJoinerResponse(ownerFp, peer, code);
       setPhase('done');
     } catch (err: any) {
-      setError(err?.message || 'Could not add them to your Gate.');
+      setError(joinerFailureMessage(err, 'addToGate'));
     } finally {
       setAdding(false);
     }
@@ -365,7 +366,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       setShardState('accepted');
       try { delete (window as any).__svrnty_shard; } catch { /* ignore */ }
     } catch (err: any) {
-      setShardMsg(err?.message || 'Could not accept the piece.');
+      setShardMsg(joinerFailureMessage(err, 'keepPiece'));
       setShardState('idle');
     }
   }, [ownerFp]);

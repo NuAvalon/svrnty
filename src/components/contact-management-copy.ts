@@ -9,6 +9,7 @@
 // Run: npx tsx --test src/components/contact-management-copy.test.ts
 import { CONTACT_IO_MESSAGES, errorTag } from '@/lib/contacts/contact-io-errors';
 import { contactRefusalMessage } from '@/lib/contacts/contact-refusal';
+import { dbUpgradeBlockedMessage } from '@/lib/db-upgrade-blocked';
 
 export type ContactInputCode =
   | 'invite-no-key'
@@ -65,7 +66,7 @@ export const CONTACT_FAILURE_MESSAGES: Readonly<Record<ContactFailureSite, strin
   remove: "Removing the contact didn't finish. Check your contacts before you try again.",
   trust: "Changing trust didn't finish. Check the contact before you try again.",
   verify: "Recording your verification didn't finish. Check the contact before you try again.",
-  block: 'This person may not be blocked. Check the contact and try again.',
+  block: "Blocking didn't finish, so this person might not be blocked yet. Check the contact and try again.",
   unblock: "Unblocking didn't finish. Check the contact and try again.",
   share: "Your card couldn't be prepared for sharing. Try again.",
   import: "Importing this card didn't finish. Check your contacts before you try again.",
@@ -81,6 +82,8 @@ export function contactFailureMessage(err: unknown, site: ContactFailureSite): s
   if (err instanceof ContactInputError) return CONTACT_INPUT_MESSAGES[err.code];
   const refusal = contactRefusalMessage(err, site === 'import' ? 'import' : site === 'add' ? 'add' : 'other');
   if (refusal !== null) return refusal;
+  const blocked = dbUpgradeBlockedMessage(err);   // an expected stop (another tab holds the database), not an unknown failure: not logged
+  if (blocked !== null) return blocked;
   console.error(`Contact ${site} failed:`, errorTag(err));
   return CONTACT_FAILURE_MESSAGES[site];
 }

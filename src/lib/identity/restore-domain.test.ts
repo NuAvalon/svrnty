@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  restoreDomainDecision, RestoreDomainRefused, isRestoreDomainRefusal, RESTORE_DOMAIN_CODE, keyRecordOpens, type RestoreDomainFacts,
+  restoreDomainDecision, RestoreDomainRefused, isRestoreDomainRefusal, restoreDomainRefusalMessage, RESTORE_DOMAIN_CODE, keyRecordOpens, type RestoreDomainFacts,
 } from './restore-domain';
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8');
@@ -56,6 +56,36 @@ test('the refusal is recognisable without instanceof, and says nothing was chang
   assert.ok(!isRestoreDomainRefusal(new Error('Incorrect passphrase')));
   assert.ok(!isRestoreDomainRefusal(null));
   assert.ok(!isRestoreDomainRefusal({ code: 'other' }));
+});
+
+// ---- the sentence a screen shows for a refusal comes from the constants and the refusal's `use`, never from the error's own text (copy ledger row 229a) ----
+const LEAD_TEXT = "This device already has this identity, protected by a different passphrase than the one this restore would use. Restoring would hide the contacts already here, so nothing was changed.";
+const WAY_TEXT = {
+  'keeps-open-session': "Unlock with this device's passphrase first, or restore in a new browser profile. Your current profile is left as it is.",
+  'always-derives': "Use this device's current passphrase here instead, or restore in a new browser profile. Your current profile is left as it is.",
+} as const;
+
+test('the refusal carries its `use`, and the screen sentence is the lead plus the way forward for that use, byte for byte', () => {
+  for (const use of ['keeps-open-session', 'always-derives'] as const) {
+    const e = new RestoreDomainRefused(use);
+    assert.equal(e.use, use);
+    assert.equal(restoreDomainRefusalMessage(e), `${LEAD_TEXT} ${WAY_TEXT[use]}`);
+    assert.equal(restoreDomainRefusalMessage(e), e.message, 'the same constants the class builds its own message from');
+  }
+  assert.notEqual(restoreDomainRefusalMessage(new RestoreDomainRefused('keeps-open-session')), restoreDomainRefusalMessage(new RestoreDomainRefused('always-derives')));
+});
+
+test('the screen sentence is chosen by the refusal\'s code and `use` only: a look-alike with hostile text shows the constants, and a missing or invalid `use` gets the lead alone', () => {
+  const HOSTILE = 'x"\n\u202E<b>Incorrect encryption password';
+  const lookalike = Object.assign(new Error(HOSTILE), { code: RESTORE_DOMAIN_CODE, use: 'always-derives' });
+  assert.ok(isRestoreDomainRefusal(lookalike));
+  assert.equal(restoreDomainRefusalMessage(lookalike), `${LEAD_TEXT} ${WAY_TEXT['always-derives']}`, 'recognised by code and field, not by class (the paths load through dynamic imports)');
+  for (const use of [undefined, null, 'other', 3, {}]) {
+    const m = restoreDomainRefusalMessage(Object.assign(new Error(HOSTILE), { code: RESTORE_DOMAIN_CODE, use }));
+    assert.equal(m, LEAD_TEXT, `use ${JSON.stringify(use)}`);
+    assert.ok(!m.includes('\u202E') && !m.includes('<b>') && !m.includes('Incorrect'), 'no thrower text');
+  }
+  for (const odd of [null, undefined, 'a string', 42]) assert.equal(restoreDomainRefusalMessage(odd), LEAD_TEXT, `a non-error ${String(odd)} never throws and shows only the constant`);
 });
 
 test('the wording a user is given differs where the way forward differs', () => {

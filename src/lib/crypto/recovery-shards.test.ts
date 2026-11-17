@@ -13,6 +13,7 @@
 //   R8  the whole chain through a real vault: M good pieces open it, a bad piece among exactly M is refused (and named) and never returns a bundle
 //   R9  restore with one bad piece among M+1: the information is there (subset search + the vault's own hash check finds the good M), and recoverFromShards
 //       now does it (R9b), by the vault's list when it has one and by that search when it does not.
+//       Two bad pieces among M+1 never recover (R9a, R9c), through one helper (flipTwoApart): the same byte flipped in both can cancel.
 // Run: npx tsx --test src/lib/crypto/recovery-shards.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,6 +48,9 @@ function flip(piece: Shard, pos: number): Shard {
   return { ...piece, data: toB64(d) };
 }
 const pick = (all: Shard[], idx: number[]) => idx.map((i) => all[i]);
+/** The first two pieces made bad, at DIFFERENT bytes (10 and 11). Shamir works byte by byte: with the SAME byte flipped in both, the two errors can cancel (about 0.8% of random
+ *  splits, because each piece has a random x-coordinate) and the true secret comes back. At different bytes each byte has one bad piece and its error cannot cancel. */
+const flipTwoApart = (pieces: Shard[]): Shard[] => pieces.map((p, i) => (i < 2 ? flip(p, 10 + i) : p));
 
 const CONFIGS: Array<[n: number, m: number]> = [[5, 3], [4, 2], [6, 4], [3, 3]];
 
@@ -170,9 +174,18 @@ test('R9a the information is there: M+1 pieces with one bad still restore by sub
     const handed = pick(shards, s).map((p, i) => (i === bad ? flip(p, 10) : p));
     assert.deepEqual(await recoverBySubsetSearch(vault, handed, m), BUNDLE, `subset ${s.join(',')} bad ${bad}`);
   }
-  // and with TWO bad among M+1 there is no good M left: it must fail, not return something
-  const two = pick(shards, [0, 1, 2, 3]).map((p, i) => (i < 2 ? flip(p, 10) : p));
+  // and with TWO bad among M+1 there is no good M left: it must fail, not return something (flipTwoApart: why the bytes differ)
+  const two = flipTwoApart(pick(shards, [0, 1, 2, 3]));
   await assert.rejects(() => recoverBySubsetSearch(vault, two, m));
+});
+
+test('R9c two bad pieces among M+1 never give the secret, over 1000 fresh splits (flipTwoApart: its errors cannot cancel; with the same byte flipped they do about 0.8% of the time)', async () => {
+  const [n, m] = [5, 3];
+  for (let k = 0; k < 1000; k++) {
+    const secret = generateMasterSecret();
+    const two = flipTwoApart(pick(await createShards(secret, m, n, FP), [0, 1, 2, 3]));
+    for (const sub of subsets(4, m)) assert.equal(await recovers(pick(two, sub), secret), false, `split ${k}, pieces ${sub.join(',')}`);
+  }
 });
 
 test('R9b recoverFromShards itself restores from M+1 pieces with one bad', async () => {
