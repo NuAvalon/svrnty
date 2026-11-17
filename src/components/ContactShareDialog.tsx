@@ -13,7 +13,7 @@ import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
 import { errorTag } from '@/lib/error-tag';
-import { SHARE_LINK_FAILED, SHARE_NFC_FAILED } from './contact-share-copy';
+import { SHARE_LINK_FAILED, SHARE_NFC_DENIED, SHARE_NFC_FAILED, isNfcNotAllowed } from './contact-share-copy';
 import { shareUrl } from '@/lib/config/domain';
 import {
   hydrateOwnerCard,
@@ -137,7 +137,7 @@ export function ContactShareDialog({
     } catch (err) {
       setNfcStatus('error');
       console.error('NFC write failed:', errorTag(err));
-      setNfcError(SHARE_NFC_FAILED);
+      setNfcError(isNfcNotAllowed(err) ? SHARE_NFC_DENIED : SHARE_NFC_FAILED);
     }
   }, [exchangePackage]);
 
