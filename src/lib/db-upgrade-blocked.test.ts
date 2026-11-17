@@ -13,6 +13,7 @@ import { FRONTEND_FAILURE_MESSAGES, frontendFailureMessage, type FrontendFailure
 import { JOINER_FAILURE_MESSAGES, joinerFailureMessage, type JoinerFailureSite } from '../components/joiner-ceremony-copy';
 import { exportFailureMessage, keyExportFailureMessage, plainPasteFailureMessage } from './contacts/contact-io-errors';
 import { sealedFailureMessage } from './contacts/sealed-book-import';
+import { vcfBookReadFailureMessage, vcfReadFailureMessage, vcfImportFailureMessage } from '../components/import-contacts-copy';
 import { classifyRestoreFailure } from './identity/restore-errors';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -65,10 +66,13 @@ const HELPERS: ReadonlyArray<readonly [string, (e: unknown) => string]> = [
   ['keyExportFailureMessage', keyExportFailureMessage],
   ['plainPasteFailureMessage', plainPasteFailureMessage],
   ['sealedFailureMessage', sealedFailureMessage],
+  ['vcfReadFailureMessage', vcfReadFailureMessage],
+  ['vcfBookReadFailureMessage', vcfBookReadFailureMessage],
+  ['vcfImportFailureMessage', vcfImportFailureMessage],
   ['classifyRestoreFailure', (e) => classifyRestoreFailure(e).message],
   ['classifyRestoreFailure(v4Vault)', (e) => classifyRestoreFailure(e, { v4Vault: true }).message],
 ];
-const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage'];
+const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage', 'vcfBookReadFailureMessage', 'vcfImportFailureMessage', 'vcfReadFailureMessage'];
 
 test('DU3 every helper shows THE sentence for the coded error (and a look-alike), never its generic one, and does not log it as an unknown failure', () => {
   const calls: unknown[][] = [];
