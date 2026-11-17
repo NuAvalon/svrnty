@@ -24,6 +24,7 @@ import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
 import { assertFingerprintUnchanged, ContactUpdateRefused } from './contact-identity';
+import { DbUpgradeBlocked } from '../db-upgrade-blocked';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -440,7 +441,7 @@ function openDB(): Promise<IDBDatabase> {
     // Without this, a version upgrade blocked by another open connection hangs
     // open() forever — freezing the app at its "RESOLVING…" loading state.
     // Settling the promise lets the caller degrade gracefully instead.
-    request.onblocked = () => reject(new Error('svrnty database is upgrading — close other svrnty tabs and reload'));
+    request.onblocked = () => reject(new DbUpgradeBlocked());
   });
 }
 

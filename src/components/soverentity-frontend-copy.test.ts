@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { errorTag } from '@/lib/contacts/contact-io-errors';
+import { DB_UPGRADE_BLOCKED_MESSAGE, DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
 import { FRONTEND_FAILURE_MESSAGES, frontendFailureMessage } from './soverentity-frontend-copy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,4 +51,18 @@ test('SF3 THE COMPONENT: no error text is read, the three restore refusals use t
   assert.equal(sf.split("throw new ContactInputError('share-no-key')").length - 1, 1, 'the locked-key refusal is the contact book\'s typed one');
   assert.ok(!/throw new Error\('Unlock your identity first to share a signed card\.'\)/.test(sf));
   assert.match(sf, /from '\.\/contact-management-copy'/, 'imported from area one\'s module');
+});
+
+test('SF4 a blocked database upgrade shows THE one sentence at both sites, is not logged as an unknown failure, and the old plain text is just a failure', () => {
+  const calls: unknown[][] = [];
+  const real = console.error; console.error = (...a: unknown[]) => { calls.push(a); };
+  try {
+    for (const site of Object.keys(FRONTEND_FAILURE_MESSAGES) as Array<keyof typeof FRONTEND_FAILURE_MESSAGES>) {
+      assert.equal(frontendFailureMessage(new DbUpgradeBlocked(), site), DB_UPGRADE_BLOCKED_MESSAGE, site);
+      assert.equal(frontendFailureMessage({ code: 'db-upgrade-blocked' }, site), DB_UPGRADE_BLOCKED_MESSAGE, `${site} by code`);
+      assert.notEqual(DB_UPGRADE_BLOCKED_MESSAGE, FRONTEND_FAILURE_MESSAGES[site]);
+    }
+    assert.equal(calls.length, 0, 'an expected stop is not logged');
+    assert.equal(frontendFailureMessage(new Error('svrnty database is upgrading — close other svrnty tabs and reload'), 'createIdentity'), FRONTEND_FAILURE_MESSAGES.createIdentity);
+  } finally { console.error = real; }
 });

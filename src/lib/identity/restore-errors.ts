@@ -9,6 +9,7 @@
 // password.)
 
 import { DEVICE_PASSWORD_MIN } from './device-password';
+import { DB_UPGRADE_BLOCKED_MESSAGE, isDbUpgradeBlocked } from '../db-upgrade-blocked';
 
 /** The restore screen could not recognise the file's shape at all. */
 export class RestoreFormatUnrecognized extends Error {
@@ -51,6 +52,7 @@ export type RestoreFailureCode =
   | 'legacy-v2'
   | 'v3-no-recovery'
   | 'no-recovery-vault'
+  | 'db-upgrade-blocked'
   | 'unknown';
 
 export interface RestoreFailure { code: RestoreFailureCode; message: string }
@@ -100,6 +102,7 @@ export const RESTORE_MESSAGES = Object.freeze({
  *  - anything else is 'unknown': one generic sentence.
  */
 export function classifyRestoreFailure(err: unknown, ctx: { v4Vault?: boolean } = {}): RestoreFailure {
+  if (isDbUpgradeBlocked(err)) return { code: 'db-upgrade-blocked', message: DB_UPGRADE_BLOCKED_MESSAGE };   // another tab holds the database: a stop, not an unknown failure
   if (codeOf(err) === 'wrong-password' || codeOf(err) === 'vault-could-not-open') {
     return { code: 'wrong-password', message: ctx.v4Vault ? RESTORE_MESSAGES.wrongPasswordVaultV4 : RESTORE_MESSAGES.wrongPassword };
   }

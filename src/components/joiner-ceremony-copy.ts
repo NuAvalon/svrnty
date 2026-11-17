@@ -10,6 +10,7 @@
 // Run: npx tsx --test src/components/joiner-ceremony-copy.test.ts
 import { errorTag } from '@/lib/error-tag';
 import { contactRefusalMessage } from '@/lib/contacts/contact-refusal';
+import { dbUpgradeBlockedMessage } from '@/lib/db-upgrade-blocked';
 
 export const JOINER_FAILURE_MESSAGES = Object.freeze({
   openLink: "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.",
@@ -23,6 +24,8 @@ export type JoinerFailureSite = keyof typeof JOINER_FAILURE_MESSAGES;
 export function joinerFailureMessage(err: unknown, site: JoinerFailureSite): string {
   const refusal = site === 'addToGate' ? contactRefusalMessage(err) : null;   // only this site reaches the contact store
   if (refusal) return refusal;
+  const blocked = dbUpgradeBlockedMessage(err);   // every site can touch the store, so every site maps it; an expected stop, so not logged
+  if (blocked !== null) return blocked;
   console.error(`Joiner ${site} failed:`, errorTag(err));
   return JOINER_FAILURE_MESSAGES[site];
 }

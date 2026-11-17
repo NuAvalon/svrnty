@@ -38,6 +38,7 @@ import {
   getKeyEnvelopeFingerprint,
   verifyPassphrase,
 } from '../../lib/identity/client-store';
+import { DbUpgradeBlocked } from '../../lib/db-upgrade-blocked';
 
 export type BiometricCapability =
   | { status: 'available' }
@@ -218,8 +219,7 @@ function openBioDB(): Promise<IDBDatabase> {
       resolve(db);
     };
     request.onerror = () => reject(request.error);
-    request.onblocked = () =>
-      reject(new Error('svrnty-biometric database is upgrading — close other tabs and reload'));
+    request.onblocked = () => reject(new DbUpgradeBlocked());
   });
 }
 
