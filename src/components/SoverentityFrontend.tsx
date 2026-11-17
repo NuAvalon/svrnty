@@ -5,8 +5,14 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
-import { isRestoreDomainRefusal } from '@/lib/identity/restore-domain';
+import { openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
+import { restoreWritesOf } from '@/lib/identity/restore-writes';
+import { classifyRestoreFailure, RestoreFormatUnrecognized, RestoreStoppedPartway, RestoreStoppedNothingSaved, RestoreMayHaveSaved, RESTORE_MESSAGES, contactsReportLines } from '@/lib/identity/restore-errors';
+import type { SovereignBackup } from '@/lib/identity/client-store';
+import { DEVICE_PASSWORD_MIN, assertRestoreKeepsOwnerDomain, loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, markDeliveryRestored, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { isRestoreDomainRefusal, restoreDomainRefusalMessage } from '@/lib/identity/restore-domain';
+import { ContactInputError, contactFailureMessage } from './contact-management-copy';
+import { frontendFailureMessage } from './soverentity-frontend-copy';
 import { isRestoreDurableRefusal, RESTORE_DURABLE_MESSAGE } from '@/lib/identity/restore-durable';
 import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
@@ -352,6 +358,12 @@ export function SoverentityFrontend({
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  /** What a restore that did NOT end on the identity screen did and did not bring back (a key-only file on a fresh device). Not an error. */
+  const [restoreOutcome, setRestoreOutcome] = useState<string | null>(null);
+  /** A backup that opened but has no password this device can use: the screen asks for a new device password, and nothing has been written yet. */
+  const [devicePwPrompt, setDevicePwPrompt] = useState<null | { backup: SovereignBackup; legacyOpened: boolean; hasFilePassword: boolean }>(null);
+  const [newDevicePw, setNewDevicePw] = useState('');
+  const [newDevicePwConfirm, setNewDevicePwConfirm] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -532,7 +544,7 @@ export function SoverentityFrontend({
       });
       setGateMode('recovery-reveal');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(frontendFailureMessage(err, 'createIdentity'));
     } finally {
       setLoading(false);
     }
@@ -559,10 +571,14 @@ export function SoverentityFrontend({
 
     setVaultFile(file);
     setRestoreError(null);
+    setRestoreOutcome(null);
+    setDevicePwPrompt(null);
 
     try {
-      // JSON-based backups (.json or .svrnty that are JSON inside)
-      if (file.name.endsWith('.json') || file.name.endsWith('.svrnty')) {
+      // JSON-based backups, decided by what the file CONTAINS, not by its name: the app's own key export is named *.svrnty-keys, and a renamed copy of
+      // any backup must still open. A binary .svrnty vault does not start with "{", so it still goes to the vault reader below.
+      const head = new TextDecoder().decode(new Uint8Array(await file.slice(0, 64).arrayBuffer())).trimStart();
+      if (head.startsWith('{') || file.name.endsWith('.json')) {
         const text = await file.text();
         let data: any;
         try { data = JSON.parse(text); } catch { data = null; }
@@ -612,9 +628,11 @@ export function SoverentityFrontend({
       setVaultPassphrase('');
       setGateMode('restore-verify');
     } catch (err) {
-      setRestoreError(
-        err instanceof Error ? err.message : 'Could not read file. Accepts .svrnty or .json backups.'
-      );
+      // Picking a file: by code only (restore-errors.ts); no thrower's own text is shown. A header that does not parse is rethrown by readVaultHeader as a coded
+      // error; any other error here (a SyntaxError included) is the generic sentence.
+      const failure = classifyRestoreFailure(err);
+      if (failure.code === 'unknown') console.error('Reading the file failed with an unclassified error:', err);
+      setRestoreError(failure.message);
     }
   };
 
@@ -657,23 +675,87 @@ export function SoverentityFrontend({
       setVaultPassphrase('');
       setRestorePath('passphrase');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
       if (isRestoreDomainRefusal(err)) {
-        setRestoreError(msg);
+        setRestoreError(restoreDomainRefusalMessage(err));
         return;
       }
-      // #532 C1: the code opened the bundle but its identity record is inconsistent. Routed BEFORE the wrong-code regex below,
-      // which would otherwise match and tell the person their recovery code is wrong.
+      // #532 C1: the code opened the bundle but its identity record is inconsistent: its own sentence.
       if (isRestoreDurableRefusal(err)) {
         setRestoreError(RESTORE_DURABLE_MESSAGE);
         return;
       }
-      // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
-      // DO-SECOND honest error (seed-only path).
-      if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
-        setRestoreError("That recovery code doesn't match this backup.");
-      } else {
-        setRestoreError(msg || 'Could not recover from this backup.');
+      // Decided by the thrower's CODE (coded-error.ts), never by its text: a message that merely mentions a hash or a seed phrase is not a wrong recovery
+      // code, and no thrower's own text is shown. A wrong code fails closed with no lockout, so the person can try again.
+      const failure = classifyRestoreFailure(err);
+      if (failure.code === 'unknown') console.error('Seed restore failed with an unclassified error:', err);
+      setRestoreError(failure.message);
+    } finally {
+      setRestoreLoading(false);
+    }
+  };
+
+  /**
+   * Import a backup and finish the restore, or ask for a device password (and stop, nothing written) when none can be used. The file's own password
+   * becomes the device password only when it is long enough; a plain backup has none, so it always comes here for one on a fresh device.
+   */
+  const importBackupAndFinish = async (backup: SovereignBackup, opts: { filePassword?: string; devicePassword?: string; legacyOpened?: boolean }): Promise<boolean> => {
+    const { importAllWithPassword } = await import('@/lib/identity/client-store');
+    let report;
+    try {
+      report = await importAllWithPassword(backup, { filePassword: opts.filePassword, devicePassword: opts.devicePassword });
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code === 'needs-device-password') {
+        setDevicePwPrompt({ backup, legacyOpened: !!opts.legacyOpened, hasFilePassword: !!opts.filePassword });
+        return false;
+      }
+      // An unclassified failure after the restore began writing: say what the device holds by COMPARING it with its state just before the first write
+      // (equal = nothing saved, different = part saved, unreadable = may have been saved). A failure before that point carries no verdict and keeps the generic sentence.
+      const writes = restoreWritesOf(err);
+      if (writes && !isRestoreDomainRefusal(err) && classifyRestoreFailure(err).code === 'unknown') {
+        console.error('Restore stopped:', writes, err);
+        throw writes === 'none' ? new RestoreStoppedNothingSaved() : writes === 'some' ? new RestoreStoppedPartway() : new RestoreMayHaveSaved();
+      }
+      throw err;
+    }
+    setDevicePwPrompt(null);
+    setNewDevicePw('');
+    setNewDevicePwConfirm('');
+    const parts: string[] = [];
+    if (report.kept + report.skipped > 0) parts.push(formatPlaintextImportReport(report));
+    parts.push(...contactsReportLines(report));
+    if (report.deviceUnlock === 'file-password') parts.push(RESTORE_MESSAGES.deviceUsesFilePassword);
+    if (opts.legacyOpened) parts.push(LEGACY_PASSWORD_METHOD_NOTICE);
+    if (parts.length > 0) setPlaintextImportNote(parts.join(' '));
+
+    // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
+    if (!backup.pq_keys) {
+      const fp = backup.identity?.identity?.fingerprint;
+      if (fp) {
+        setPendingPqMigration({ fingerprint: fp, identity: backup.identity });
+        setGateMode('pq-migrate');
+        return true;
+      }
+    }
+
+    setIdentity(backup.identity);
+    onIdentityUpdate?.(backup.identity);
+    return true;
+  };
+
+  const handleDevicePasswordSubmit = async () => {
+    if (!devicePwPrompt) return;
+    if (newDevicePw.length < DEVICE_PASSWORD_MIN) { setRestoreError(`Use at least ${DEVICE_PASSWORD_MIN} characters.`); return; }
+    if (newDevicePw !== newDevicePwConfirm) { setRestoreError("The two passwords don't match."); return; }
+    try {
+      setRestoreLoading(true);
+      setRestoreError(null);
+      await importBackupAndFinish(devicePwPrompt.backup, { devicePassword: newDevicePw, legacyOpened: devicePwPrompt.legacyOpened });
+    } catch (err) {
+      if (isRestoreDomainRefusal(err)) { setRestoreError(restoreDomainRefusalMessage(err)); }
+      else {
+        const failure = classifyRestoreFailure(err);
+        if (failure.code === 'unknown') console.error('Restore failed with an unclassified error:', err);
+        setRestoreError(failure.message);
       }
     } finally {
       setRestoreLoading(false);
@@ -686,11 +768,16 @@ export function SoverentityFrontend({
     try {
       setRestoreLoading(true);
       setRestoreError(null);
+      setRestoreOutcome(null);
+
+      // Set when the file was protected with the older password method: the owner is told, after the restore, to export a new copy.
+      let legacyOpened = false;
+      const withLegacyNotice = (note: string | null) => (legacyOpened ? [note, LEGACY_PASSWORD_METHOD_NOTICE].filter(Boolean).join(' ') : note);
 
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
-        const { importAll, storeKey, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
+        const { storeKey, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
 
         // Detect format and normalize
         if (data.type === 'svrnty-full-backup') {
@@ -699,30 +786,10 @@ export function SoverentityFrontend({
             setRestoreError('Enter the encryption password you set when exporting this copy.');
             return;
           }
-          const fromBase64 = (b64: string) => {
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            return bytes;
-          };
-          const enc = new TextEncoder();
-          const salt = fromBase64(data.salt);
-          const iv = fromBase64(data.iv);
-          const encrypted = fromBase64(data.data);
-          const keyMaterial = await crypto.subtle.importKey(
-            'raw', enc.encode(vaultPassphrase), 'PBKDF2', false, ['deriveKey']
-          );
-          const derivedKey = await crypto.subtle.deriveKey(
-            { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-            keyMaterial,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['decrypt']
-          );
-          const decrypted = new Uint8Array(
-            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
-          );
-          const backup = JSON.parse(new TextDecoder().decode(decrypted));
+          // The file's own tag picks the derivation: Argon2id, or the older method for a backup already held (read only).
+          const opened = await openWithPassword(data, vaultPassphrase);
+          legacyOpened = opened.legacy;
+          const backup = JSON.parse(new TextDecoder().decode(opened.plaintext));
 
           // L8: when a KeyVault is present, soul-seed is the second factor.
           if (backup.vault) {
@@ -750,23 +817,7 @@ export function SoverentityFrontend({
             }
           }
 
-          const fullReport = await importAll(backup);
-          if (fullReport.kept + fullReport.skipped > 0) {
-            setPlaintextImportNote(formatPlaintextImportReport(fullReport));
-          }
-
-          // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
-          if (!backup.pq_keys) {
-            const fp = backup.identity?.identity?.fingerprint;
-            if (fp) {
-              setPendingPqMigration({ fingerprint: fp, identity: backup.identity });
-              setGateMode('pq-migrate');
-              return;
-            }
-          }
-
-          setIdentity(backup.identity);
-          onIdentityUpdate?.(backup.identity);
+          await importBackupAndFinish(backup, { filePassword: vaultPassphrase, legacyOpened });
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
           if (data.vault) {
@@ -788,23 +839,7 @@ export function SoverentityFrontend({
               return;
             }
           }
-          const sovereignReport = await importAll(data);
-          if (sovereignReport.kept + sovereignReport.skipped > 0) {
-            setPlaintextImportNote(formatPlaintextImportReport(sovereignReport));
-          }
-
-          // PQ migration: check for missing PRIVATE PQ keys
-          if (!data.pq_keys) {
-            const fp = data.identity?.identity?.fingerprint;
-            if (fp) {
-              setPendingPqMigration({ fingerprint: fp, identity: data.identity });
-              setGateMode('pq-migrate');
-              return;
-            }
-          }
-
-          setIdentity(data.identity);
-          onIdentityUpdate?.(data.identity);
+          await importBackupAndFinish(data, {});
         } else if (data.owner_fingerprint && data.contacts) {
           // SecureExportDialog format — contacts only, no identity.
           // Same Known-only plaintext gate as importAll; unbindable rows skip and are reported.
@@ -826,31 +861,10 @@ export function SoverentityFrontend({
             setRestoreError('This is an encrypted key backup. Enter your password above to decrypt it.');
             return;
           }
-          // Decrypt the key data
-          const fromBase64 = (b64: string) => {
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            return bytes;
-          };
-          const enc = new TextEncoder();
-          const salt = fromBase64(data.salt);
-          const iv = fromBase64(data.iv);
-          const encrypted = fromBase64(data.data);
-          const keyMaterial = await crypto.subtle.importKey(
-            'raw', enc.encode(vaultPassphrase), 'PBKDF2', false, ['deriveKey']
-          );
-          const derivedKey = await crypto.subtle.deriveKey(
-            { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-            keyMaterial,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['decrypt']
-          );
-          const decrypted = new Uint8Array(
-            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
-          );
-          const keyData = JSON.parse(new TextDecoder().decode(decrypted));
+          // Decrypt the key data: the file's own tag picks the derivation (Argon2id, or the older method, read only).
+          const opened = await openWithPassword(data, vaultPassphrase);
+          legacyOpened = opened.legacy;
+          const keyData = JSON.parse(new TextDecoder().decode(opened.plaintext));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
           await assertRestoreKeepsOwnerDomain(fp, vaultPassphrase, 'keeps-open-session');
@@ -869,6 +883,10 @@ export function SoverentityFrontend({
           if (existingIdentity) {
             setIdentity(existingIdentity);
             onIdentityUpdate?.(existingIdentity);
+            if (legacyOpened) setPlaintextImportNote(LEGACY_PASSWORD_METHOD_NOTICE);
+          } else {
+            // A fresh device: the key is saved but there is no profile to show, so the identity screen (where notes live) never appears. Say what happened here.
+            setRestoreOutcome(withLegacyNotice(RESTORE_MESSAGES.keyOnlyRestored));
           }
         } else if (data.fingerprint && (data.public_key || data.identity)) {
           // Raw identity object — wrap and import
@@ -880,7 +898,7 @@ export function SoverentityFrontend({
           setIdentity(wrappedIdentity);
           onIdentityUpdate?.(wrappedIdentity);
         } else {
-          throw new Error('Unrecognized backup format. Expected a sovereign backup, contacts export, or identity file.');
+          throw new RestoreFormatUnrecognized();
         }
       } else {
         // .svrnty vault path — daily passphrase unlock (v3 + v4)
@@ -917,23 +935,15 @@ export function SoverentityFrontend({
         }
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
       if (isRestoreDomainRefusal(err)) {
-        setRestoreError(msg);
+        setRestoreError(restoreDomainRefusalMessage(err));
         return;
       }
-      const looksLikeDecryptFail =
-        /decrypt|OperationError|passphrase|password|could not open vault/i.test(msg) ||
-        (err instanceof DOMException && err.name === 'OperationError');
-      // Claim-honesty: wrong passphrase on binary vault must NOT auto-offer seed
-      // recovery in the error string for v3. v4 can offer the alternate path in UI.
-      setRestoreError(
-        looksLikeDecryptFail
-          ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
-            ? 'Incorrect passphrase. Try again, or recover with your recovery code below.'
-            : 'Incorrect encryption password. Use the password you set when you exported this copy.'
-          : msg || 'Failed to restore'
-      );
+      // Decided by the error's type and code, never by its message text (restore-errors.ts): a message that merely mentions a passphrase must not read as
+      // "Incorrect encryption password".
+      const failure = classifyRestoreFailure(err, { v4Vault: vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4 });
+      if (failure.code === 'unknown') console.error('Restore failed with an unclassified error:', err); // the owner sees one generic sentence; the real error is here for diagnosis
+      setRestoreError(failure.message);
     } finally {
       setRestoreLoading(false);
     }
@@ -1234,7 +1244,8 @@ export function SoverentityFrontend({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".svrnty,.json"
+            accept=".svrnty,.svrnty-keys,.json"
+            data-testid="restore-file-input"
             onChange={handleFileSelect}
             style={{ display: 'none' }}
           />
@@ -1350,6 +1361,51 @@ export function SoverentityFrontend({
           )}
 
           {restoreError && <div style={s.error}>{restoreError}</div>}
+          {restoreOutcome && <div role="status" data-testid="restore-outcome" style={s.trustWarning}>{restoreOutcome}</div>}
+          {devicePwPrompt && (
+            <div data-testid="device-password-prompt" style={s.trustWarning}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+                <strong>{RESTORE_MESSAGES.chooseDevicePasswordTitle}</strong>
+                <span>{devicePwPrompt.hasFilePassword ? RESTORE_MESSAGES.chooseDevicePasswordWeakFile : RESTORE_MESSAGES.chooseDevicePasswordNoFilePassword}</span>
+                <input
+                  type="password"
+                  name="svrnty-new-device-password"
+                  autoComplete="new-password"
+                  placeholder="New device password"
+                  value={newDevicePw}
+                  onChange={e => setNewDevicePw(e.target.value)}
+                  style={s.input}
+                />
+                <input
+                  type="password"
+                  name="svrnty-new-device-password-confirm"
+                  autoComplete="new-password"
+                  placeholder="Confirm device password"
+                  value={newDevicePwConfirm}
+                  onChange={e => setNewDevicePwConfirm(e.target.value)}
+                  style={s.input}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={handleDevicePasswordSubmit}
+                    disabled={restoreLoading || newDevicePw.length < DEVICE_PASSWORD_MIN || newDevicePw !== newDevicePwConfirm}
+                    style={s.restoreBtn}
+                  >
+                    Save to this device
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setDevicePwPrompt(null); setNewDevicePw(''); setNewDevicePwConfirm(''); setRestoreOutcome(RESTORE_MESSAGES.nothingSavedYet); }}
+                    disabled={restoreLoading}
+                    style={s.backBtn}
+                  >
+                    Back
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {vaultHeader?.format === 'json-backup' ? (
             <div style={s.trustWarning}>
@@ -1768,12 +1824,12 @@ export function SoverentityFrontend({
     try {
       const fp = identity.identity.fingerprint as string;
       const key = await loadKey(fp);
-      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      if (!key) throw new ContactInputError('share-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       setSharePackage(JSON.stringify(signed, null, 2));
       setShowShareIdentity(true);
     } catch (e) {
-      setShareError(e instanceof Error ? e.message : 'Could not prepare share package');
+      setShareError(contactFailureMessage(e, 'share'));
     } finally {
       setShareBusy(false);
     }
@@ -1853,7 +1909,7 @@ export function SoverentityFrontend({
       }
       return { ok: true, status: 'sent', deposited, skipped, failed, message };
     } catch (e) {
-      return { ok: false, reason: 'error', message: e instanceof Error ? e.message : 'Send failed.' };
+      return { ok: false, reason: 'error', message: frontendFailureMessage(e, 'sendUpdate') };
     }
   };
 

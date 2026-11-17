@@ -5,7 +5,9 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+import { restoreWritesVerdict, tagRestoreWrites, type OwnerSnapshot } from './restore-writes';
 import { canonicalAuthorityPin } from './authority-pin';
+import { DEVICE_PASSWORD_MIN } from './device-password';
 import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type RestoreKeyUse } from './restore-domain';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
@@ -21,7 +23,7 @@ import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './b
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
-import { assertFingerprintUnchanged } from './contact-identity';
+import { assertFingerprintUnchanged, ContactUpdateRefused } from './contact-identity';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -566,10 +568,12 @@ async function txPutMany(ops: TxOp[]): Promise<void> {
 // ── Identity operations ──────────────────────────────────────────
 
 export async function storeIdentity(fingerprint: string, data: any): Promise<void> {
+  // A record already here keeps its created_at when the data carries none, so writing the same identity again leaves the same row.
+  const existing = data.created_at ? null : await txGet<IdentityRecord>('identities', fingerprint);
   await txPut('identities', {
     fingerprint,
     data,
-    created_at: data.created_at || new Date().toISOString(),
+    created_at: data.created_at || existing?.created_at || new Date().toISOString(),
   });
 }
 
@@ -875,6 +879,20 @@ export async function importBeaconKeyRecord(ownerFingerprint: string, candidate:
   return txAdd('settings', { key: beaconKeySettingKey(ownerFingerprint), value: payload });
 }
 
+/**
+ * EVERY owner-sealed record in `settings`: a payload under the session key, a reserved id, and the owner as authenticated data. This list is the one place
+ * that names them: the restore's passphrase check opens each one that is present, and its before/after snapshot compares each one. A new sealed record MUST be
+ * added here; a static test fails when an encryptContactRecord(_sessionKey, <ID>, ...) call site uses an id that is not listed.
+ */
+export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: string; settingKey: (ownerFingerprint: string) => string }> = [
+  { name: 'suppression', recordId: SUPPRESSION_RECORD_ID, settingKey: suppressionSettingKey },
+  { name: 'held-affirms', recordId: HELD_AFFIRMS_RECORD_ID, settingKey: heldAffirmsSettingKey },
+  { name: 'delivery-default', recordId: DELIVERY_RECORD_ID, settingKey: deliverySettingKey },
+  { name: 'lens-book', recordId: LENS_BOOK_RECORD_ID, settingKey: lensBookSettingKey },
+  { name: 'beacon-seeds', recordId: BEACON_SEEDS_RECORD_ID, settingKey: beaconSeedsSettingKey },
+  { name: 'beacon-key', recordId: BEACON_KEY_RECORD_ID, settingKey: beaconKeySettingKey },
+];
+
 export async function listIdentities(): Promise<IdentityRecord[]> {
   return txGetAll('identities');
 }
@@ -960,10 +978,87 @@ export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
   return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
 }
 
+const digestOf = async (value: unknown): Promise<string> =>
+  toBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value)))));
+
+/** Read-only. Throws when any store cannot be read: the caller treats a snapshot it could not take as "unknown", never as "unchanged". */
+export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnapshot> {
+  const out: OwnerSnapshot = {};
+  const put = async (place: string, rows: unknown[]) => { out[place] = { n: rows.length, d: await digestOf(rows) }; };
+  for (const store of ['identities', ...OWNER_KEY_STORES]) {
+    const row = await txGet<unknown>(store, fingerprint);
+    await put(store, row ? [row] : []);
+  }
+  const contacts = (await txGetByIndex<{ id?: string }>('contacts', 'owner', fingerprint)).slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  await put('contacts', contacts);
+  const manifest = await txGet<unknown>('settings', contactManifestSettingKey(fingerprint));
+  await put('contact-manifest', manifest ? [manifest] : []);
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    const row = await txGet<unknown>('settings', sealed.settingKey(fingerprint));
+    await put(`sealed:${sealed.name}`, row ? [row] : []);
+  }
+  return out;
+}
+
 /** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
 export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
   if (!_sessionKey) return false;
   return keyRecordOpens(await txGet<unknown>('keys', fingerprint), _sessionKey, ENC_VERSION);
+}
+
+/**
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, and every OWNER_SEALED_SETTINGS record)?
+ * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
+ * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
+ * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
+ */
+export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, passphrase: string): Promise<boolean> {
+  const derived = new Map<string, CryptoKey>(); // records written in one session share a salt: derive once per salt
+  let opened = 0;
+  for (const store of OWNER_KEY_STORES) {
+    const record = await txGet<{ enc_version?: number; salt?: unknown; iv?: unknown; ciphertext?: unknown }>(store, fingerprint);
+    if (!record) continue;
+    if (record.enc_version !== ENC_VERSION) continue;
+    if (typeof record.salt !== 'string' || typeof record.iv !== 'string' || typeof record.ciphertext !== 'string') return false;
+    try {
+      let key = derived.get(record.salt);
+      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(record.salt)); derived.set(record.salt, key); }
+      if (!(await keyRecordOpens(record, key, ENC_VERSION))) return false;
+    } catch {
+      return false;
+    }
+    opened++;
+  }
+  // Contacts and every owner-sealed settings record (OWNER_SEALED_SETTINGS) are in the passphrase domain too: their records are under the session key (the settings
+  // salt), not under a record's own salt. Key rows under B beside a contact or a sealed record (a blocklist, the receipts default, ...) under A is the
+  // two-passphrase state, and a restore that wrote more rows there would read as "stopped partway" on every re-run, or leave a record unreadable for good.
+  const encryptedContacts = (await txGetByIndex<any>('contacts', 'owner', fingerprint)).filter((r) => r && r.enc_version && r.ciphertext);
+  const heldSealed: Array<{ recordId: string; value: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }> = [];
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
+    if (row?.value) heldSealed.push({ recordId: sealed.recordId, value: row.value });
+  }
+  if (encryptedContacts.length > 0 || heldSealed.length > 0) {
+    const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
+    if (!setting?.value) return false;
+    try {
+      let key = derived.get(setting.value);
+      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(setting.value)); derived.set(setting.value, key); }
+      for (const rec of encryptedContacts) {
+        if (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string') return false;
+        await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext });
+        opened++;
+      }
+      for (const held of heldSealed) {
+        if (typeof held.value.iv !== 'string' || typeof held.value.ciphertext !== 'string') return false;
+        await decryptContactRecord(key, held.recordId, fingerprint, { enc_version: held.value.enc_version, iv: held.value.iv, ciphertext: held.value.ciphertext });
+        opened++;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return opened > 0;
 }
 
 /**
@@ -978,7 +1073,7 @@ export async function assertRestoreKeepsOwnerDomain(fingerprint: string, passphr
     held,
     unlocked,
     sessionOpens: held && unlocked ? await sessionOpensOwner(fingerprint) : false,
-    passphraseOpens: held && passphrase ? await verifyPassphrase(fingerprint, passphrase) : false,
+    passphraseOpens: held && passphrase ? await passphraseOpensEveryHeldKeyRecord(fingerprint, passphrase) : false,
   });
   if (decision === 'refuse') throw new RestoreDomainRefused(use);
 }
@@ -1280,6 +1375,15 @@ async function buildStoredContact(record: ContactRecord): Promise<Record<string,
   return stored;
 }
 
+/**
+ * addContact REFUSED this row on purpose (its fingerprint does not bind to its key, or it would land trusted without a verification). Typed so a caller can
+ * tell a row that was refused from a write that FAILED: only the first is a row to skip and count.
+ */
+export class ContactRefused extends Error {
+  readonly code = 'contact-refused' as const;
+  constructor(public readonly reason: 'binding' | 'verify-before-trust', message: string) { super(message); this.name = 'ContactRefused'; }
+}
+
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
   // enc-b fail-closed (Flint seam Q4): never persist a contact unencrypted. Every add-path must be
   // post-unlock; if locked, refuse (do NOT fall back to plaintext — that was the Blocker-C mistake).
@@ -1297,7 +1401,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   }))) {
     // C2 / Invariant-1: fail-closed when a key is present —
     // refuse mismatched attacker-key + victim-fingerprint pairs.
-    throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
+    throw new ContactRefused('binding', 'fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
   const id = crypto.randomUUID();
   const record: ContactRecord = {
@@ -1318,7 +1422,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   {
     const addTrusted = record.trust_level === 'trusted' || record.trust_level === 'verified' || (record as { trusted?: boolean }).trusted === true;
     if (addTrusted && !ownerHasVerified(record as Parameters<typeof ownerHasVerified>[0])) {
-      throw new Error('verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
+      throw new ContactRefused('verify-before-trust', 'verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
     }
   }
   const stored = await buildStoredContact(record);
@@ -1394,7 +1498,7 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
     kem_public_key: next.pq_kem_public_key,
     sig_public_key: next.pq_sig_public_key,
   }))) {
-    throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
+    throw new ContactUpdateRefused('binding', 'fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
   // pt5 verify-before-trust (survivor-safety SINK gate — Flint seal-criteria #158146 / Archie #92153):
   // block the unverified/known → trusted PROMOTION unless a REAL owner-verification backs it. Every
@@ -1406,7 +1510,7 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
   const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
   const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
   if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
-    throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
+    throw new ContactUpdateRefused('verify-before-trust', 'verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
   }
   return next;
 }
@@ -1911,6 +2015,10 @@ export type PlaintextImportReport = {
   fingerprint: string;
   kept: number;
   skipped: number;
+  /** Rows the device already held (the same contact from an earlier run, or one added since). Not added again, never overwritten. */
+  alreadyPresent?: number;
+  /** Existing rows whose block this restore SET because the backup had them blocked (it never clears one). */
+  blockTightened?: number;
 };
 
 /** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
@@ -1940,22 +2048,115 @@ export async function assertPlaintextBackupIdentityBinds(backup: SovereignBackup
   return fingerprint;
 }
 
-/** Persist plaintext contacts via addContact. Unbindable rows skip and are counted. */
+/**
+ * importAll cannot store imported keys without an unlocked passphrase session (they are encrypted at rest, never stored in the clear). Not a wrong-password
+ * error: the file may have opened perfectly. Callers decide on `code`, never on the message text.
+ */
+export class PlaintextImportNeedsSession extends Error {
+  readonly code = 'needs-device-passphrase' as const;
+  constructor() { super('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.'); this.name = 'PlaintextImportNeedsSession'; }
+}
+
+// DEVICE_PASSWORD_MIN lives in device-password.ts (pure) so the restore sentences read the same constant; it is re-exported here for every existing importer.
+export { DEVICE_PASSWORD_MIN };
+
+/**
+ * A restore on a device with no session needs a password to protect the restored keys at rest, and neither the file's own password (absent, or shorter than
+ * DEVICE_PASSWORD_MIN) nor a chosen one is usable. Thrown BEFORE any write; the screen asks for a new device password and tries again.
+ */
+export class DevicePasswordRequired extends Error {
+  readonly code = 'needs-device-password' as const;
+  constructor() { super(`Choose a device password of at least ${DEVICE_PASSWORD_MIN} characters before this backup is saved.`); this.name = 'DevicePasswordRequired'; }
+}
+
+/** The fields that say two KEYLESS contacts are the same row. Exact equality only: a near-duplicate is a new row, never a merge. */
+const KEYLESS_MATCH_FIELDS = ['name', 'email', 'metadata'] as const;
+
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+/** The block flag is not part of who a contact IS: a row blocked in the backup and the same row unblocked here are the same contact (the restore then tightens it). */
+function withoutBlockFlag(metadata: unknown): unknown {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return metadata ?? null;
+  const rest = { ...(metadata as Record<string, unknown>) };
+  delete rest.blocked;
+  return Object.keys(rest).length > 0 ? rest : null;
+}
+
+function keylessSignature(c: Record<string, unknown>): string {
+  return stableStringify(KEYLESS_MATCH_FIELDS.map((f) => (f === 'metadata' ? withoutBlockFlag(c[f]) : c[f] ?? null)));
+}
+
+/** A block is kept in two places (c.blocked and c.metadata.blocked); a reader may check either. */
+function isBlockedEither(c: Record<string, unknown>): boolean {
+  const meta = c.metadata as Record<string, unknown> | null | undefined;
+  return !!(c.blocked || (meta && typeof meta === 'object' && meta.blocked));
+}
+
+/**
+ * Persist plaintext contacts via addContact. Unbindable rows skip and are counted.
+ *
+ * Safe to run again with the same file (a restore that stopped half way): a row the device already holds is counted `alreadyPresent`, not added a second time
+ * and never overwritten. A KEYED row is already present when an existing row has its fingerprint. A KEYLESS row is matched as a MULTISET: each incoming row
+ * consumes ONE identical existing row (exact equality on KEYLESS_MATCH_FIELDS), so two identical rows in the file come out as exactly two on the device.
+ * A backup can only TIGHTEN a contact: when it says blocked and the existing row is not, both block fields are set; it never clears one.
+ */
 export async function importPlaintextContacts(
   ownerFingerprint: string,
   contacts: ContactRecord[] | undefined,
-): Promise<{ kept: number; skipped: number }> {
+): Promise<{ kept: number; skipped: number; alreadyPresent: number; blockTightened: number }> {
   let kept = 0;
   let skipped = 0;
-  for (const contact of contacts || []) {
+  let alreadyPresent = 0;
+  let blockTightened = 0;
+  const incoming = contacts || [];
+  const existing: ContactRecord[] = incoming.length > 0 ? await getAllContacts(ownerFingerprint) : [];
+  const byFingerprint = new Map<string, ContactRecord>();
+  const keylessPool = new Map<string, ContactRecord[]>();
+  for (const e of existing) {
+    if (e.fingerprint && (e.public_key || '').trim()) byFingerprint.set(e.fingerprint, e);
+    else {
+      const sig = keylessSignature(e as Record<string, unknown>);
+      keylessPool.set(sig, [...(keylessPool.get(sig) ?? []), e]);
+    }
+  }
+  for (const contact of incoming) {
     try {
-      await addContact(ownerFingerprint, contactFromPlaintextBackup(contact));
+      const next = contactFromPlaintextBackup(contact) as Record<string, unknown>;
+      const backupBlocked = isBlockedEither(contact as Record<string, unknown>);
+      const keyed = !!((next.public_key as string) || '').trim();
+      let match: ContactRecord | undefined;
+      if (keyed) {
+        match = byFingerprint.get(next.fingerprint as string);
+      } else {
+        const sig = keylessSignature(next);
+        const pool = keylessPool.get(sig);
+        if (pool && pool.length > 0) { match = pool.shift(); }
+      }
+      if (match) {
+        if (backupBlocked && !(match.blocked && (match.metadata as Record<string, unknown> | undefined)?.blocked)) {
+          const tightened = await updateContactIf(match.id, (ex) => ({ blocked: true, metadata: { ...((ex.metadata as object) || {}), blocked: true } }));
+          if (tightened.applied) blockTightened++;
+        }
+        alreadyPresent++;
+        continue;
+      }
+      if (backupBlocked) { next.blocked = true; next.metadata = { ...((next.metadata as object) || {}), blocked: true }; }
+      await addContact(ownerFingerprint, next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
       kept++;
-    } catch {
+    } catch (e) {
+      // A row addContact refused is skipped and counted. A write that FAILED is not: it stops the restore, so the same file can be run again.
+      if (!(e instanceof ContactRefused)) throw e;
       skipped++;
     }
   }
-  return { kept, skipped };
+  return { kept, skipped, alreadyPresent, blockTightened };
 }
 
 export async function importAll(backup: SovereignBackup): Promise<PlaintextImportReport> {
@@ -1964,7 +2165,7 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   // (the key stores are fail-closed). Block cleanly BEFORE any write — no partial import, no
   // plaintext-at-rest window.
   if (!isSessionUnlocked()) {
-    throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
+    throw new PlaintextImportNeedsSession();
   }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
   await assertRestoreKeepsOwnerDomain(fingerprint, '', 'keeps-open-session');
@@ -1990,20 +2191,73 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
     // but fail every later decrypt (present-but-unreadable → ensure won't overwrite → a soft-lock). On
     // a bad shape, SILENTLY SKIP (this import region is log-free by invariant — skips surface via the
     // returned report, not console): a fresh mailbox inits on next unlock (under-reveal, fail-closed).
+    // Only the SHAPE check may skip. A failed WRITE is a failed restore (it surfaces, and the same file can be run again); swallowing it would report
+    // "restored" for a device that is missing its mailbox.
+    let validShape = true;
     try {
       deserializeMailboxKeypair(backup.device_mailbox);
-      await storeDeviceMailbox(fingerprint, backup.device_mailbox);
     } catch {
-      /* malformed backup mailbox — skip; a fresh one inits on next unlock (fail-closed under-reveal) */
+      validShape = false; /* malformed backup mailbox — skip; a fresh one inits on next unlock (fail-closed under-reveal) */
     }
+    if (validShape) await storeDeviceMailbox(fingerprint, backup.device_mailbox);
   }
 
   // Same persistence gate as importVaultContents: never raw-put a contact from
   // an untrusted file. Unbindable rows skip; the identity import still completes.
-  const { kept, skipped } = await importPlaintextContacts(fingerprint, backup.contacts);
+  const { kept, skipped, alreadyPresent, blockTightened } = await importPlaintextContacts(fingerprint, backup.contacts);
 
   await setActiveFingerprint(fingerprint);
-  return { fingerprint, kept, skipped };
+  return { fingerprint, kept, skipped, alreadyPresent, blockTightened };
+}
+
+export type DeviceUnlock = 'already-open' | 'file-password' | 'new-password';
+
+/**
+ * Restore a backup on a device that may have no session yet. The order is the point: every check that only READS runs first, then the session key, then
+ * importAll's writes, so a refusal leaves no salt and no session behind.
+ *  1. the identity binds to its fingerprint;
+ *  2. the restore stays in the owner's passphrase domain (every held key record opens with the password that will be used);
+ *  3. the session key is set from: the open session (nothing to do) | the file's own password if it is at least DEVICE_PASSWORD_MIN | a chosen device password.
+ *     A device that already holds this owner is never asked for a new password: the file's password must already open what is held.
+ * A password shorter than the floor only OPENS the file; it never becomes the device password on a device that did not already use it.
+ */
+export async function importAllWithPassword(
+  backup: SovereignBackup,
+  opts: { filePassword?: string; devicePassword?: string } = {},
+): Promise<PlaintextImportReport & { deviceUnlock: DeviceUnlock }> {
+  const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
+  const filePassword = opts.filePassword ?? '';
+  const devicePassword = opts.devicePassword ?? '';
+  let use: string | null = null;
+  let deviceUnlock: DeviceUnlock = 'already-open';
+  if (!isSessionUnlocked()) {
+    if (await deviceHoldsOwner(fingerprint)) {
+      use = filePassword;
+      deviceUnlock = 'file-password';
+    } else if (filePassword.length >= DEVICE_PASSWORD_MIN) {
+      use = filePassword;
+      deviceUnlock = 'file-password';
+    } else if (devicePassword.length >= DEVICE_PASSWORD_MIN) {
+      use = devicePassword;
+      deviceUnlock = 'new-password';
+    } else {
+      throw new DevicePasswordRequired();
+    }
+  }
+  await assertRestoreKeepsOwnerDomain(fingerprint, use ?? '', 'keeps-open-session');
+  if (use !== null) await initSessionKey(use);
+  // The snapshot is taken after the session step (the device salt is an unlock parameter, not one of this owner's records) and BEFORE the first owner-record write.
+  let before: OwnerSnapshot | null = null;
+  try { before = await snapshotOwnerRows(fingerprint); } catch { before = null; }
+  try {
+    const report = await importAll(backup);
+    return { ...report, deviceUnlock };
+  } catch (err) {
+    let after: OwnerSnapshot | null = null;
+    try { after = await snapshotOwnerRows(fingerprint); } catch { after = null; }
+    tagRestoreWrites(err, restoreWritesVerdict(before, after));
+    throw err;
+  }
 }
 
 /**

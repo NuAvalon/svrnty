@@ -145,8 +145,19 @@ export function deriveKeyArgon2id(
   // assertParamsWithinLimits early for a clear error, but this is the guarantee
   // it can never be skipped. No-op on the write paths,
   // whose params are the fixed in-range constants.
+  return deriveKeyArgon2idBytes(new TextEncoder().encode(passphrase), salt, params);
+}
+
+/**
+ * The same derivation over passphrase BYTES. This is the one place argon2id runs, so the F1 clamp above sits in front of every caller, including the
+ * worker (which receives bytes, never a string it would have to keep). The caller zeroes `passphraseBytes` when it is done with them.
+ */
+export function deriveKeyArgon2idBytes(
+  passphraseBytes: Uint8Array,
+  salt: Uint8Array,
+  params: { time_cost: number; memory_cost: number; parallelism: number },
+): Uint8Array {
   assertParamsWithinLimits(params);
-  const passphraseBytes = new TextEncoder().encode(passphrase);
   return argon2id(passphraseBytes, salt, {
     t: params.time_cost,
     m: params.memory_cost,

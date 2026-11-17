@@ -53,17 +53,28 @@ export async function keyRecordOpens(record: unknown, key: CryptoKey, encVersion
 
 const LEAD = 'This device already has this identity, protected by a different passphrase than the one this restore would use. Restoring would hide the contacts already here, so nothing was changed.';
 const WAY_FORWARD: Record<RestoreKeyUse, string> = {
-  'keeps-open-session': "Unlock with this device's passphrase first, or restore in a new browser profile.",
-  'always-derives': "Use this device's current passphrase here instead, or restore in a new browser profile.",
+  'keeps-open-session': "Unlock with this device's passphrase first, or restore in a new browser profile. Your current profile is left as it is.",
+  'always-derives': "Use this device's current passphrase here instead, or restore in a new browser profile. Your current profile is left as it is.",
 };
 
 export class RestoreDomainRefused extends Error {
   readonly code = RESTORE_DOMAIN_CODE;
+  readonly use: RestoreKeyUse;
 
   constructor(use: RestoreKeyUse) {
     super(`${LEAD} ${WAY_FORWARD[use]}`);
     this.name = 'RestoreDomainRefused';
+    this.use = use;
   }
+}
+
+/**
+ * The sentence a screen shows for a restore-domain refusal, built from the constants above and the refusal's own `use`: never from the error's text. Read by code and field, not
+ * instanceof (the restore paths load through dynamic imports). A refusal with no valid `use` gets the lead sentence alone. Call it only after isRestoreDomainRefusal.
+ */
+export function restoreDomainRefusalMessage(err: unknown): string {
+  const use = typeof err === 'object' && err !== null ? (err as { use?: unknown }).use : undefined;
+  return use === 'keeps-open-session' || use === 'always-derives' ? `${LEAD} ${WAY_FORWARD[use]}` : LEAD;
 }
 
 /** By code, not instanceof: the restore paths load through dynamic imports. */

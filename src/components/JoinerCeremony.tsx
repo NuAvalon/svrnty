@@ -51,11 +51,12 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import { alreadyKnownCopy } from './joiner-done-copy';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
-import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { authorityPinConflictMessage, gateAuthorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { clampArrivalName, mergeArrivalPin } from '@/lib/trust/grow-gate';
+import { joinerFailureMessage } from './joiner-ceremony-copy';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -231,7 +232,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setPhase('card');
       } catch (err: any) {
         if (cancelled) return;
-        setError(err?.message || "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
+        setError(joinerFailureMessage(err, 'openLink'));
       }
     })();
 
@@ -266,8 +267,9 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         : null;
       if (existing) {
         if (peer.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== peer.authorityPin) {
-          // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import)
-          setError(authorityPinConflictMessage(peer.name));
+          // first write wins: a valid card with a DIFFERENT pin is loud and changes nothing (same rule and same words as the Contacts import).
+          // The name is the BOOK's (existing.name), never the card's: the card may be the impersonator's.
+          setError(authorityPinConflictMessage(existing.name));
           return;
         }
         if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox) || (peer.authorityPin && !existing.next_authority_commitment)) {
@@ -289,7 +291,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         // First write wins at the Gate too: someone already waiting here under a DIFFERENT pin is loud and changes nothing (same rule and words as Contacts import).
         const pinMerge = mergeArrivalPin(await getGateArrival(ownerFp, peer.fingerprint), peer.authorityPin);
         if (pinMerge.conflict) {
-          setError(authorityPinConflictMessage(peer.name));
+          // No book entry here and every Gate name came from a card, so the sentence carries no name at all.
+          setError(gateAuthorityPinConflictMessage());
           return;
         }
         await enqueueGateArrival(ownerFp, {
@@ -313,7 +316,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       void depositJoinerResponse(ownerFp, peer, code);
       setPhase('done');
     } catch (err: any) {
-      setError(err?.message || 'Could not add them to your Gate.');
+      setError(joinerFailureMessage(err, 'addToGate'));
     } finally {
       setAdding(false);
     }
@@ -363,7 +366,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       setShardState('accepted');
       try { delete (window as any).__svrnty_shard; } catch { /* ignore */ }
     } catch (err: any) {
-      setShardMsg(err?.message || 'Could not accept the piece.');
+      setShardMsg(joinerFailureMessage(err, 'keepPiece'));
       setShardState('idle');
     }
   }, [ownerFp]);

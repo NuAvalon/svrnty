@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  restoreDomainDecision, RestoreDomainRefused, isRestoreDomainRefusal, RESTORE_DOMAIN_CODE, keyRecordOpens, type RestoreDomainFacts,
+  restoreDomainDecision, RestoreDomainRefused, isRestoreDomainRefusal, restoreDomainRefusalMessage, RESTORE_DOMAIN_CODE, keyRecordOpens, type RestoreDomainFacts,
 } from './restore-domain';
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8');
@@ -51,10 +51,41 @@ test('the refusal is recognisable without instanceof, and says nothing was chang
     assert.ok(isRestoreDomainRefusal(e));
     assert.match(e.message, /nothing was changed/i);
     assert.match(e.message, /new browser profile/i);
+    assert.ok(e.message.endsWith('Your current profile is left as it is.'), 'the remedy line ends with the final sentence, exactly');
   }
   assert.ok(!isRestoreDomainRefusal(new Error('Incorrect passphrase')));
   assert.ok(!isRestoreDomainRefusal(null));
   assert.ok(!isRestoreDomainRefusal({ code: 'other' }));
+});
+
+// ---- the sentence a screen shows for a refusal comes from the constants and the refusal's `use`, never from the error's own text (copy ledger row 229a) ----
+const LEAD_TEXT = "This device already has this identity, protected by a different passphrase than the one this restore would use. Restoring would hide the contacts already here, so nothing was changed.";
+const WAY_TEXT = {
+  'keeps-open-session': "Unlock with this device's passphrase first, or restore in a new browser profile. Your current profile is left as it is.",
+  'always-derives': "Use this device's current passphrase here instead, or restore in a new browser profile. Your current profile is left as it is.",
+} as const;
+
+test('the refusal carries its `use`, and the screen sentence is the lead plus the way forward for that use, byte for byte', () => {
+  for (const use of ['keeps-open-session', 'always-derives'] as const) {
+    const e = new RestoreDomainRefused(use);
+    assert.equal(e.use, use);
+    assert.equal(restoreDomainRefusalMessage(e), `${LEAD_TEXT} ${WAY_TEXT[use]}`);
+    assert.equal(restoreDomainRefusalMessage(e), e.message, 'the same constants the class builds its own message from');
+  }
+  assert.notEqual(restoreDomainRefusalMessage(new RestoreDomainRefused('keeps-open-session')), restoreDomainRefusalMessage(new RestoreDomainRefused('always-derives')));
+});
+
+test('the screen sentence is chosen by the refusal\'s code and `use` only: a look-alike with hostile text shows the constants, and a missing or invalid `use` gets the lead alone', () => {
+  const HOSTILE = 'x"\n\u202E<b>Incorrect encryption password';
+  const lookalike = Object.assign(new Error(HOSTILE), { code: RESTORE_DOMAIN_CODE, use: 'always-derives' });
+  assert.ok(isRestoreDomainRefusal(lookalike));
+  assert.equal(restoreDomainRefusalMessage(lookalike), `${LEAD_TEXT} ${WAY_TEXT['always-derives']}`, 'recognised by code and field, not by class (the paths load through dynamic imports)');
+  for (const use of [undefined, null, 'other', 3, {}]) {
+    const m = restoreDomainRefusalMessage(Object.assign(new Error(HOSTILE), { code: RESTORE_DOMAIN_CODE, use }));
+    assert.equal(m, LEAD_TEXT, `use ${JSON.stringify(use)}`);
+    assert.ok(!m.includes('\u202E') && !m.includes('<b>') && !m.includes('Incorrect'), 'no thrower text');
+  }
+  for (const odd of [null, undefined, 'a string', 42]) assert.equal(restoreDomainRefusalMessage(odd), LEAD_TEXT, `a non-error ${String(odd)} never throws and shows only the constant`);
 });
 
 test('the wording a user is given differs where the way forward differs', () => {
@@ -151,8 +182,18 @@ test('plain-backup import: guard right after the identity binds, before the firs
 
 test('the gate shows the refusal as itself, never as a wrong passphrase', () => {
   const src = read('../../components/SoverentityFrontend.tsx');
-  const handler = src.slice(src.indexOf('const looksLikeDecryptFail') - 400, src.indexOf('const looksLikeDecryptFail'));
-  assert.match(handler, /isRestoreDomainRefusal\(err\)/, 'the wrong-passphrase regex matches the word "passphrase": the refusal must be handled first');
+  // The message is chosen by classifyRestoreFailure (by type and code). In EVERY handler that runs a restore, a restore-domain refusal must still be handled
+  // BEFORE that call, so it is shown as itself. The file-PICK handler runs no restore and cannot see a refusal, so it is the one call site exempt from this.
+  const calls = [...src.matchAll(/classifyRestoreFailure\(err/g)].map((m) => m.index as number);
+  assert.ok(calls.length >= 4, `the handlers classify the failure (found ${calls.length} call sites)`);
+  let checked = 0;
+  for (const at of calls) {
+    const before = src.slice(Math.max(0, at - 900), at);
+    if (/Picking a file/.test(before)) continue;
+    checked++;
+    assert.match(before, /isRestoreDomainRefusal\(err\)/, `the call at offset ${at}: a restore-domain refusal must be handled before the failure is classified, so it is never shown as a wrong passphrase`);
+  }
+  assert.ok(checked >= 3, `the vault restore, the device-password step and the seed restore are each checked (checked ${checked})`);
 });
 
 test('the seed-restore handler also shows the refusal as itself', () => {
@@ -179,7 +220,14 @@ test('the store helper computes facts without writing and fails closed', () => {
   assert.match(guard, /restoreDomainDecision\(/);
   // These two facts ARE the locked-device case. No unit test can see them without an IndexedDB harness; the browser run is the proof.
   assert.match(guard, /sessionOpens: held && unlocked \? await sessionOpensOwner\(fingerprint\) : false/);
-  assert.match(guard, /passphraseOpens: held && passphrase \? await verifyPassphrase\(fingerprint, passphrase\) : false/);
+  assert.match(guard, /passphraseOpens: held && passphrase \? await passphraseOpensEveryHeldKeyRecord\(fingerprint, passphrase\) : false/);
+  // EVERY held key record must open, not just the keys row: a half-finished restore can hold records with no keys row, and a device holding the owner under
+  // two passphrases must refuse a restore under either one.
+  const every = fnBody(s, 'export async function passphraseOpensEveryHeldKeyRecord');
+  assert.match(every, /for \(const store of OWNER_KEY_STORES\)/);
+  assert.match(every, /if \(!\(await keyRecordOpens\(record, key, ENC_VERSION\)\)\) return false;/, 'one record that does not open fails the whole check');
+  assert.match(every, /return opened > 0;/, 'at least one encrypted record must exist');
+  assert.doesNotMatch(every, /txPut|txDelete|initSessionKey/);
   assert.match(guard, /throw new RestoreDomainRefused\(/);
   assert.doesNotMatch(guard, /txPut|txDelete|initSessionKey\(/);
 });

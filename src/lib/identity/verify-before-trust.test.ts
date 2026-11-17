@@ -33,7 +33,7 @@ test('updateContact gates the unverified→trusted PROMOTION on a real owner-ver
   assert.match(body, /verify-before-trust/, 'pt5 gate marker must be present');
   assert.match(body, /ownerHasVerified\(/, 'must check the real owner-verify');
   assert.match(body, /wasTrusted/, 'must gate the TRANSITION only (re-saving an already-trusted contact passes — non-regression)');
-  assert.match(body, /throw new Error\(/, 'must throw (fail-closed) on an unverified promotion');
+  assert.match(body, /throw new ContactUpdateRefused\('verify-before-trust', /, 'must throw (fail-closed) on an unverified promotion, typed so a screen can tell a refusal from a failure');
 });
 
 test('EVERY contact update path reaches that gate: updateContact and updateContactIf both run through the compare-and-swap, which finalizes each attempt before it encrypts', () => {

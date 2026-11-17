@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
@@ -65,11 +66,15 @@ import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safe
 import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
-import { authorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
+import { authorityPinConflictMessage, unverifiedCardMessage, addedUnverifiedContactMessage } from '@/lib/identity/authority-pin-copy';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
-import { ContactBookTooLarge, contactBookEntries, importContactBook, importMessage } from '@/lib/contacts/book-import';
+import { ContactBookTooLarge, contactBookEntries, contactBookFile, importContactBook, importMessage } from '@/lib/contacts/book-import';
+import { errorTag, plainPasteFailureMessage } from '@/lib/contacts/contact-io-errors';
+import { ContactInputError, contactFailureMessage } from './contact-management-copy';
+import { CONTACT_REFUSAL_MESSAGES } from '@/lib/contacts/contact-refusal';
+import { SEALED_BOOK_MESSAGES, looksSealed, namesDifferentOwner, openSealedBook, sealedFailureMessage, splitMissingKeys, splitUnbindable } from '@/lib/contacts/sealed-book-import';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -264,6 +269,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   const [importData, setImportData] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importNote, setImportNote] = useState<string | null>(null);
+  const [importPassword, setImportPassword] = useState('');
+  // A pasted password-sealed export (what "Export Contacts" writes) asks for its password; a plain paste does not.
+  const importSealed = React.useMemo(() => looksSealed(importData), [importData]);
   const [exchangePackage, setExchangePackage] = useState('');
   const [exchangeImportData, setExchangeImportData] = useState('');
   const [exchangeResult, setExchangeResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -280,7 +288,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const records = await getAllContacts(fingerprint);
       setContacts(records.map(recordToContact));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load contacts');
+      setError(contactFailureMessage(err, 'load'));
       setContacts([]);
     } finally {
       setLoading(false);
@@ -411,13 +419,13 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     setInviteUrl(null);
     try {
       const key = await loadKey(fingerprint);
-      if (!key) throw new Error('Unlock your identity first to build an invite.');
+      if (!key) throw new ContactInputError('invite-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const packed = JSON.stringify(signed);
       const result = await createRelay(packed);
       setInviteUrl(result.url);
     } catch (e) {
-      setInviteError(e instanceof Error ? e.message : 'Could not prepare invite.');
+      setInviteError(contactFailureMessage(e, 'invite'));
     } finally {
       setInviteLoading(false);
     }
@@ -432,10 +440,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setLoading(true);
       setError(null);
       if (!newContactForm.name || !newContactForm.fingerprint) {
-        throw new Error('Name and fingerprint are required');
+        throw new ContactInputError('add-missing');
       }
       if (newContactForm.fingerprint === fingerprint) {
-        throw new Error('You cannot add yourself as a contact');
+        throw new ContactInputError('add-self');
       }
       await addContact(fingerprint, {
         name: newContactForm.name,
@@ -449,7 +457,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add contact');
+      setError(contactFailureMessage(err, 'add'));
     } finally {
       setLoading(false);
     }
@@ -461,12 +469,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setLoading(true);
       setError(null);
       if (!editContactForm.name) {
-        throw new Error('Name is required');
+        throw new ContactInputError('edit-no-name');
       }
       const info = fieldsToContactInfo(bookFields);
       // Classical-only edit — refuse to mutate SVRNTY profile fields here.
       if (selectedContact && isSvrnNetworkContact(selectedContact)) {
-        throw new Error('SVRNTY contacts are key-bound — edit is locked. Change trust, groups, or share settings instead.');
+        throw new ContactInputError('edit-key-bound');
       }
       // Built from the record held when the write runs: tags, connection method and the rest of the metadata are whatever the store has now.
       await updateContact(editContactForm.id, (fresh) =>
@@ -476,7 +484,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update contact');
+      setError(contactFailureMessage(err, 'edit'));
     } finally {
       setLoading(false);
     }
@@ -507,7 +515,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(describeSafetyWriteFailure(err, 'Remove') ?? (err instanceof Error ? err.message : 'Failed to delete contact'));
+      setError(describeSafetyWriteFailure(err, 'Remove') ?? contactFailureMessage(err, 'remove'));
     } finally {
       setLoading(false);
     }
@@ -546,7 +554,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       }
       await loadContacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update trust');
+      setError(contactFailureMessage(err, 'trust'));
     } finally {
       setLoading(false);
     }
@@ -563,7 +571,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await updateContact(contact.id, (fresh) => ownerVerifyHeldPatch(fresh, method));
       await loadContacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to record verification');
+      setError(contactFailureMessage(err, 'verify'));
     } finally {
       setLoading(false);
     }
@@ -595,7 +603,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock') ?? (err instanceof Error ? err.message : 'Failed to update block'));
+      setError(describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock') ?? contactFailureMessage(err, blocked ? 'block' : 'unblock'));
     } finally {
       setLoading(false);
     }
@@ -674,12 +682,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // an untrusted carrier — the card MUST be signed so the receiver can re-verify pq wasn't swapped
       // (an unsigned card is the HNDL hole). Signing needs the unlocked private key.
       const key = await loadKey(fingerprint);
-      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      if (!key) throw new ContactInputError('share-no-key');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       setExchangePackage(JSON.stringify(signed, null, 2));
       setShowShareIdentityDialog(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create exchange package');
+      setError(contactFailureMessage(err, 'share'));
     } finally {
       setLoading(false);
     }
@@ -693,10 +701,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const card = JSON.parse(exchangeImportData.trim());
       const contactIdentity = card.identity || card;
       if (!contactIdentity.fingerprint || !contactIdentity.public_key) {
-        throw new Error('Invalid exchange package: missing fingerprint or public key');
+        throw new ContactInputError('import-incomplete');
       }
       if (contactIdentity.fingerprint === fingerprint) {
-        throw new Error('You cannot import yourself as a contact');
+        throw new ContactInputError('import-self');
       }
 
       // Fail-closed disposition — copy/paste is an untrusted carrier, so it re-verifies the card
@@ -704,7 +712,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const d = await classifyImportedCard(card);
       if (!d.importClassical) {
         // Branch 1 — fp↔key mismatch / malformed: refuse the card entirely.
-        setExchangeResult({ success: false, message: 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.' });
+        setExchangeResult({ success: false, message: CONTACT_REFUSAL_MESSAGES.importBinding });
         return;
       }
 
@@ -724,10 +732,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         // pq on the existing edge — no duplicate; NEVER silently replaces a different stored pq
         // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
         if (d.alarm === 'loud') {
-          setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
+          // Security warnings name the BOOK's contact (existing.name), never the card's display name.
+          setExchangeResult({ success: false, message: unverifiedCardMessage(existing.name) });
         } else if (d.authorityPin && existing.next_authority_commitment && existing.next_authority_commitment !== d.authorityPin) {
           // #787: first write wins. A DIFFERENT pin on a valid card is loud and changes nothing.
-          setExchangeResult({ success: false, message: authorityPinConflictMessage(displayName) });
+          setExchangeResult({ success: false, message: authorityPinConflictMessage(existing.name) });
         } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment)) {
           // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held).
           await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField) });
@@ -750,7 +759,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
         const message =
           d.alarm === 'loud'
-            ? `Added "${displayName}" (classical only) — could not verify their key material; possible tampering. Ask them to re-share over a secure link.`
+            ? addedUnverifiedContactMessage() // no trusted name exists yet: the contact is created FROM this card
             : d.alarm === 'soft-info'
               ? `Added "${displayName}" — their post-quantum key uses an unsupported format, so classical only.`
               : `Contact "${displayName}" added successfully.`;
@@ -761,7 +770,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       if (err instanceof SyntaxError) {
         setExchangeResult({ success: false, message: 'Invalid JSON — paste a valid identity exchange package' });
       } else {
-        setExchangeResult({ success: false, message: err instanceof Error ? err.message : 'Failed to import' });
+        setExchangeResult({ success: false, message: contactFailureMessage(err, 'import') });
       }
     } finally {
       setLoading(false);
@@ -807,7 +816,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         URL.revokeObjectURL(url);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to export');
+      setError(contactFailureMessage(err, 'export'));
     } finally {
       setLoading(false);
     }
@@ -815,11 +824,30 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
 
   const handleImportContacts = async () => {
     if (!fingerprint || !importData) return;
+    if (importSealed && !importPassword) return;
     try {
       setLoading(true);
       setImportError(null);
       setImportNote(null);
-      const entries = contactBookEntries(importData);
+      let entries: unknown[];
+      let unbindable = 0;
+      let differentOwner = false;
+      if (importSealed) {
+        // Open the sealed file, then hand its plaintext to the same parser and importer a plain paste uses (caps, unverified, the store's own checks).
+        try {
+          const file = contactBookFile(await openSealedBook(importData, importPassword));
+          // Rows exported without their post-quantum keys can never bind to their fingerprint: counted with the keyless rows, not tried.
+          const split = splitUnbindable(file.entries);
+          entries = split.attempt;
+          unbindable = split.unbindable;
+          differentOwner = namesDifferentOwner(file.owner, fingerprint);
+        } catch (err) {
+          setImportError(err instanceof ContactBookTooLarge ? SEALED_BOOK_MESSAGES.tooLarge : sealedFailureMessage(err));
+          return;
+        }
+      } else {
+        entries = contactBookEntries(importData);
+      }
       // A file carries identity only: book-import builds each contact field by field, always 'unverified', and the store still checks every binding.
       const summary = await importContactBook(entries, async (contact) => {
         const before = await getContactByFingerprint(fingerprint, contact.fingerprint);
@@ -827,8 +855,17 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         return before ? 'existing' : 'added';
       });
       await loadContacts();
-      const message = importMessage(summary);
-      if (summary.refused || summary.failed.length > 0) {
+      // A sealed file's keyless rows get one fixed sentence (a count, no names from the file); its owner, when it is not this identity, one fixed notice.
+      const keyless = importSealed ? splitMissingKeys(summary.failed) : { missingKeys: 0, other: summary.failed };
+      const withoutKeys = keyless.missingKeys + unbindable;
+      const message = importSealed
+        ? [
+            importMessage({ ...summary, failed: keyless.other, total: summary.total - keyless.missingKeys }),
+            withoutKeys > 0 ? SEALED_BOOK_MESSAGES.missingKeys(withoutKeys) : null,
+            differentOwner ? SEALED_BOOK_MESSAGES.differentOwner : null,
+          ].filter(Boolean).join(' ') || null
+        : importMessage(summary);
+      if (summary.refused || summary.failed.length > 0 || unbindable > 0) {
         setImportError(message);
         return;
       }
@@ -841,15 +878,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         return;
       }
       setImportData('');
+      setImportPassword('');
       setShowImportDialog(false);
     } catch (err) {
-      if (err instanceof ContactBookTooLarge) {
-        setImportError(err.message);
-      } else if (err instanceof SyntaxError) {
-        setImportError('Invalid JSON format');
-      } else {
-        setImportError(err instanceof Error ? err.message : 'Failed to import');
-      }
+      if (!(err instanceof ContactBookTooLarge || err instanceof SyntaxError)) console.error('Contact import failed:', errorTag(err));
+      setImportError(plainPasteFailureMessage(err));
     } finally {
       setLoading(false);
     }
@@ -885,7 +918,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       const fp = linkFingerprint.trim();
       const pk = linkPublicKey.trim();
       if (!fp || !pk) {
-        throw new Error('Paste their SVRNTY fingerprint and public key.');
+        throw new ContactInputError('link-empty');
       }
       // The async step is only the key binding; the write itself is a synchronous function of the held record, which keeps the classical
       // channels on the living card as contact_info + classical_extras.
@@ -898,7 +931,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setLinkError(err instanceof Error ? err.message : 'Could not link contact');
+      setLinkError(contactFailureMessage(err, 'link'));
     } finally {
       setLoading(false);
     }
@@ -1344,7 +1377,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                                 setBulkGroupNote(`Renamed “${tag}” → “${next}” (local only).`);
                                 await loadContacts();
                               } catch (err) {
-                                setError(err instanceof Error ? err.message : 'Could not rename group');
+                                setError(contactFailureMessage(err, 'renameGroup'));
                               }
                             }}
                           >
@@ -1425,7 +1458,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                                 setBulkGroupNote(`Removed group “${tag}”.`);
                                 await loadContacts();
                               } catch (err) {
-                                setError(err instanceof Error ? err.message : 'Could not remove group');
+                                setError(contactFailureMessage(err, 'removeGroup'));
                               }
                             }}
                           >
@@ -1535,7 +1568,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       setBulkGroupName('');
                       setSelectedIds(new Set());
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : 'Could not assign group');
+                      setError(contactFailureMessage(err, 'assignGroup'));
                     } finally {
                       setLoading(false);
                     }
@@ -2039,7 +2072,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         />
 
         {/* Import */}
-        <Dialog open={showImportDialog} onOpenChange={(open) => { setShowImportDialog(open); if (!open) setImportNote(null); }}>
+        <Dialog open={showImportDialog} onOpenChange={(open) => { setShowImportDialog(open); if (!open) { setImportNote(null); setImportPassword(''); } }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Import Contacts</DialogTitle>
@@ -2050,9 +2083,17 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             <div className="py-4">
               <Textarea value={importData} onChange={e => setImportData(e.target.value)} placeholder="Paste contacts JSON here..." className="font-mono text-xs" rows={8} />
             </div>
+            {importSealed && (
+              <div className="space-y-2 pb-2">
+                <Label htmlFor="contacts-import-password">{SEALED_BOOK_MESSAGES.passwordLabel}</Label>
+                <Input id="contacts-import-password" data-testid="contacts-import-password" type="password" autoComplete="off" value={importPassword} onChange={e => setImportPassword(e.target.value)} />
+                <p className="text-xs text-muted-foreground">{SEALED_BOOK_MESSAGES.passwordHelper}</p>
+                <p className="text-xs text-muted-foreground">{SEALED_BOOK_MESSAGES.alwaysUnverified}</p>
+              </div>
+            )}
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowImportDialog(false)}>Cancel</Button>
-              <Button onClick={handleImportContacts} disabled={loading || !importData}>
+              <Button onClick={handleImportContacts} disabled={loading || !importData || (importSealed && !importPassword)}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> : <><Upload className="h-4 w-4 mr-2" />Import</>}
               </Button>
             </DialogFooter>
