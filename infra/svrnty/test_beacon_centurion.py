@@ -343,3 +343,27 @@ def test_a_setting_below_the_floor_is_raised_to_it():
         assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": low}, disk_usage=usage) == bc.EPOCH_CAP_MIN, low
     assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": str(bc.EPOCH_CAP_MIN)}, disk_usage=usage) == bc.EPOCH_CAP_MIN
     assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": str(bc.EPOCH_CAP_MIN + 1)}, disk_usage=usage) == bc.EPOCH_CAP_MIN + 1
+
+
+def test_a_setting_above_the_ceiling_is_lowered_to_it_and_says_so(capsys):
+    # One extra zero in an env file must not disable the disk bound: 9,999,999,999 deposits of BYTES_PER_DEPOSIT would be about 5 TB per epoch.
+    usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
+    for high in (str(bc.EPOCH_CAP_MAX + 1), "9999999999"):
+        assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": high}, disk_usage=usage) == bc.EPOCH_CAP_MAX, high
+        out = capsys.readouterr().out
+        assert out.count("\n") == 1, "exactly one line"
+        assert f"BEACON_PER_EPOCH_CAP={high}" in out and f"using {bc.EPOCH_CAP_MAX}" in out, "it names the value asked for and the value used"
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": str(bc.EPOCH_CAP_MAX)}, disk_usage=usage) == bc.EPOCH_CAP_MAX
+    assert capsys.readouterr().out == "", "exactly the ceiling is not a clamp: no line"
+
+
+def test_the_floor_clamp_says_so_too_and_an_in_range_setting_is_silent(capsys):
+    usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "7"}, disk_usage=usage) == bc.EPOCH_CAP_MIN
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1 and "BEACON_PER_EPOCH_CAP=7" in out and f"using {bc.EPOCH_CAP_MIN}" in out
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "50000"}, disk_usage=usage) == 50_000
+    assert bc.default_epoch_cap("/x/b.db", environ={}, disk_usage=usage) == 214_748
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "junk"}, disk_usage=usage) == 214_748
+    assert capsys.readouterr().out == "", "in range, unset or junk: nothing printed"
+
