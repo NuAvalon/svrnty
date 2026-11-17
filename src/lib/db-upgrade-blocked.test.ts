@@ -16,6 +16,7 @@ import { GROW_GATE_FAILURE_MESSAGES, growGateFailureMessage, type GrowGateFailur
 import { exportFailureMessage, keyExportFailureMessage, plainPasteFailureMessage } from './contacts/contact-io-errors';
 import { vaultExportFailureMessage } from '../components/export/vault-export-copy';
 import { sealedFailureMessage } from './contacts/sealed-book-import';
+import { vcfBookReadFailureMessage, vcfReadFailureMessage, vcfImportFailureMessage } from '../components/import-contacts-copy';
 import { classifyRestoreFailure } from './identity/restore-errors';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -72,10 +73,13 @@ const HELPERS: ReadonlyArray<readonly [string, (e: unknown) => string]> = [
   ['vaultExportFailureMessage', vaultExportFailureMessage],
   ['methodSaveFailureMessage', methodSaveFailureMessage],
   ['methodSendFailureMessage', methodSendFailureMessage],
+  ['vcfReadFailureMessage', vcfReadFailureMessage],
+  ['vcfBookReadFailureMessage', vcfBookReadFailureMessage],
+  ['vcfImportFailureMessage', vcfImportFailureMessage],
   ['classifyRestoreFailure', (e) => classifyRestoreFailure(e).message],
   ['classifyRestoreFailure(v4Vault)', (e) => classifyRestoreFailure(e, { v4Vault: true }).message],
 ];
-const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'growGateFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'methodSaveFailureMessage', 'methodSendFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage', 'vaultExportFailureMessage'];
+const HELPER_NAMES = ['classifyRestoreFailure', 'contactFailureMessage', 'exportFailureMessage', 'frontendFailureMessage', 'growGateFailureMessage', 'joinerFailureMessage', 'keyExportFailureMessage', 'methodSaveFailureMessage', 'methodSendFailureMessage', 'plainPasteFailureMessage', 'sealedFailureMessage', 'vaultExportFailureMessage', 'vcfBookReadFailureMessage', 'vcfImportFailureMessage', 'vcfReadFailureMessage'];
 
 test('DU3 every helper shows THE sentence for the coded error (and a look-alike), never its generic one, and does not log it as an unknown failure', () => {
   const calls: unknown[][] = [];
