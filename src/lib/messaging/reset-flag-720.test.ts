@@ -83,7 +83,10 @@ test('F7 static: the poll clears the flag from onFrameOpened, with the real stor
   assert.match(src('../sync/live-book-poll.ts'), /onFrameOpened: async \(fp\) => \{\s*const \{ clearResetFlagIfSet \} = await import\('@\/lib\/messaging\/reset-flag-store'\);\s*await clearResetFlagIfSet\(fp\);/);
   const tr = src('./transport.ts');
   const fire = tr.indexOf('args.onFrameOpened?.(');
-  assert.ok(fire > tr.indexOf('await staged.commit()'), 'after the commit');
+  // Freeze keep moved the post-commit callbacks into one local afterCommit(), so "the first commit comes before the first mention" no longer says anything.
+  // The intent is pinned directly: onFrameOpened is fired from exactly ONE place, and that place (afterCommit) runs only straight after a session commit.
+  assert.equal((tr.match(/args\.onFrameOpened\?\./g) || []).length, 1, 'fired from exactly one place');
+  assert.equal((tr.match(/await staged\.commit\(\);\s*await afterCommit\(\);/g) || []).length, 2, 'which runs only straight after a session commit (the over-cap path and the stored path)');
   assert.match(tr.slice(tr.lastIndexOf('if (viaRatchet)', fire), fire), /if \(viaRatchet\) \{\s*try \{ await $/, 'only when a ratchet frame opened');
   assert.match(tr, /viaRatchet = true;[\s\S]{0,80}if \(typeof opened === 'string'\)/, 'set only after the failure branches returned');
 });

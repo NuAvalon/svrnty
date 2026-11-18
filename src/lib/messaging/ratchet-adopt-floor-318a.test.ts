@@ -229,5 +229,10 @@ test('F7 STATIC: live-book-poll passes the floor reader to the adopt policy and 
   assert.match(lbp, /onSessionStarted: async \(fp, signedSentAt\) => \{\s*const \{ raiseAdoptFloor \} = await import\('@\/lib\/messaging\/adopt-floor-store'\);\s*await raiseAdoptFloor\(fp, signedSentAt\);/);
   const tr = readFileSync(new URL('./transport.ts', import.meta.url), 'utf8');
   assert.match(tr, /if \(staged\?\.startedSession\) \{\s*try \{ await args\.onSessionStarted\?\.\(args\.wire\.from_fingerprint, args\.wire\.sent_at\); \}/);
-  assert.ok(tr.indexOf('await staged.commit()') < tr.indexOf('args.onSessionStarted'), 'the floor is raised only AFTER the session commit');
+  // Freeze keep moved the post-commit callbacks into one local afterCommit(), so the old "first commit comes before first mention" text-order check no longer
+  // says anything. The intent is pinned directly: afterCommit() is called only straight after a session commit (the held-over-cap path and the stored path),
+  // and onSessionStarted is called from nowhere else, so the floor is still raised only AFTER the session commit.
+  assert.equal((tr.match(/await staged\.commit\(\);\s*await afterCommit\(\);/g) || []).length, 2, 'afterCommit runs only straight after a session commit, in exactly the two places');
+  assert.equal((tr.match(/await afterCommit\(\)/g) || []).length, 2, 'and is never called anywhere else');
+  assert.equal((tr.match(/args\.onSessionStarted\?\./g) || []).length, 1, 'onSessionStarted is called only from afterCommit');
 });

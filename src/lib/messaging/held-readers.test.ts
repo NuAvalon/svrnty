@@ -37,9 +37,10 @@ const body = (src: string, header: string): string => {
 };
 
 test('S1 the include-held readers are used ONLY where they are meant to be: exact files and counts (a 5th caller fails)', () => {
-  // store.ts: the definition + the replay guard (listInboundSentAtFrom) + the cap count (countHeldFrom). Nothing else reads a held note by name.
+  // store.ts: the definition + the replay guard (listInboundSentAtFrom) + the cap count (countHeldFrom) + deleteThread (it must SEE the held notes to leave them,
+  // and to keep the thread row they hang on). Nothing else reads a held note by name.
   // When the hold view and the evidence export are built they add THEIR file here, in their own commit, with a reason.
-  assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 3 });
+  assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 4 });
   assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 3 });
   // countHeldFrom: defined in store.ts; transport.ts uses it ONLY as the cap check (import, the io seam's type, and the one call).
   assert.deepEqual(occurrences('countHeldFrom'), { 'src/lib/messaging/store.ts': 1, 'src/lib/messaging/transport.ts': 5 });
@@ -69,4 +70,13 @@ test('S5 no module but held-note.ts reads a NOTE\'s or THREAD\'s held key itself
   // features already have a `.held` of their own (view.held for held ratchet frames, facts.held in the restore domain) and are deliberately not matched.
   const stray = SOURCES.filter((f) => f !== 'src/lib/messaging/held-note.ts').filter((f) => /\b(note|thread|n|t|rec|record|row)\.held\b/.test(text(f)));
   assert.deepEqual(stray, []);
+});
+
+test('S6 deleteThread deletes what the owner can SEE and leaves every held note, keeping their thread row (flagged held) so the include-held readers can still find them', () => {
+  const d = body(STORE, 'async function deleteThread(');
+  assert.match(d, /listNotesIncludingHeld\(threadId\)/, 'it must see the held notes to leave them');
+  assert.match(d, /if \(!isHeldNote\(n\)\) await txDelete\('notes', n\.note_id\);/, 'only visible notes are deleted');
+  assert.match(d, /held: true/, 'the thread row that anchors held notes is kept, flagged held (hidden from every default reader)');
+  assert.match(d, /else await txDelete\('threads', threadId\);/, 'the thread row is deleted ONLY when no held note remains');
+  assert.doesNotMatch(d, /txDelete\('threads', threadId\);[\s\S]*held: true/, 'and the delete does not come before the keep');
 });

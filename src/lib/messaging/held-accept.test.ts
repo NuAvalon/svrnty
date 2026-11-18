@@ -59,7 +59,7 @@ async function world() {
     } catch (e) { threw = e; }
     return { r, reasons, created, threw };
   };
-  return { id, myIO, notes, threads, calls, flags, heldCounts, countFlags, wireFor, frame, accept };
+  return { id, me, peerOf: peerOf(them), myIO, notes, threads, calls, flags, heldCounts, countFlags, wireFor, frame, accept };
 }
 
 test('H1 a FROZEN contact\'s note is stored, marked held, with the right body: not dropped, no drop reason', async () => {
@@ -188,7 +188,7 @@ test('HC2 at cap-1 held rows the next note IS stored held and the creation is re
   assert.equal(out.created, 1);
 });
 
-test('HC3 AT the cap the note is NOT stored, no creation is reported (so no receipt), and it is the same drop a stranger gets: not-in-book, no store write, session untouched', async () => {
+test('HC3 AT the cap the note is NOT stored and no creation is reported (so no receipt); the relay-visible drop is a stranger\'s (not-in-book) and the ratchet advance IS committed', async () => {
   const w = await world();
   w.heldCounts.set(w.id.fingerprint, HOLD_CAP_PER_SENDER);
   const before = JSON.stringify(w.myIO.rows.get(THEM) ?? null);
@@ -198,7 +198,7 @@ test('HC3 AT the cap the note is NOT stored, no creation is reported (so no rece
   assert.equal(out.created, 0);
   assert.equal(w.notes.size, 0);
   assert.equal(w.calls.putNote + w.calls.putThread, 0);
-  assert.equal(JSON.stringify(w.myIO.rows.get(THEM) ?? null), before, 'the ratchet was never opened, exactly like a not-in-book drop today');
+  assert.notEqual(JSON.stringify(w.myIO.rows.get(THEM) ?? null), before, 'session continuity is not content: the advance is committed past the cap (else an unfreeze later breaks the session, an unexplained tell)');
 });
 
 test('HC4 the count is asked for THIS SENDER, and only on the frozen path (never for an admitted contact or a stranger)', async () => {
@@ -217,4 +217,72 @@ test('HC5 a count that CANNOT be read throws (retryable, the envelope stays on t
   assert.ok(out.threw);
   assert.equal(w.notes.size, 0);
   assert.deepEqual(out.reasons, [], 'not a drop: nothing was decided');
+});
+
+test('HC6 CONTINUITY: past the cap, then UNFROZEN, the very next frame still opens and nothing the sender wrote was kept (the double ratchet tolerates one skipped frame, so HC3 is the pin that the advance is committed)', async () => {
+  const w = await world();
+  const f1 = await w.frame('over the cap'), f2 = await w.frame('after the unfreeze');
+  w.heldCounts.set(w.id.fingerprint, HOLD_CAP_PER_SENDER);
+  const capped = await w.accept(await w.wireFor('c6a', f1), { frozen: true });
+  assert.equal(capped.r, null);
+  assert.equal(w.notes.size, 0, 'nothing the sender wrote was kept');
+  const next = await w.accept(await w.wireFor('c6b', f2), { admitted: true });
+  assert.ok(next.r, 'the session was not left one step behind');
+  assert.equal(next.r!.body, 'after the unfreeze');
+});
+
+test('HC7 a REDELIVERY of an already-held note is NOT capped, even when the sender is now at the cap: it returns the stored held row', async () => {
+  const w = await world();
+  const wire = await w.wireFor('c7', await w.frame('kept before the cap was reached'));
+  const first = await w.accept(wire, { frozen: true });
+  assert.equal(first.r?.held, true);
+  w.heldCounts.set(w.id.fingerprint, HOLD_CAP_PER_SENDER);
+  const again = await w.accept(wire, { frozen: true });
+  assert.ok(again.r, 'a completed delivery is never turned into a loss by the cap');
+  assert.equal(again.r!.held, true);
+  assert.equal(w.notes.size, 1);
+  assert.equal(again.created, 0);
+});
+
+test('HC8 a note stored as ORDINARY before the sender was frozen is never rewritten as held by a redelivery: it is dropped as today and the visible row is untouched', async () => {
+  const w = await world();
+  const old: NoteRecord = { note_id: 'c8', thread_id: 'thr', direction: 'inbound', from_fingerprint: w.id.fingerprint, to_fingerprints: [], sent_at: '2026-01-01T00:00:00.000Z', body: 'an old note I could always read', participant_kind: 'human', retention: { expires_at: null }, wire_type: NOTE_WIRE_TYPE } as never;
+  w.notes.set('c8', old);
+  const before = JSON.stringify(w.notes.get('c8'));
+  const sessionBefore = JSON.stringify(w.myIO.rows.get(THEM) ?? null);
+  const out = await w.accept(await w.wireFor('c8', await w.frame('x')), { frozen: true });
+  assert.equal(out.r, null);
+  assert.deepEqual(out.reasons, ['not-in-book']);
+  assert.equal(JSON.stringify(w.notes.get('c8')), before, 'the visible note is exactly as it was (it did not become held and vanish)');
+  assert.equal(JSON.stringify(w.myIO.rows.get(THEM) ?? null), sessionBefore, 'dropped before any ratchet work, like today');
+  assert.equal(w.calls.putNote, 0);
+});
+
+test('HC9 a capped note still tells the session callbacks what a normal accept tells them (the frame opened), and nothing else is created', async () => {
+  const w = await world();
+  w.heldCounts.set(w.id.fingerprint, HOLD_CAP_PER_SENDER);
+  let opened = 0;
+  const wire = await w.wireFor('c9', await w.frame('over'));
+  const r = await acceptInboundNote({
+    wire, isAdmitted: async () => false, isFrozen: async () => true, io: { putNote: async () => { w.calls.putNote++; }, putThread: async () => { w.calls.putThread++; }, listThreads: async () => [], getNote: async () => null, countHeldFrom: async () => HOLD_CAP_PER_SENDER } as never,
+    onFrameOpened: async () => { opened++; }, onDrop: () => {}, onCreated: () => { throw new Error('a capped note must not report a creation'); },
+    openRatchet: (_f: string, body: string) => openDirectNoteStagedTyped(THEM, body, w.me, w.peerOf, w.myIO.io),
+  } as never);
+  assert.equal(r, null);
+  assert.equal(opened, 1);
+  assert.equal(w.calls.putNote + w.calls.putThread, 0);
+});
+
+test('HC7b the held-prior rule itself, with a PLAIN body (no ratchet to fall back on): a redelivered held note at the cap returns the stored held row, it is not capped', async () => {
+  const w = await world();
+  const wire = await w.wireFor('c7b', 'a plain body, no ratchet frame');
+  const first = await w.accept(wire, { frozen: true });
+  assert.equal(first.r?.held, true);
+  w.heldCounts.set(w.id.fingerprint, HOLD_CAP_PER_SENDER);
+  const again = await w.accept(wire, { frozen: true });
+  assert.ok(again.r, 'not dropped by the cap: it is a note already kept');
+  assert.equal(again.r!.held, true);
+  assert.equal(w.notes.size, 1);
+  assert.equal(again.created, 0);
+  assert.deepEqual(again.reasons, []);
 });

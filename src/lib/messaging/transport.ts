@@ -8,7 +8,7 @@ import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
-import { HOLD_CAP_PER_SENDER } from './held-note';
+import { HOLD_CAP_PER_SENDER, isHeldNote } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
@@ -323,13 +323,7 @@ export async function acceptInboundNote(args: {
   let held = false;
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
     if (args.isFrozen && (await args.isFrozen(args.wire.from_fingerprint))) {
-      // Frozen: keep it, below, through the SAME open and store steps, unless this sender already has HOLD_CAP_PER_SENDER notes held. Past the cap the note is
-      // NOT stored and gets no receipt: the same drop a stranger gets, before any ratchet work. A count that cannot be read THROWS (retryable): never "no cap".
-      if ((await (args.io?.countHeldFrom ?? countHeldFrom)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER) {
-        args.onDrop?.('not-in-book');
-        return null;
-      }
-      held = true;
+      held = true; // frozen: keep it, below, through the SAME open and store steps (the per-sender cap is applied after the collision check)
     } else {
       args.onDrop?.('not-in-book');
       return null; // spam / stranger — structural drop
@@ -341,9 +335,35 @@ export async function acceptInboundNote(args: {
   // direction and from_fingerprint) is the idempotent case and proceeds. A store error here throws (retryable), exactly like putNote below.
   const prior = await (args.io?.getNote ?? getNote)(args.wire.note_id);
   if (prior && (prior.direction !== 'inbound' || prior.from_fingerprint !== args.wire.from_fingerprint)) return null;
+  // Freeze keep, redelivery and cap. A note this sender already has stored as an ORDINARY row (from before they were frozen) is never rewritten as held: it is
+  // dropped as it is today, with nothing touched. A redelivery of a note already HELD is idempotent and never capped (a completed delivery is not a loss).
+  // Otherwise a NEW held note over HOLD_CAP_PER_SENDER is not kept: authenticated and opened like any note (session continuity is not content: without the
+  // advance an unfreeze would leave the session behind), nothing stored, no creation reported (so no receipt), and the same relay-visible drop a stranger gets.
+  // A count that cannot be read THROWS (retryable): never "no cap".
+  let overCap = false;
+  if (held && prior) {
+    if (!isHeldNote(prior)) {
+      args.onDrop?.('not-in-book');
+      return null;
+    }
+  } else if (held) {
+    overCap = (await (args.io?.countHeldFrom ?? countHeldFrom)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER;
+  }
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
   let viaRatchet = false;
+  // What a note that opened and was committed tells its observers (best effort: the note is stored and the session committed, so a throw changes nothing).
+  const afterCommit = async (): Promise<void> => {
+    if (staged?.replaced) {
+      try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
+    }
+    if (staged?.startedSession) {
+      try { await args.onSessionStarted?.(args.wire.from_fingerprint, args.wire.sent_at); } catch { /* best effort: the note is stored and the session committed; the floor stays where it was */ }
+    }
+    if (viaRatchet) {
+      try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
+    }
+  };
   if (isTripleRatchetBody(body)) {
     // v5.3 (Flint #2052): UNKNOWN IS LOCAL. Only a failure the ratchet path positively typed as the frame's fault ('verdict') is
     // 'ratchet-unopenable'. No ratchet opener at all, a plain null (a cause nobody identified) and a typed 'local' failure are all
@@ -380,6 +400,12 @@ export async function acceptInboundNote(args: {
   // R5: a StagedOpen holds the per-peer session lock. It is freed by commit() below, or HERE on any other exit (putNote/putThread
   // throwing included), so a failed store write can never leave a peer's session locked.
   try {
+  if (overCap) {
+    if (staged) await staged.commit();
+    await afterCommit();
+    args.onDrop?.('not-in-book');
+    return null;
+  }
   // FIRST WRITE WINS (Archie #2653, Flint #2650): the same sender may REDELIVER a stored note (identical content: proceed, putNote is idempotent), but may
   // not REWRITE it. A different body, thread or time under a stored note_id is refused and the stored row is left exactly as it was. The frame was
   // legitimately consumed (its key is spent), so its ratchet advance is still committed: only its CONTENT is refused. Without that, the receiver's
@@ -439,15 +465,7 @@ export async function acceptInboundNote(args: {
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
   if (staged) await staged.commit();
-  if (staged?.replaced) {
-    try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
-  }
-  if (staged?.startedSession) {
-    try { await args.onSessionStarted?.(args.wire.from_fingerprint, args.wire.sent_at); } catch { /* best effort: the note is stored and the session committed; the floor stays where it was */ }
-  }
-  if (viaRatchet) {
-    try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
-  }
+  await afterCommit();
   if (created) { try { args.onCreated?.(); } catch { /* a receipt hook must never fail a stored note */ } }
   return record;
   } finally {

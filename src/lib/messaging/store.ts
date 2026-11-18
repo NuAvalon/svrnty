@@ -436,9 +436,15 @@ export async function countHeldFrom(peerFingerprint: string): Promise<number> {
 }
 
 export async function deleteThread(threadId: string): Promise<void> {
-  const notes = await listNotesForThread(threadId);
-  for (const n of notes) await txDelete('notes', n.note_id);
-  await txDelete('threads', threadId);
+  // A delete is about what the owner can SEE. Held notes are evidence (kept until the owner removes them from the hold view), so every held note stays, and so
+  // does the thread row they hang on: the include-held readers find held notes by walking threads, so a deleted row would strand them where the cap count, the
+  // replay guard and the hold view could never reach them. The kept row is flagged held, which hides it from every default reader like any held thread.
+  const notes = await listNotesIncludingHeld(threadId);
+  for (const n of notes) if (!isHeldNote(n)) await txDelete('notes', n.note_id);
+  if (notes.some((n) => isHeldNote(n))) {
+    const row = await txGet<ThreadRow>('threads', threadId);
+    if (row) await putThread({ ...(await decryptJson<NoteThread>(row.enc)), held: true });
+  } else await txDelete('threads', threadId);
 }
 
 // ── Encrypted rows in the existing 'settings' store (#720 dead-letter records) ───────────────────────────────────────────────────
