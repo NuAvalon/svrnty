@@ -6,5 +6,7 @@
 import type { Argon2WorkerLike } from './kdf-offthread';
 
 export function createArgon2Worker(): Argon2WorkerLike {
-  return new Worker(new URL('./argon2.worker.ts', import.meta.url)) as unknown as Argon2WorkerLike;
+  // NEG PROOF, NOT FOR MERGE: the worker script is a same-origin chunk that does not exist, so the build passes and the worker
+  // cannot start at run time. The production-build e2e job must go red on this.
+  return new Worker('/_next/static/chunks/no-such-argon2-worker.js') as unknown as Argon2WorkerLike;
 }
