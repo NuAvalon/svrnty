@@ -119,13 +119,24 @@ test('W9 the lines that only the store can hold: the best-effort wrapper, the th
   assert.match(store, /export const confirmGlobalOffAfterRestore = \(ownerFingerprint: string\): Promise<ConfirmOutcome> => confirmPendingGlobalOff\(createRestorePorts\(ownerFingerprint\)\);/);
 });
 
-test('W11 the Block / Unblock write is the atomic update too: block-suppression never reads then replaces, and the plain setter is left to genesis alone', () => {
+test('W11 the Block / Unblock write is the atomic update too: block-suppression never reads then replaces, and the plain setter has no production caller left', () => {
   const block = codeOnly(readFileSync(new URL('../trust/block-suppression.ts', import.meta.url), 'utf8'));
   assert.doesNotMatch(block, /setSuppressionRecord|getSuppressionRecord/, 'no read-then-replace in the block path');
   assert.match(block, /import \{ updateSuppressionRecord \} from '@\/lib\/identity\/client-store';/);
   assert.match(block, /const defaultStore: SuppressionStoreSeam = \{ updateSuppression: updateSuppressionRecord \};/, 'the default store is the shared atomic update');
   assert.match(block, /store\.updateSuppression\(ownerFingerprint\)<BlockSuppressionOutcome>\(\(held\) => decideBlock\(held, id, blocked\)\)/, 'the decision runs inside the update');
-  assert.deepEqual(callersOf('setSuppressionRecord'), ['src/lib/trust/piece2-genesis.ts'], 'the unguarded setter has one caller left: genesis (an empty record at mint, never on a restore)');
+  // CHANGED ON PURPOSE: genesis was the last caller of the unguarded setter. It now writes the empty record ABSENT-ONLY through the same atomic update, so no production code replaces a record blindly.
+  assert.deepEqual(callersOf('setSuppressionRecord'), [], 'the unguarded setter has no production caller: genesis writes absent-only through the atomic update');
+});
+
+test('W15 the genesis hook is absent-only through the atomic update: it names the shared update, never the plain setter, and takes only TYPES from the restore module', () => {
+  const genesis = codeOnly(readFileSync(new URL('../trust/piece2-genesis.ts', import.meta.url), 'utf8'));
+  assert.doesNotMatch(genesis, /setSuppressionRecord|getSuppressionRecord/, 'no blind write and no read-then-replace');
+  assert.match(genesis, /import \{ updateSuppressionRecord as realUpdateSuppressionRecord \} from '@\/lib\/identity\/client-store';/);
+  assert.match(genesis, /export const piece2GenesisInit: GenesisHook = makePiece2GenesisInit\(realUpdateSuppressionRecord\);/, 'the default hook is wired to the shared atomic update');
+  assert.match(genesis, /await updateSuppression\(fp\)<GenesisInitOutcome>\(decideGenesisInit\);/, 'the decision runs inside the update');
+  assert.match(genesis, /^import type \{ Decision, SealedRead, Update \} from '@\/lib\/trust\/suppression-restore';$/m, 'types only from the restore module: no runtime dependency');
+  assert.match(genesis, /if \(held\.state === 'absent'\) return \{ write: emptySuppression\(\), result: 'written' \};/, 'the empty record is written only for an ABSENT record');
 });
 
 test('W12 the export screen\'s look is the sealed read: it tells absent from unreadable, and only a LEFT-OUT result shows the notice', () => {
