@@ -328,8 +328,42 @@ def test_an_unreadable_disk_gets_the_ceiling():
     assert bc.default_epoch_cap("/x/b.db", environ={}, disk_usage=usage) == 1_000_000
 
 
-def test_the_setting_wins_and_a_junk_setting_is_ignored():
+def test_the_setting_wins_above_the_floor_and_a_junk_setting_is_ignored():
     usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
-    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "7"}, disk_usage=usage) == 7
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "50000"}, disk_usage=usage) == 50_000
     for junk in ("", "0", "-1", "lots", "1e6", "7\n"):
         assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": junk}, disk_usage=usage) == 214_748, junk
+
+
+def test_a_setting_below_the_floor_is_raised_to_it():
+    # Changed on purpose: this used to pin that a cap of 7 was honoured. A cap that low lets one caller fill an epoch, and "full" then
+    # tells everyone else how busy it is, so the floor now applies to the setting as well as to the disk-derived value.
+    usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
+    for low in ("1", "7", str(bc.EPOCH_CAP_MIN - 1)):
+        assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": low}, disk_usage=usage) == bc.EPOCH_CAP_MIN, low
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": str(bc.EPOCH_CAP_MIN)}, disk_usage=usage) == bc.EPOCH_CAP_MIN
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": str(bc.EPOCH_CAP_MIN + 1)}, disk_usage=usage) == bc.EPOCH_CAP_MIN + 1
+
+
+def test_a_setting_above_the_ceiling_is_lowered_to_it_and_says_so(capsys):
+    # One extra zero in an env file must not disable the disk bound: 9,999,999,999 deposits of BYTES_PER_DEPOSIT would be about 5 TB per epoch.
+    usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
+    for high in (str(bc.EPOCH_CAP_MAX + 1), "9999999999"):
+        assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": high}, disk_usage=usage) == bc.EPOCH_CAP_MAX, high
+        out = capsys.readouterr().out
+        assert out.count("\n") == 1, "exactly one line"
+        assert f"BEACON_PER_EPOCH_CAP={high}" in out and f"using {bc.EPOCH_CAP_MAX}" in out, "it names the value asked for and the value used"
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": str(bc.EPOCH_CAP_MAX)}, disk_usage=usage) == bc.EPOCH_CAP_MAX
+    assert capsys.readouterr().out == "", "exactly the ceiling is not a clamp: no line"
+
+
+def test_the_floor_clamp_says_so_too_and_an_in_range_setting_is_silent(capsys):
+    usage = lambda p: shutil._ntuple_diskusage(1, GB, GB)
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "7"}, disk_usage=usage) == bc.EPOCH_CAP_MIN
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1 and "BEACON_PER_EPOCH_CAP=7" in out and f"using {bc.EPOCH_CAP_MIN}" in out
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "50000"}, disk_usage=usage) == 50_000
+    assert bc.default_epoch_cap("/x/b.db", environ={}, disk_usage=usage) == 214_748
+    assert bc.default_epoch_cap("/x/b.db", environ={"BEACON_PER_EPOCH_CAP": "junk"}, disk_usage=usage) == 214_748
+    assert capsys.readouterr().out == "", "in range, unset or junk: nothing printed"
+
