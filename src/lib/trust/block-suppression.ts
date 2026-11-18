@@ -25,16 +25,19 @@
  * The store seam is INJECTED (defaults to the real client-store) so this is unit-testable IndexedDB-free —
  * mirrors know-layer-sync.ts's KnowOverlayStore pattern.
  */
-import { getSuppressionRecord, setSuppressionRecord } from '@/lib/identity/client-store';
+import { updateSuppressionRecord } from '@/lib/identity/client-store';
 import { suppressPerson, unsuppressPerson, type SuppressionRecord } from '@/lib/trust/suppression';
+import type { Decision, SealedRead, Update } from '@/lib/trust/suppression-restore';
 
-/** The two client-store calls this helper needs — injected for tests (no IndexedDB). */
+/**
+ * The one client-store call this helper needs, injected for tests (no IndexedDB): the ATOMIC update of the owner's suppression record. A Block or Unblock decided on a record read before a
+ * restore merged its persons must not put the record back without them, so the change is never read-then-replace: the store commits only if the record is still what was read.
+ */
 export interface SuppressionStoreSeam {
-  getSuppressionRecord: (ownerFingerprint: string) => Promise<SuppressionRecord | null>;
-  setSuppressionRecord: (ownerFingerprint: string, rec: SuppressionRecord) => Promise<void>;
+  updateSuppression: (ownerFingerprint: string) => Update<SuppressionRecord>;
 }
 
-const defaultStore: SuppressionStoreSeam = { getSuppressionRecord, setSuppressionRecord };
+const defaultStore: SuppressionStoreSeam = { updateSuppression: updateSuppressionRecord };
 
 export type BlockSuppressionOutcome =
   | 'added' // block → person durable_id added to the record (written)
@@ -62,6 +65,22 @@ export interface BlockSuppressionResult {
  * failure is swallowed (the block still holds via the fail-closed record + the `blocked` flag), so callers
  * may `void` it alongside the existing reconcileAllowedOnConsentChange fire-and-forget.
  */
+/**
+ * The decision, on the record as the store read it. PURE: the atomic update can run it more than once (it decides again on a newer record when another write landed first). A record that is
+ * unreadable or absent is never written (§F3).
+ */
+export function decideBlock(held: SealedRead<SuppressionRecord>, id: string, blocked: boolean): Decision<SuppressionRecord, BlockSuppressionOutcome> {
+  if (held.state !== 'ok') return { result: 'skipped-fail-closed' };
+  const rec = held.value;
+  if (blocked) {
+    const next = suppressPerson(rec, id); // returns the SAME ref if already present (idempotent)
+    return next === rec ? { result: 'already' } : { write: next, result: 'added' };
+  }
+  // unblock: remove the person-entry. unsuppressPerson always returns a NEW object, so compare persons.length (it only ever removes) to skip a redundant write.
+  const next = unsuppressPerson(rec, id);
+  return next.persons.length === rec.persons.length ? { result: 'already' } : { write: next, result: 'removed' };
+}
+
 export async function applyBlockSuppression(
   ownerFingerprint: string,
   peerDurableId: string | undefined | null,
@@ -71,29 +90,12 @@ export async function applyBlockSuppression(
   const id = (peerDurableId ?? '').trim();
   if (!id) return { wrote: false, outcome: 'no-durable-id' };
 
-  const rec = await store.getSuppressionRecord(ownerFingerprint);
-  if (rec === null) {
-    // §F3: unreadable/absent ⇒ already fail-closed to suppress-all + the `blocked` flag covers it. Writing
-    // here would risk reducing a corrupt record's suppress-all to suppress-one → never write on doubt.
-    return { wrote: false, outcome: 'skipped-fail-closed' };
-  }
-
   try {
-    if (blocked) {
-      const next = suppressPerson(rec, id); // returns the SAME ref if already present (idempotent)
-      if (next === rec) return { wrote: false, outcome: 'already' };
-      await store.setSuppressionRecord(ownerFingerprint, next);
-      return { wrote: true, outcome: 'added' };
-    }
-    // unblock: remove the person-entry. unsuppressPerson always returns a NEW object, so compare
-    // persons.length (it only ever removes) to skip a redundant write when the entry wasn't present.
-    const next = unsuppressPerson(rec, id);
-    if (next.persons.length === rec.persons.length) return { wrote: false, outcome: 'already' };
-    await store.setSuppressionRecord(ownerFingerprint, next);
-    return { wrote: true, outcome: 'removed' };
+    const outcome = await store.updateSuppression(ownerFingerprint)<BlockSuppressionOutcome>((held) => decideBlock(held, id, blocked));
+    return { wrote: outcome === 'added' || outcome === 'removed', outcome };
   } catch {
-    // A write failure (e.g. the session locked between read and write) never surfaces: the block is still
-    // enforced by the fail-closed record state + the `blocked` flag, and a later block retries the write.
+    // A write failure (e.g. the session locked between read and write, or a record that keeps changing) never surfaces: the block is still enforced by the fail-closed record state + the
+    // `blocked` flag, and a later block retries the write.
     return { wrote: false, outcome: 'skipped-error' };
   }
 }
