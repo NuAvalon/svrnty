@@ -11,10 +11,10 @@ export const VAULT_EXPORT_FAILED = "The vault export didn't finish. Try again.";
 
 /**
  * Shown directly under the disabled "Encrypting..." button ONLY when the key derivation is still running VAULT_EXPORT_SLOW_AFTER_MS after Export was pressed, and removed the moment the
- * export finishes or fails (copy ledger rows 306 and 306e). Reviewed copy: do not reword. It states a possibility ("can take several minutes"), never an estimate, and there is no percentage, bar or
+ * export finishes or fails (copy ledger rows 306, 306e and 308). Reviewed copy: do not reword. It states a possibility ("can take several minutes"), never an estimate, and there is no percentage, bar or
  * timer anywhere, because the derivation reports no progress.
  */
-export const VAULT_EXPORT_SLOW = "Still encrypting your backup. On some devices this can take several minutes. Keep this page open; nothing is saved until it finishes.";
+export const VAULT_EXPORT_SLOW = "Still encrypting your backup. On some devices this can take several minutes. Keep this page open; your backup file is saved only when it finishes.";
 export const VAULT_EXPORT_SLOW_AFTER_MS = 5000;
 
 /**

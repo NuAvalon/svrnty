@@ -1,5 +1,5 @@
 // src/components/export/vault-export-slow.test.ts
-// Gate: the "still encrypting" line (copy ledger rows 306 and 306e) is the reviewed sentence, appears only when the work is STILL running 5 s in, is removed the moment the export finishes or fails, and
+// Gate: the "still encrypting" line (copy ledger rows 306, 306e and 308) is the reviewed sentence, appears only when the work is STILL running 5 s in, is removed the moment the export finishes or fails, and
 // never carries a percentage, bar, timer or estimate.
 //   · COPY: the sentence is pinned by length and sha256 (ASCII only); it has no digit, no percent sign and no "about".
 //   · TIMING: a fake-timer run of the real helper (shown only after the delay; a stop before it means it never shows; a stop after it hides it; stopping twice is harmless).
@@ -16,9 +16,9 @@ import { startSlowNotice, type Timers } from '@/components/export/slow-notice';
 
 const sha = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex').slice(0, 16);
 
-test('COPY: the sentence is exactly the reviewed text (133 chars, ASCII), and it promises no number', () => {
-  assert.equal(VAULT_EXPORT_SLOW.length, 133);
-  assert.equal(sha(VAULT_EXPORT_SLOW), 'dfb24c2dd54101bc');
+test('COPY: the sentence is exactly the reviewed text (146 chars, ASCII), and it promises no number', () => {
+  assert.equal(VAULT_EXPORT_SLOW.length, 146);
+  assert.equal(sha(VAULT_EXPORT_SLOW), 'abad9bfa01ad7148');
   assert.ok([...VAULT_EXPORT_SLOW].every((c) => c.charCodeAt(0) < 128), 'ASCII only');
   assert.doesNotMatch(VAULT_EXPORT_SLOW, /\d|%|\babout\b/i, 'no digit, no percent, no "about N"');
   assert.equal(VAULT_EXPORT_SLOW_AFTER_MS, 5000, 'the line waits 5 s so a fast export never flashes it');
