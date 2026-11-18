@@ -18,6 +18,9 @@ test.use({ bypassCSP: true });
  * "Usable" = the unlock gate that signing and decrypting share (unlockArmoredIdentityKey) accepts the stored key and passphrase, and, where there is an identity record, the owner message keys
  * assemble (loadOwnerRatchetIdentity, which returns null on any failure). The probe reports booleans and a passphrase LENGTH only. The assertions are soft, so a red run names every hop that broke.
  *
+ * Bounds: the harness's init runs the (idempotent) unlock migrations with the same passphrase on B, C and D once the restore has finished: a test-side write that cannot create a passphrase, so it does not
+ * touch this question. `bypassCSP` is test-context only; this spec says nothing about the page's script policy. It runs on `next dev`, not a production build.
+ *
  * NOT driven: a real NOTE between two people (it needs a sender); the unlock gate and the owner message keys are what a note's decrypt path uses. NOT covered: a passphrase CHANGE before the
  * export: "Set Passphrase" is switched off until the re-key fix ships (set-passphrase-hidden.spec.ts), so no screen reaches it.
  */
@@ -142,8 +145,11 @@ test('a key that was restored and exported again still opens on the next device 
   // D: restore B's key file (a key-only restore: no profile on this device, so only the unlock gate is asked)
   const { ctx: ctxD, page: d } = await openGateRestore(browser, k2, KEY_PW);
   await d.getByRole('button', { name: /^(open vault|restore identity)$/i }).click();
+  // Wait for the app's OWN end-of-restore signal BEFORE injecting the harness. The harness is a separate bundle of the store, and its init can generate and write the key-encryption salt: injected
+  // while the restore is still deriving its key it would race that derivation (two salts, last writer wins) and write into the very operation under test.
+  await expect(d.getByText(/Your identity key is saved on this device/)).toBeVisible({ timeout: 240_000 });
   await inject(d, KEY_PW);
-  await expect.poll(async () => (await d.evaluate((fp) => window.__ku.probe(fp), probeA.fingerprint)).hasKey, { timeout: 240_000, message: 'the key file restored a key on D' }).toBe(true);
+  await expect.poll(async () => (await d.evaluate((fp) => window.__ku.probe(fp), probeA.fingerprint)).hasKey, { timeout: 30_000, message: 'the key file restored a key on D' }).toBe(true);
   const probeD = await d.evaluate((fp) => window.__ku.probe(fp), probeA.fingerprint);
   say('D (key file from B)', probeD);
   expect.soft(probeD.unlocks, 'HOP 2 (key file): the key file B exported opens on D').toBe(true);
