@@ -38,8 +38,13 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
 
   const gestureRef = useRef({ dragging: false });
 
-  const applyFit = useCallback((bounds: Bounds, aspect: number, mode: 'reset' | 'limits' = 'reset') => {
-    const fitted = fitCamera(bounds, aspect, 36);
+  const applyFit = useCallback((
+    bounds: Bounds,
+    aspect: number,
+    mode: 'reset' | 'limits' = 'reset',
+    bottomReserve = 0,
+  ) => {
+    const fitted = fitCamera(bounds, aspect, 36, bottomReserve);
     fitRef.current = fitted;
     const lim = zoomLimits(fitted.w);
     minWRef.current = lim.minW;

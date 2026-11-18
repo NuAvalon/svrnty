@@ -91,3 +91,32 @@ test('hitTestNodes uses a pixel floor so zoomed-out seals stay tappable', () => 
   assert.equal(hitTestNodes(nodes, cam, rect, 218, 200), 'ada');
   assert.equal(hitTestNodes(nodes, cam, rect, 10, 10), null);
 });
+
+test('fitCamera bottomReserve 0 is the plain fit (default unchanged)', () => {
+  const b = { minX: -40, minY: 10, maxX: 260, maxY: 120 };
+  for (const a of [0.5, 1, 16 / 9, 3]) {
+    assert.deepEqual(fitCamera(b, a, 36, 0), fitCamera(b, a, 36));
+  }
+});
+
+test('fitCamera bottomReserve keeps the padded bbox out of the bottom band, full aspect kept', () => {
+  const b = { minX: -40, minY: 10, maxX: 260, maxY: 120 };
+  const pad = 36;
+  for (const a of [0.5, 1, 16 / 9, 3]) {
+    for (const r of [0.1, 0.2, 0.35]) {
+      const cam = fitCamera(b, a, pad, r);
+      assert.ok(Math.abs(cam.w / cam.h - a) < 1e-9, `aspect ${a} r ${r}`);
+      const bandBottom = cam.y + cam.h * (1 - r);
+      assert.ok(b.maxY + pad <= bandBottom + 1e-9, `bbox bottom in reserve: a ${a} r ${r}`);
+      assert.ok(b.minY - pad >= cam.y - 1e-9, `bbox top above camera: a ${a} r ${r}`);
+      assert.ok(b.minX - pad >= cam.x - 1e-9 && b.maxX + pad <= cam.x + cam.w + 1e-9, `bbox x: a ${a} r ${r}`);
+    }
+  }
+});
+
+test('fitCamera bottomReserve is clamped (0..0.9) and ignores non-finite values', () => {
+  const b = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+  assert.deepEqual(fitCamera(b, 1, 10, Number.NaN), fitCamera(b, 1, 10));
+  assert.deepEqual(fitCamera(b, 1, 10, -1), fitCamera(b, 1, 10));
+  assert.deepEqual(fitCamera(b, 1, 10, 5), fitCamera(b, 1, 10, 0.9));
+});
