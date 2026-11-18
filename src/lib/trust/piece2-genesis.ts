@@ -18,43 +18,50 @@
  * no suppression record can pre-exist a brand-new fingerprint ⇒ writing empty is unambiguous and safe HERE and
  * ONLY here. This hook is NEVER wired to the unlock path.
  *
- * ★ FAIL-CLOSED CONTRACT (idempotent + degrades-to-more-suppression). runGenesisHooks swallows a throwing hook
- * (best-effort — identity creation must never fail on a hook). That is SAFE because the consumer fails closed:
- * if this write is swallowed (e.g. a transient store error), the new user simply has NO record ⇒ getSuppression
- * Record returns null ⇒ suppress-all ⇒ the new user is DARK until a record lands — under-reveal, never a
- * re-expose. Idempotent: writing `emptySuppression()` for a fresh fp is a fixed point (a genesis fp cannot have
- * a populated record to clobber). We therefore write UNCONDITIONALLY at genesis (do NOT read-first: at a real
- * genesis `getSuppressionRecord` would return null anyway, and null is ambiguous absent-vs-unreadable OUTSIDE
- * genesis — but this hook only ever fires at genesis, where null means absent-and-safe-to-init).
+ * ★ ABSENT-ONLY, THROUGH THE ATOMIC UPDATE. The hook writes the empty record ONLY when the stored record is ABSENT, as one compare-and-swap (the same update Block and Unblock use). An existing record,
+ * readable or not, is never replaced by empty: not one a restore just wrote, not a populated one, and a record that exists but cannot be read is left alone (it is not "absent"). The old
+ * argument against reading first was that a null read cannot tell "absent" from "unreadable"; the sealed three-state read tells them apart, so a read-first decision is now safe, and it
+ * closes the gap that a restore which wrote a record before a mint hook ran could have been overwritten with empty.
+ *
+ * ★ FAIL-CLOSED CONTRACT. runGenesisHooks swallows a throwing hook (best-effort: identity creation must never fail on a hook). That is SAFE because the consumer fails closed: if the write
+ * is swallowed (a locked session, a store error, a lost comparison that keeps losing), the new user simply has NO record, so the reader returns null and suppresses everyone: dark, an
+ * under-reveal and never a re-expose. Idempotent: a second run finds the record present and writes nothing.
  *
  * ★ INTEGRATION SEAM (DEFERRED / §8). Registration is NOT a module-load side effect — the app bootstrap calls
  * registerPiece2GenesisInit() once during init (the ship-time wiring). Importing this module registers nothing;
  * on `main`-without-the-call, runGenesisHooks is a no-op. Keeps the mechanism drivable + reviewable while DARK.
  */
 import { registerGenesisHook, type GenesisHook } from '@/lib/identity/identity-genesis-hooks';
-import { setSuppressionRecord as realSetSuppressionRecord } from '@/lib/identity/client-store';
+import { updateSuppressionRecord as realUpdateSuppressionRecord } from '@/lib/identity/client-store';
 import { emptySuppression, type SuppressionRecord } from '@/lib/trust/suppression';
+import type { Decision, SealedRead, Update } from '@/lib/trust/suppression-restore';
+
+/** What the hook did: wrote the empty record, or left an existing one alone (readable, or present but unreadable). */
+export type GenesisInitOutcome = 'written' | 'kept-existing' | 'kept-unreadable';
 
 /**
- * Factory: build the genesis hook over an injected suppression-record writer (DI for IndexedDB-free unit
- * testing). The hook writes an explicit empty suppression record for the freshly-minted `fingerprint`.
- * Idempotent; relies on runGenesisHooks' swallow + the consumer's null-⇒-suppress-all for fail-closed. A no-op
- * on an empty/garbage fingerprint (defensive; genesis always supplies one).
+ * The decision, pure: write the explicit empty record ONLY when none is stored. A record that exists is kept whatever it holds, and one that exists but cannot be read is kept too (it is not absent).
  */
-export function makePiece2GenesisInit(
-  setSuppressionRecord: (fp: string, rec: SuppressionRecord) => Promise<void>,
-): GenesisHook {
+export function decideGenesisInit(held: SealedRead<SuppressionRecord>): Decision<SuppressionRecord, GenesisInitOutcome> {
+  if (held.state === 'absent') return { write: emptySuppression(), result: 'written' };
+  return { result: held.state === 'ok' ? 'kept-existing' : 'kept-unreadable' };
+}
+
+/**
+ * Factory: build the genesis hook over an injected atomic update (DI for IndexedDB-free unit testing). The hook writes an explicit empty suppression record for the freshly-minted `fingerprint`
+ * if, and only if, none is stored. Idempotent; relies on runGenesisHooks' swallow and the consumer's null-means-suppress-all for fail-closed. A no-op on an empty or garbage fingerprint
+ * (defensive; genesis always supplies one).
+ */
+export function makePiece2GenesisInit(updateSuppression: (fp: string) => Update<SuppressionRecord>): GenesisHook {
   return async (fingerprint: string): Promise<void> => {
     const fp = (fingerprint || '').trim();
-    if (!fp) return; // defensive — genesis always supplies a real fp; never write under an empty key
-    // Unconditional at genesis: a brand-new fp has no record, so this cannot clobber a populated one. If it
-    // throws (e.g. locked/store error) runGenesisHooks swallows it and the consumer fails closed (null⇒dark).
-    await setSuppressionRecord(fp, emptySuppression());
+    if (!fp) return; // defensive: genesis always supplies a real fp; never write under an empty key
+    await updateSuppression(fp)<GenesisInitOutcome>(decideGenesisInit);
   };
 }
 
 /** The default genesis hook, wired to the real IndexedDB suppression store (exported for direct testing). */
-export const piece2GenesisInit: GenesisHook = makePiece2GenesisInit(realSetSuppressionRecord);
+export const piece2GenesisInit: GenesisHook = makePiece2GenesisInit(realUpdateSuppressionRecord);
 
 /**
  * Register the piece-2 genesis-init hook into the identity mint flow. Call ONCE from the app bootstrap (the
