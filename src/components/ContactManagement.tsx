@@ -53,7 +53,7 @@ import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
-  getAllContacts, addContact, updateContact, removeContact,
+  getAllContacts, addContact, updateContact,
   getContact, getContactByFingerprint, loadKey, readBeaconKeyRecord,
   type ContactRecord,
 } from '@/lib/identity/client-store';
