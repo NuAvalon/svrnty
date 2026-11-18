@@ -62,7 +62,8 @@ import { pollWriteUnlessSafety } from '@/lib/contacts/safety-write';
 import { createAdoptCounter, type AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
-import { admitContact } from '@/lib/trust/admit-contact';
+import { admitContact, isFrozenContact } from '@/lib/trust/admit-contact';
+import { isHeldNote } from '@/lib/messaging/held-note';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
@@ -185,6 +186,10 @@ export interface NoteSeamDeps {
    * A throw means "no": nothing is sent.
    */
   isAdmittedNow?: (fromFingerprint: string) => Promise<boolean>;
+  /** Test seam: the book read behind isAdmitted and isFrozen (default getContactByFingerprint). */
+  getContact?: (ownerFingerprint: string, fingerprint: string) => Promise<unknown>;
+  /** Test seam: the receipt gate (default receiptAllowedNow). */
+  receiptAllowed?: typeof receiptAllowedNow;
 }
 
 export function buildNoteSeam(
@@ -226,6 +231,13 @@ export function buildNoteSeam(
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
       let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
       let dropCause: string | undefined;
+      // ONE read of the book per accept: isAdmitted and isFrozen both answer from it, so a contact cannot unfreeze between the two questions (which could keep
+      // or drop a note the book said otherwise). The next note is a new accept, so a new read. Keyed on the fingerprint too: a different sender is never answered from it.
+      let book: { fp: string; read: Promise<unknown> } | undefined;
+      const bookRow = (fp: string): Promise<unknown> => {
+        if (!book || book.fp !== fp) book = { fp, read: (deps.getContact ?? getContactByFingerprint)(owner.fingerprint, fp) };
+        return book.read;
+      };
       let created = false; // #714 R1: did THIS delivery create the note row? (a redelivery, a refused rewrite and a spent frame did not)
       const rec = await deps.accept({
         onCreated: () => {
@@ -237,7 +249,8 @@ export function buildNoteSeam(
         },
         onRewriteRefused: noteRewriteRefused,
         wire,
-        isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
+        isAdmitted: async (fp) => admitContact(await bookRow(fp)),
+        isFrozen: async (fp) => isFrozenContact(await bookRow(fp)),
         openRatchet: async (fromFp, body, ctx) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
           const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
@@ -302,15 +315,23 @@ export function buildNoteSeam(
       // the note is redelivered, and at most ~4 per minute, so it can neither hold the ack of the note it answers nor spend the user's send budget.
       // #714 R1 (Flint #6128/#6130): ONLY the delivery that created the row answers it. The sender's receipt key is spent by the first receipt, and an honest
       // relay does not redeliver a stored-and-acked note, so a second delivery of the same note is not asked to re-send. G2: the sender is re-checked at SEND time.
+      // Freeze keep: a HELD note (its sender is frozen) was durably staged by the accept above, so its sender may be answered like an admitted contact, under the same
+      // Delivery setting rules. `held` comes from the STAGED RECORD, never from contact state, and the literal below is the only place `frozenStaged` is ever passed.
+      const held = isHeldNote(rec);
       if (sendReceipt && created) {
-        const stillAdmitted = deps.isAdmittedNow ?? ((fp: string) => receiptAllowedNow(owner.fingerprint, fp));
+        const gate = deps.receiptAllowed ?? receiptAllowedNow;
+        const stillAdmitted = deps.isAdmittedNow ?? (held
+          ? (fp: string) => gate(owner.fingerprint, fp, undefined, { frozenStaged: true })
+          : (fp: string) => gate(owner.fingerprint, fp));
         (deps.receipts ?? receiptOutbox).enqueue(owner.fingerprint, `${wire.from_fingerprint}|${wire.note_id}`, async () => {
           let ok = false;
           try { ok = await stillAdmitted(wire.from_fingerprint); } catch { ok = false; } // can't tell => don't send
           return ok ? sendReceipt(wire) : undefined; // returned, not awaited here: the OUTBOX runs this callback, never the note path
         }); // note_id is SENDER-chosen: key on the sender too (Flint #2105)
       }
-      return { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
+      return held
+        ? { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint, held: true }
+        : { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
     },
   };
 }

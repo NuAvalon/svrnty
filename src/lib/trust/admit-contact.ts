@@ -31,3 +31,10 @@ export function admitContact(contact: unknown): boolean {
     : null;
   return !(c.blocked || (meta != null && meta.blocked));
 }
+
+// FROZEN = in the book AND blocked: exactly "present but not admitted". A stranger, a removed contact (no row) and a non-object are NOT frozen, so none of
+// them can ever reach the hold path (a Freeze keeps a note only from someone the owner blocked, never from someone unknown). It reads blocked-ness through
+// admitContact, so the two places a block can live (top-level `blocked`, `metadata.blocked`) are decided in ONE function and the two predicates cannot drift.
+export function isFrozenContact(contact: unknown): boolean {
+  return contact != null && typeof contact === 'object' && !admitContact(contact);
+}

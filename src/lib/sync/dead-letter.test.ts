@@ -89,9 +89,10 @@ test('D5 a row cannot be built from an unsafe id or an unreadable time (the call
   assert.equal(makeDeadLetterRow({ envelopeId: 'e', firstSeen: '', reason: 'decrypt-failed', blob: 'x' }), null);
 });
 
-test('D6 the BENIGN terminal list is exactly these seven (a new entry must be a deliberate edit of this test)', () => {
+test('D6 the BENIGN terminal list is exactly these eight (a new entry must be a deliberate edit of this test)', () => {
   // 'lens-held' is gone (v1.10): a receiver-side hold is NOT terminal — the envelope is left unacked.
-  assert.deepEqual([...BENIGN_TERMINALS], ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'contact-update-blocked', 'note-blocked-sender', 'lens-hello', 'lens-stale']);
+  // 'note-frozen-stored' (Freeze keep): a note from a FROZEN contact was staged as a held note, so its relay copy is consumed with no record.
+  assert.deepEqual([...BENIGN_TERMINALS], ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'contact-update-blocked', 'note-blocked-sender', 'note-frozen-stored', 'lens-hello', 'lens-stale']);
 });
 
 const NOW = Date.parse('2026-10-30T12:00:00.000Z');

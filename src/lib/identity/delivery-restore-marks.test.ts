@@ -86,5 +86,10 @@ test('S5 the send-time read uses the MIGRATING reader and the sealed record is n
 
 test('S6 the queued send\'s default decision is receiptAllowedNow (admitted AND the setting), not the bare admission check', () => {
   const poll = read('src/lib/sync/live-book-poll.ts');
-  assert.match(poll, /deps\.isAdmittedNow \?\? \(\(fp: string\) => receiptAllowedNow\(owner\.fingerprint, fp\)\)/);
+  // Freeze keep changed this expression's SHAPE, not its intent: the default still goes through receiptAllowedNow (via `gate`, which a test can replace), for an
+  // ordinary note with exactly two arguments, and for a HELD note with the one option. It never falls back to the bare admission check.
+  assert.match(poll, /const gate = deps\.receiptAllowed \?\? receiptAllowedNow;/);
+  assert.match(poll, /deps\.isAdmittedNow \?\? \(held\s*\n\s*\? \(fp: string\) => gate\(owner\.fingerprint, fp, undefined, \{ frozenStaged: true \}\)\s*\n\s*: \(fp: string\) => gate\(owner\.fingerprint, fp\)\);/);
+  const block = poll.slice(poll.indexOf('const gate = deps.receiptAllowed'), poll.indexOf('const gate = deps.receiptAllowed') + 900);
+  assert.doesNotMatch(block, /admitContact\(/, 'the queued send never asks the bare admission check');
 });
