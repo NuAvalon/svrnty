@@ -96,7 +96,8 @@ test('R2: raw == null (absent) reads as a readable EMPTY book', async () => {
   const s = memStorage();                                              // nothing stored — getItem returns null
   assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {} },
     'an absent record is the ONE case that reads empty + readable (R2 — zero methods, writable book)');
-  const undef = { getItem: () => undefined, setItem: () => {} };
+  // a storage that answers undefined (some shims do) must read empty too; the cast is test-only, the interface stays string | null
+  const undef = { getItem: () => undefined as unknown as string | null, setItem: () => {} };
   assert.deepEqual(await loadLensGrants(OWNER, undef), { v: 1, grants: {}, inSeq: {} });
 });
 
