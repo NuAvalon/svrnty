@@ -49,24 +49,35 @@ async function setup(page: Page) {
 
 const heldIds = (page: Page, threadId: string) => page.evaluate((t) => window.__fz.allNotes(t).then((rows) => rows.map((r) => `${r.note_id}${(r as { held?: boolean }).held ? ':held' : ''}`).sort()), threadId);
 
+// The Chat tab lights ("Chat, new messages") for an arrival ONLY while another tab is open (app/page.tsx: `if (mainTab !== 'notes') setNotesActivity(true)`), so a
+// check that "nothing was announced" is meaningful only when Chat is closed. Galaxy keeps the shell poll bursting, like Chat does.
+async function awayFromChat(page: Page) {
+  await page.getByTestId('tab-galaxy').click();
+  await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
+}
+
 test('HF1 a note from a BLOCKED contact is stored held and shown nowhere; the thread and bubble never appear', async ({ page, request, baseURL }) => {
   test.setTimeout(180_000);
   const { aliceFp, aliceArmoredPub, bob } = await setup(page);
   await setBlocked(page, bob.fingerprint, true);
+  await awayFromChat(page);
   const dep = await depositNote(request, { baseURL, sender: bob, recipientFingerprint: aliceFp, recipientPublicKeyArmored: aliceArmoredPub, fields: { body: 'a note from a blocked contact' } });
   expect(dep.status).toBe(200);
   await expect.poll(() => heldIds(page, dep.thread_id), { timeout: 60_000, intervals: [1000] }).toEqual([`${dep.note_id}:held`]);
   const stored = await page.evaluate((t) => window.__fz.allNotes(t), dep.thread_id);
   expect(stored[0].body, 'opened and stored: the plaintext is what the sender wrote').toBe('a note from a blocked contact');
   expect(await page.evaluate((t) => window.__fz.notes(t), dep.thread_id), 'the default reader returns nothing').toEqual([]);
-  // the screen: nothing arrived, as far as the person can see
-  await expect(page.getByTestId(`notes-thread-${dep.thread_id}`)).toHaveCount(0);
-  await expect(page.getByTestId(`notes-bubble-${dep.note_id}`)).toHaveCount(0);
-  expect(await page.evaluate(() => window.__fz.threads()), 'no visible thread at all').toEqual([]);
-  // and nothing is ANNOUNCED: an arrival makes the Chat tab's name "Chat, new messages" (notes-roundtrip.spec.ts); a held note must leave it plain
+  // nothing is ANNOUNCED: an arrival makes the Chat tab's name "Chat, new messages" (see HF5, which proves this check can fail); a held note must leave it plain.
+  // Chat is closed here (awayFromChat), which is the only state in which the ember can light at all.
   await page.waitForTimeout(3_000);
   await expect(page.getByRole('tab', { name: 'Chat, new messages', exact: true })).toHaveCount(0);
   await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
+  // the screen: open Chat (it re-reads the store on mount) and nothing arrived, as far as the person can see
+  await page.getByTestId('tab-notes').click();
+  await expect(page.getByTestId('notes-inbox')).toBeVisible();
+  await expect(page.getByTestId(`notes-thread-${dep.thread_id}`)).toHaveCount(0);
+  await expect(page.getByTestId(`notes-bubble-${dep.note_id}`)).toHaveCount(0);
+  expect(await page.evaluate(() => window.__fz.threads()), 'no visible thread at all').toEqual([]);
 });
 
 test('HF2 a STRANGER\'s note is still dropped exactly as before: nothing is stored, held or otherwise', async ({ page, request, baseURL }) => {
@@ -121,4 +132,13 @@ test('HF4 UNBLOCKING moves zero rows: the held note stays hidden, and the sender
   await expect(page.getByTestId(`notes-bubble-${next.note_id}`)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId(`notes-bubble-${held.note_id}`)).toHaveCount(0);
   await expect(page.getByTestId(`notes-thread-${held.thread_id}`), 'and the held note\'s own thread never appears').toHaveCount(0);
+});
+
+test('HF5 CONTROL for HF1: the same arrival from an UNBLOCKED contact while Chat is closed DOES light the tab, so the quiet in HF1 is a real result', async ({ page, request, baseURL }) => {
+  test.setTimeout(180_000);
+  const { aliceFp, aliceArmoredPub, bob } = await setup(page);
+  await awayFromChat(page);
+  const dep = await depositNote(request, { baseURL, sender: bob, recipientFingerprint: aliceFp, recipientPublicKeyArmored: aliceArmoredPub, fields: { body: 'a note from an unblocked contact' } });
+  expect(dep.status).toBe(200);
+  await expect(page.getByRole('tab', { name: 'Chat, new messages', exact: true })).toBeVisible({ timeout: 60_000 });
 });
