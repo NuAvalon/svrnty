@@ -24,7 +24,7 @@ import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
 import { createBeaconStore, createBeaconLatch, beaconRowPrefixes, beaconRowAad, type BeaconKV, type Sealer } from '../trust/beacon-ports';
 import { admitContact } from '../trust/admit-contact';
-import { relatchFromRecord, repairBlockedButUnsuppressed, BlocksIncompleteError, type RepairOutcome } from '../trust/block-latch';
+import { relatchFromRecord, repairBlockedButUnsuppressed, relatchReport, RELATCH_ERROR, BlocksIncompleteError, type RepairOutcome, type RelatchReport } from '../trust/block-latch';
 import { isBeaconConfirmed, withConfirmed, createConfirmedPort, type BeaconConfirmed } from '../trust/beacon-confirmed';
 import { beaconPairId } from '../trust/beacon-pair-id';
 import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/beacon-client';
@@ -845,7 +845,11 @@ export async function repairSuppressionOrRefuse(ownerFingerprint: string): Promi
 export async function relatchBlocksForOwner(ownerFingerprint: string): ReturnType<typeof relatchFromRecord> {
   const { pairIdFor, latch } = blockLatchPortsFor(ownerFingerprint);
   return relatchFromRecord({
-    readPersons: async () => (await getSuppressionRecord(ownerFingerprint))?.persons ?? null,
+    // Same three-way read as the export's status look: an ABSENT record is no persons (nothing to latch), an UNREADABLE one is null (partial), never confused.
+    readPersons: async () => {
+      const r = await readSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null));
+      return r.state === 'ok' ? [...r.value.persons] : r.state === 'absent' ? [] : null;
+    },
     readRemoved: async () => {
       const r = await readRemovedList(ownerFingerprint);
       return r.state === 'ok' ? r.value : r.state === 'absent' ? [] : null;
@@ -2804,7 +2808,7 @@ export async function importVaultContents(
 export async function importVaultContentsReport(
   contents: VaultContents,
   fingerprint: string,
-): Promise<{ fingerprint: string; contacts: VaultContactsReport }> {
+): Promise<{ fingerprint: string; contacts: VaultContactsReport; latches: RelatchReport }> {
   const fp = (fingerprint || contents.identity?.identity?.fingerprint || '').trim();
   if (!fp) throw new Error('Invalid vault: no fingerprint');
 
@@ -2859,10 +2863,11 @@ export async function importVaultContentsReport(
   const contactsReport = await restoreVaultContacts(contacts, (contact) => addContact(fp, contact));
 
   // The record, the removed list AND the book are now on this device; latch every person the record names and every removed id whose contact is NOT back in the book, BEFORE any
-  // depositing path can run (a removed contact who is in the restored book follows Block / Trust, not the append-only list). Best-effort: a failure is repaired at the next unlock.
-  await relatchBlocksForOwner(fp).catch(() => undefined);
+  // depositing path can run (a removed contact who is in the restored book follows Block / Trust, not the append-only list). Best-effort, but the outcome is REPORTED (counts only; not ok when
+  // partial, unreadable or failed) and a failure is repaired at the next unlock.
+  const latches = await relatchBlocksForOwner(fp).then(relatchReport, () => RELATCH_ERROR);
   await setActiveFingerprint(fp);
-  return { fingerprint: fp, contacts: contactsReport };
+  return { fingerprint: fp, contacts: contactsReport, latches };
 }
 
 // ── Check if identity exists (for UI flow) ──────────────────────

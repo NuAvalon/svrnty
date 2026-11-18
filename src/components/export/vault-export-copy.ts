@@ -10,10 +10,10 @@ import { BlocksIncompleteError } from '@/lib/trust/block-latch';
 export const VAULT_EXPORT_FAILED = "The vault export didn't finish. Try again.";
 
 /**
- * The sentence for a sealed export that REFUSED because the blocks could not be made whole first (BlocksIncomplete, thrown before any file is made). CANDIDATE wording: the product copy is
- * reviewed and frozen before this reaches a person. It must say that NOTHING was exported and why, never the generic "didn't finish" (a refusal that hides a block).
+ * The sentence for a sealed export that REFUSED because the blocks could not be made whole first (BlocksIncomplete, thrown before any file is made). Reviewed copy: do not reword it here.
+ * It says that NOTHING was exported and why, never the generic "didn't finish" (a refusal that hides a block).
  */
-export const VAULT_EXPORT_BLOCKS_REFUSED = "We couldn't save your blocks into this backup, so no backup was made and nothing was exported. Lock the app, unlock it again, and try once more.";
+export const VAULT_EXPORT_BLOCKS_REFUSED = "We couldn't add your list of blocked and removed people to this backup, so no backup was made and nothing was exported. Lock the app, unlock it again, and try once more.";
 
 /** The sentence for a failed vault export: the blocked-upgrade sentence for that coded stop, else the fixed one (the real error is logged by tag only). */
 export function vaultExportFailureMessage(err: unknown): string {

@@ -129,8 +129,9 @@ export type RelatchOutcome = 'nothing-to-do' | 'relatched' | 'partial' | 'unread
  *  - a REMOVED id whose contact is IN THE BOOK is skipped: the removed list is append-only, so a contact who was Removed, re-added and then Trusted (a Trust tap clears its own latch) is still
  *    on the list, and latching them again at every start would silently undo the person's own Trust tap. The BOOK, not the list, governs a contact who is present. Record PERSONS keep
  *    relatching (a blocked person cannot be trust-tapped while blocked; Unblock removes the record entry first).
- * `null` from a reader = unreadable: that side is skipped and the outcome is 'partial'; both record and list unreadable = 'unreadable'. An unreadable BOOK counts as empty (the tighter side: the
- * removed ids are latched) and is counted. Counts only, never an id.
+ * `null` from a reader = unreadable: that side is skipped and the outcome is 'partial'; both record and list unreadable = 'unreadable'. An unreadable BOOK skips the REMOVED side (a read error
+ * must not re-latch a contact whose owner already tapped Trust, and that latch would persist once the book reads again): persons still latch, the outcome is 'partial', and the next unlock retries.
+ * Counts only, never an id.
  */
 export async function relatchFromRecord(a: {
   readPersons: () => Promise<string[] | null>;
@@ -160,7 +161,7 @@ export async function relatchFromRecord(a: {
   };
   const r = await rebuildLatchesFromCarry({
     persons: await unlatchedOf(persons ?? []),
-    removed: await unlatchedOf(removed ?? []),
+    removed: book === null ? [] : await unlatchedOf(removed ?? []),
     bookIds: book ?? [],
     pairIdFor: a.pairIdFor,
     latch: a.latch,
@@ -207,3 +208,18 @@ export async function rebuildLatchesFromCarry(a: {
   }
   return { ok: failed === 0, latched, failed };
 }
+
+/** What a restore tells its caller about the re-latch: counts only, never an id. `ok` is false for a partial, unreadable or failed pass. */
+export interface RelatchReport {
+  ok: boolean;
+  outcome: RelatchOutcome | 'error';
+  latched: number;
+  failed: number;
+}
+
+export function relatchReport(r: { outcome: RelatchOutcome; latched: number; failed: number }): RelatchReport {
+  return { ok: r.outcome === 'relatched' || r.outcome === 'nothing-to-do', outcome: r.outcome, latched: r.latched, failed: r.failed };
+}
+
+/** The report when the pass itself threw: not ok, and nothing was counted. */
+export const RELATCH_ERROR: RelatchReport = { ok: false, outcome: 'error', latched: 0, failed: 0 };

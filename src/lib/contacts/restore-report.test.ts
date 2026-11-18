@@ -78,7 +78,8 @@ test('PIN: the restore loop hands addContact the vault contact itself, and impor
   assert.match(rep, /restoreVaultContacts\(contacts, \(contact\) => addContact\(fp, contact\)\)/);
   assert.doesNotMatch(rep, /addContact\(fp, \{/);
   assert.match(clientStore, /return \(await importVaultContentsReport\(contents, fingerprint\)\)\.fingerprint;/);
-  assert.match(rep, /setActiveFingerprint\(fp\);\s*return \{ fingerprint: fp, contacts: contactsReport \};/);
+  assert.match(rep, /setActiveFingerprint\(fp\);\s*return \{ fingerprint: fp, contacts: contactsReport, latches \};/);
+  assert.match(rep, /const latches = await relatchBlocksForOwner\(fp\)\.then\(relatchReport, \(\) => RELATCH_ERROR\);/, 'the re-latch outcome is REPORTED (counts only), never dropped');
 });
 
 test('PIN: the restore adapter and the frontend use the report variant, and the owner is told through the same note as the plain-backup import', () => {

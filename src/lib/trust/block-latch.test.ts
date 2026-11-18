@@ -17,6 +17,8 @@ import {
   repairBlockedButUnsuppressed,
   relatchFromRecord,
   rebuildLatchesFromCarry,
+  relatchReport,
+  RELATCH_ERROR,
 } from '@/lib/trust/block-latch';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { makeUpdate, type SealedRead } from '@/lib/trust/suppression-restore';
@@ -426,11 +428,36 @@ test('an id that is BOTH a record person and a removed id, and is in the book: t
   assert.deepEqual([...w.latched], [pairOf(P1)]);
 });
 
-test('an UNREADABLE book counts as empty (the tighter side: removed ids latch) and the outcome is "partial"', async () => {
+test('an UNREADABLE book SKIPS the removed side (a read error must not re-latch a contact whose owner tapped Trust): persons still latch, the outcome is "partial", the next unlock retries', async () => {
   const w = world();
-  const r = await relatchFromRecord({ readPersons: async () => [], readRemoved: async () => [P1], readBookIds: async () => { throw new Error('locked'); }, ...ports(w) });
+  const r = await relatchFromRecord({ readPersons: async () => [P2], readRemoved: async () => [P1], readBookIds: async () => { throw new Error('locked'); }, ...ports(w) });
   assert.equal(r.outcome, 'partial');
-  assert.deepEqual([...w.latched], [pairOf(P1)]);
+  assert.deepEqual([...w.latched], [pairOf(P2)], 'the person latched; the removed id did NOT');
+  // the next unlock, with a readable book that holds the removed contact: still nothing latched for them
+  const next = await relatchFromRecord({ readPersons: async () => [P2], readRemoved: async () => [P1], readBookIds: async () => [P1], ...ports(w) });
+  assert.equal(next.outcome, 'nothing-to-do');
+  assert.equal(w.latched.has(pairOf(P1)), false);
+});
+
+test('REPORT: a clean or empty pass is ok; partial, unreadable and a thrown pass are NOT ok; counts only, never an id', () => {
+  assert.equal(relatchReport({ outcome: 'relatched', latched: 2, failed: 0 }).ok, true);
+  assert.equal(relatchReport({ outcome: 'nothing-to-do', latched: 0, failed: 0 }).ok, true);
+  assert.equal(relatchReport({ outcome: 'partial', latched: 1, failed: 1 }).ok, false);
+  assert.equal(relatchReport({ outcome: 'unreadable', latched: 0, failed: 0 }).ok, false);
+  assert.equal(RELATCH_ERROR.ok, false);
+  assert.deepEqual(Object.keys(relatchReport({ outcome: 'partial', latched: 1, failed: 1 })).sort(), ['failed', 'latched', 'ok', 'outcome']);
+});
+
+test('REPORT through a restore: a latch write that FAILS makes the report NOT ok (and names no id)', async () => {
+  const w = world();
+  const p = ports(w);
+  const real = p.latch.setLatched;
+  p.latch.setLatched = async (pair, src) => { if (pair === pairOf(P1)) throw new Error('write failed'); return real(pair, src); };
+  const r = relatchReport(await relatchFromRecord({ readPersons: async () => [P1, P2], readRemoved: async () => [], readBookIds: async () => [], ...p }));
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'partial');
+  assert.equal(r.latched, 1);
+  assert.equal(JSON.stringify(r).includes(P1), false);
 });
 
 // ---------------------------------------------------------------- Restore rebuild

@@ -10,7 +10,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { createBeaconLatch, type BeaconKV, type Sealer } from '@/lib/trust/beacon-ports';
+import { VAULT_EXPORT_BLOCKS_REFUSED } from '@/components/export/vault-export-copy';
 import { blockWithLatch, removeWithLatch, rebuildLatchesFromCarry, relatchFromRecord } from '@/lib/trust/block-latch';
 
 const OWNER = 'f'.repeat(64);
@@ -147,8 +149,8 @@ test('S5 the unlock repair runs after the mailbox step, only for verified owners
   // record applied, THEN the contacts restored, THEN the re-latch, THEN the function returns.
   const [iRestore, iContacts, iRelatch, iActive, iReturn] = [
     store.indexOf('await restoreCarriedSuppression(fp,'), store.indexOf('await restoreVaultContacts('),
-    store.indexOf('await relatchBlocksForOwner(fp)'), store.indexOf('await setActiveFingerprint(fp);\n  return { fingerprint: fp, contacts: contactsReport };'),
-    store.indexOf('return { fingerprint: fp, contacts: contactsReport };'),
+    store.indexOf('await relatchBlocksForOwner(fp)'), store.indexOf('await setActiveFingerprint(fp);\n  return { fingerprint: fp, contacts: contactsReport, latches };'),
+    store.indexOf('return { fingerprint: fp, contacts: contactsReport, latches };'),
   ];
   assert.ok(iRestore > 0 && iContacts > iRestore && iRelatch > iContacts && iActive > iRelatch && iReturn > iActive, 'order: carried record, restored contacts, re-latch, set active, return');
   assert.ok(iActive - iRelatch < 700, 'the re-latch is the last real step before the restore returns (restore-report.test.ts pins setActiveFingerprint directly before the return)');
@@ -163,4 +165,12 @@ test('S6 the export gate: the dialog repairs before it reads or exports the reco
   const [iRep, iLook] = [d.indexOf('m.repairSuppressionRecord(fingerprint)'), d.indexOf('m.readSuppressionCarryStatus(fingerprint)')];
   assert.ok(iRep >= 0 && iLook >= 0 && iRep < iLook, 'the status look is taken after the same repair (both must be present: a missing call is not "before")');
   assert.match(codeOnly(read('src/components/export/vault-export-copy.ts')), /err instanceof BlocksIncompleteError\) return VAULT_EXPORT_BLOCKS_REFUSED;/);
+});
+
+test('S8 the frozen refusal sentence is exactly the reviewed text (169 characters, sha256 4c88d1c9d584991e), and the restore carries the re-latch report; a missing record reads as no persons, an unreadable one as null', () => {
+  assert.equal(VAULT_EXPORT_BLOCKS_REFUSED.length, 169);
+  assert.equal(createHash('sha256').update(VAULT_EXPORT_BLOCKS_REFUSED, 'utf8').digest('hex').slice(0, 16), '4c88d1c9d584991e');
+  const store = read('src/lib/identity/client-store.ts');
+  assert.match(codeOnly(store), /const latches = await relatchBlocksForOwner\(fp\)\.then\(relatchReport, \(\) => RELATCH_ERROR\);/, 'the outcome is reported, not dropped');
+  assert.match(codeOnly(store), /return r\.state === 'ok' \? \[\.\.\.r\.value\.persons\] : r\.state === 'absent' \? \[\] : null;/, 'absent is no persons; unreadable is null (the same three-way read as the export look)');
 });

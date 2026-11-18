@@ -19,7 +19,7 @@ test.use({ bypassCSP: true });
  *  - the forward repair adds a blocked contact missing from the record.
  */
 const PASS = 'e2e-passphrase-1234';
-const OWNER = 'owner-g7-e2e';
+const OWNER = 'owner-block-latch-e2e';
 const FP1 = '1'.repeat(64);
 const FP2 = '2'.repeat(64);
 const FP3 = '3'.repeat(64);
@@ -109,7 +109,7 @@ async function realCard(name: string): Promise<{ card: string; fingerprint: stri
     type: 'ecc',
     // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime (same keygen as core.ts).
     curve: 'ed25519',
-    userIDs: [{ name, email: 'g7@x.test' }], passphrase: pass, format: 'armored',
+    userIDs: [{ name, email: 'block-latch@x.test' }], passphrase: pass, format: 'armored',
   });
   const pq = generatePQKeypairBundle();
   const locked = await readPrivateKey({ armoredKey: privateKey });
