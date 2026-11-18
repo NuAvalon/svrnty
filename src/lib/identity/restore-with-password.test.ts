@@ -69,14 +69,18 @@ test('keyless contact matching ignores the block flag (a row blocked in the back
 });
 
 test('passphraseOpensEveryHeldKeyRecord: the contact rows are in the check, opened under the settings salt, and a failure refuses', () => {
-  const s = body('export async function passphraseOpensEveryHeldKeyRecord(', '/**\n * Call after the owner\'s fingerprint is derived');
+  const set = body('async function readHeldSet(', '/**\n * Does this device hold this owner, for the passphrase-domain decisions?');
+  const loop = body('async function openEveryHeldRecord(', '/**\n * Call after the owner\'s fingerprint is derived');
+  const s = set + loop;
   assert.match(s, /txGetByIndex<any>\('contacts', 'owner', fingerprint\)/, 'the owner\'s contact rows are read');
   assert.match(s, /'settings', 'key_encryption_salt'/, 'contacts are opened under the device salt, not a record\'s own salt');
   assert.match(s, /decryptContactRecord\(key, rec\.id, rec\.owner_fingerprint,/, 'every encrypted contact row is decrypted, with its id and owner as AAD');
-  assert.match(s, /decryptContactRecord[\s\S]*?\} catch \{\s*return false;/, 'a contact row that does not open refuses the restore');
-  assert.match(s, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{/, 'every owner-sealed settings record is read, from the one list (no per-record code)');
-  assert.match(s, /if \(encryptedContacts\.length > 0 \|\| heldSealed\.length > 0\) \{/, 'the check runs when ONLY a sealed record is held, with no contacts');
-  assert.match(s, /decryptContactRecord\(key, held\.recordId, fingerprint,/, 'each is decrypted under the settings salt with its reserved id and the owner as AAD');
-  assert.match(s, /typeof held\.value\.iv !== 'string' \|\| typeof held\.value\.ciphertext !== 'string'\) return false/, 'a malformed sealed record refuses the restore');
-  assert.match(s, /\n\s+for \(const held of heldSealed\) \{\n/, 'and the held records are decrypted unconditionally (not behind a constant)');
+  assert.match(s, /decryptContactRecord[\s\S]*?\} catch \{\s*return false;/, 'a record that does not open refuses the restore');
+  assert.match(set, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{/, 'every owner-sealed settings record is read, from the one list (no per-record code)');
+  assert.match(set, /kind: 'sealed', keySource: 'settings-salt'/, 'a sealed record is a member of the held set with no condition on contacts: the check runs when ONLY a sealed record is held');
+  assert.match(set, /kind: 'beacon', keySource: 'settings-salt'/, 'and so is a beacon row');
+  assert.match(set, /decryptContactRecord\(key, sealed\.recordId, fingerprint,/, 'each sealed record is decrypted under the settings salt with its reserved id and the owner as AAD');
+  assert.match(set, /kind: 'sealed', keySource: 'settings-salt', form: sealedPayloadForm\(value\)/, 'a sealed record is classified: encrypted, or malformed (no old plaintext form exists for it)...');
+  assert.match(loop, /if \(rec\.form === 'malformed'\) return false;/, '...and a malformed one refuses the restore');
+  assert.match(loop, /for \(const rec of held\) \{\s*if \(rec\.form === 'legacy'\) continue;/, 'every held record is visited unconditionally (a positively identified old unencrypted one is skipped, not failed)');
 });

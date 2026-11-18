@@ -206,15 +206,18 @@ test('the seed-restore handler also shows the refusal as itself', () => {
 
 test('the store helper computes facts without writing and fails closed', () => {
   const s = read('./client-store.ts');
-  const held = fnBody(s, 'export async function deviceHoldsOwner');
-  for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
-    assert.ok(held.includes(`'${store}'`), `deviceHoldsOwner must look in ${store}`);
-  }
-  assert.match(held, /txGetByIndex[^\n]*'contacts', 'owner'/, 'contact rows count as holding the owner, with no decryption');
-  assert.doesNotMatch(held, /txPut|txDelete|decrypt/);
+  const heldFn = fnBody(s, 'export async function deviceHoldsOwner');
+  const set = fnBody(s, 'async function readHeldSet(');
+  // The held set is the ONE definition of what a device holds: the five key stores, the contact rows by owner, the sealed records and the beacon rows (owner-sealed-settings.test.ts holds the last two).
+  assert.match(s, /const OWNER_KEY_STORES = \['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox'\];/, 'the five key stores');
+  assert.match(set, /for \(const store of OWNER_KEY_STORES\)/, 'the held set looks in every key store');
+  assert.match(set, /txGetByIndex<any>\('contacts', 'owner', fingerprint\)/, 'contact rows count as holding the owner');
+  assert.doesNotMatch(set, /txPut|txDelete|initSessionKey|deriveSessionKey/, 'the held set only reads');
+  assert.match(heldFn, /\(await readHeldSet\(fingerprint\)\)\.some\(\(r\) => r\.form !== 'legacy'\)/, 'holding = the held set has a member that is not legacy (a legacy-only device is not held)');
+  assert.doesNotMatch(heldFn, /txPut|txDelete|decrypt|\.open\(/, 'presence only: no writes, no decryption');
   const opens = fnBody(s, 'export async function sessionOpensOwner');
-  assert.match(opens, /if \(!_sessionKey\) return false;/, 'a locked session opens nothing');
-  assert.match(opens, /keyRecordOpens\(await txGet<unknown>\('keys', fingerprint\), _sessionKey, ENC_VERSION\)/);
+  assert.match(opens, /if \(!sessionKey\) return false;/, 'a locked session opens nothing');
+  assert.match(opens, /return openEveryHeldRecord\(fingerprint, async \(\) => sessionKey\);/, 'the open session opens the SAME held set as the passphrase check');
   assert.doesNotMatch(opens, /txPut|txDelete|initSessionKey/);
   const guard = fnBody(s, 'export async function assertRestoreKeepsOwnerDomain');
   assert.match(guard, /restoreDomainDecision\(/);
@@ -224,10 +227,13 @@ test('the store helper computes facts without writing and fails closed', () => {
   // EVERY held key record must open, not just the keys row: a half-finished restore can hold records with no keys row, and a device holding the owner under
   // two passphrases must refuse a restore under either one.
   const every = fnBody(s, 'export async function passphraseOpensEveryHeldKeyRecord');
-  assert.match(every, /for \(const store of OWNER_KEY_STORES\)/);
-  assert.match(every, /if \(!\(await keyRecordOpens\(record, key, ENC_VERSION\)\)\) return false;/, 'one record that does not open fails the whole check');
-  assert.match(every, /return opened > 0;/, 'at least one encrypted record must exist');
-  assert.doesNotMatch(every, /txPut|txDelete|initSessionKey/);
+  const loop = fnBody(s, 'async function openEveryHeldRecord(');
+  assert.match(every, /return openEveryHeldRecord\(fingerprint, async \(salt\) => \{/, 'the passphrase check opens the SAME held set');
+  assert.match(every, /deriveSessionKey\(passphrase, fromBase64\(salt\)\)/, 'with a key derived from the passphrase, per salt');
+  assert.match(set, /open: \(key\) => keyRecordOpens\(record, key, ENC_VERSION\)/, 'a key record opens with keyRecordOpens');
+  assert.match(loop, /if \(!\(await rec\.open\(await keyFor\(salt\)\)\)\) return false;/, 'one record that does not open fails the whole check');
+  assert.match(loop, /return opened > 0;/, 'at least one encrypted record must exist');
+  assert.doesNotMatch(every + loop, /txPut|txDelete|initSessionKey/);
   assert.match(guard, /throw new RestoreDomainRefused\(/);
   assert.doesNotMatch(guard, /txPut|txDelete|initSessionKey\(/);
 });

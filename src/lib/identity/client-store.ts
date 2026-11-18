@@ -14,12 +14,16 @@ import { keyRecordOpens, restoreDomainDecision, RestoreDomainRefused, type Resto
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+import { CONTACT_ENC_VERSION, deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
+import { createBeaconStore, createBeaconLatch, beaconRowPrefixes, beaconRowAad, type BeaconKV, type Sealer } from '../trust/beacon-ports';
+import { isBeaconConfirmed, withConfirmed, createConfirmedPort, type BeaconConfirmed } from '../trust/beacon-confirmed';
+import { beaconPairId } from '../trust/beacon-pair-id';
+import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/beacon-client';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
@@ -314,6 +318,13 @@ export interface ContactRecord {
   // (classifyImportedCard branch 4), and FIRST WRITE WINS: a later card with a different pin never replaces it (the import raises the loud
   // alarm instead). Nothing reads it yet: it is kept so a later relay move or key rotation can be checked against it.
   next_authority_commitment?: string;
+  // ── the contact's beacon key (mutual-trust wire, DARK) ──────────────────────────────────────
+  // The contact's beacon PUBLIC key and its generation, from a card whose signature VERIFIED (classifyImportedCard branch 4, which also checks the key and
+  // the generation rules). Stored for every contact whatever their trust level: a stored key enables nothing by itself. A held key is never replaced at
+  // intake (a newer generation waits for the release-first path); see beacon-contact-key.ts. Carried ONLY by the encrypted backup: it is on no contact-book
+  // export allowlist, plain or sealed.
+  beacon_public_key?: string;
+  beacon_key_generation?: number;
   trust_level: string;
   added_at: string;
   metadata?: any;
@@ -796,7 +807,35 @@ function beaconSeedsSettingKey(ownerFingerprint: string): string {
   return `beacon_seeds:${ownerFingerprint}`;
 }
 
-/** Read the seed map. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). A caller treats null as "no seeds held". */
+/** The seed map exists but cannot be opened (damaged, sealed under another passphrase, not a valid map). It is NEVER read as empty and NEVER overwritten: every
+ * caller that needs a seed fails closed, and the owner is told (see beacon-secrets.ts, which surfaces it once and offers an explicit repair). */
+export class BeaconSeedsUnreadable extends Error {
+  readonly code = 'unreadable' as const;
+  constructor(message = 'beacon seeds: a stored row cannot be opened; refusing to overwrite it') { super(message); this.name = 'BeaconSeedsUnreadable'; }
+}
+/** The session is locked: nothing can be read or written (fail-closed). Not a damaged map: unlocking is the whole remedy. */
+export class BeaconSeedsLocked extends Error {
+  readonly code = 'locked' as const;
+  constructor(message = 'Session locked — refusing to touch beacon seeds (fail-closed)') { super(message); this.name = 'BeaconSeedsLocked'; }
+}
+
+/**
+ * STRICT read of the seed map: an ABSENT row is the empty map ({}), a row that exists but cannot be opened THROWS BeaconSeedsUnreadable, a locked session
+ * THROWS BeaconSeedsLocked. Use this, never getBeaconSeeds, for anything that decides on what it read: getBeaconSeeds answers null for absent AND unreadable.
+ */
+export async function readBeaconSeeds(ownerFingerprint: string): Promise<BeaconSeeds> {
+  if (!_sessionKey) throw new BeaconSeedsLocked();
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', beaconSeedsSettingKey(ownerFingerprint));
+  if (!row) return {};
+  if (!row.value) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not readable; refusing to overwrite it');
+  let m: unknown;
+  try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value); }
+  catch { throw new BeaconSeedsUnreadable(); }
+  if (!isBeaconSeeds(m)) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not a valid seed map; refusing to overwrite it');
+  return m;
+}
+
+/** Read the seed map. FAIL-CLOSED: null on ANY doubt (locked / absent / decrypt-fail / malformed). null is AMBIGUOUS (absent vs unreadable): do NOT decide on it, and do not write after it; use readBeaconSeeds (strict) or updateBeaconSeeds. No application code calls this (a static test pins that). */
 export async function getBeaconSeeds(ownerFingerprint: string): Promise<BeaconSeeds | null> {
   if (!_sessionKey) return null;
   try {
@@ -811,12 +850,131 @@ export async function getBeaconSeeds(ownerFingerprint: string): Promise<BeaconSe
   }
 }
 
-/** Persist the seed map, encrypted at rest (fail-closed: throws if locked, never writes a plaintext seed). */
-export async function setBeaconSeeds(ownerFingerprint: string, map: BeaconSeeds): Promise<void> {
+/**
+ * THE EXPLICIT REPAIR for an unreadable seed map: replaces whatever is stored (readable or not) with an empty map. It DESTROYS every held one-time seed, which
+ * is why nothing calls it automatically: the owner chooses it, after being told what it destroys (see beacon-secrets.ts). Consequence of the loss, so the
+ * copy stays honest: a deposit whose seed is gone can no longer be polled or withdrawn by this client; it lapses at the end of its epoch (plus the grace
+ * window), and the next renewal makes a new one. Refuses when locked.
+ */
+export async function destroyBeaconSeedsAndStartOver(ownerFingerprint: string): Promise<void> {
+  if (!_sessionKey) throw new BeaconSeedsLocked('Session locked — refusing to reset beacon seeds (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, {});
+  await txPut('settings', { key: beaconSeedsSettingKey(ownerFingerprint), value: payload });
+}
+
+/**
+ * TEST CONTROL ONLY. A BLIND put of the whole map: two tabs lose each other's updates, and a caller that read "no seeds" from the ambiguous getBeaconSeeds
+ * overwrites every held one-time seed. No application code may call it (a static test pins that): use updateBeaconSeeds. It stays, renamed, only so the
+ * browser spec can show what the blind version does (its control). It still encrypts before it writes and refuses when locked.
+ */
+export async function setBeaconSeedsUnsafeForTest(ownerFingerprint: string, map: BeaconSeeds): Promise<void> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store beacon seeds unencrypted (fail-closed)');
   if (!isBeaconSeeds(map)) throw new Error('refusing to store a malformed beacon seed map');
   const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, map);
   await txPut('settings', { key: beaconSeedsSettingKey(ownerFingerprint), value: payload });
+}
+
+/**
+ * ATOMIC read-modify-write of the seed map. setBeaconSeeds is a blind put (two tabs lose updates) and getBeaconSeeds answers null for BOTH "absent" and "present but unreadable",
+ * so a caller that reads null as "no seeds yet" and writes would destroy every held one-time seed. This is the only safe way to change the map:
+ *  - ABSENT row: an empty map is the starting point (the one allowed case).
+ *  - a row that exists but cannot be opened, or is not a valid seed map: THROWS and writes nothing. It is never read as empty and never overwritten.
+ *  - the write commits only if the row is still exactly the one that was read (commitIfUnchanged compares inside one transaction); a lost race re-reads and retries.
+ * `mutate` gets the current map (a fresh object) and returns the next one; it must not touch storage. Returns the committed map.
+ */
+export async function updateBeaconSeeds(ownerFingerprint: string, mutate: (cur: BeaconSeeds) => BeaconSeeds): Promise<BeaconSeeds> {
+  if (!_sessionKey) throw new BeaconSeedsLocked('Session locked — refusing to update beacon seeds (fail-closed)');
+  const key = beaconSeedsSettingKey(ownerFingerprint);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', key);
+    let cur: BeaconSeeds = {};
+    if (row) {
+      if (!row.value) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not readable; refusing to overwrite it');
+      let m: unknown;
+      try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, row.value); }
+      catch { throw new BeaconSeedsUnreadable(); }
+      if (!isBeaconSeeds(m)) throw new BeaconSeedsUnreadable('beacon seeds: a stored row is not a valid seed map; refusing to overwrite it');
+      cur = m;
+    }
+    const next = mutate({ ...cur });
+    if (!isBeaconSeeds(next)) throw new Error('refusing to store a malformed beacon seed map');
+    const payload = await encryptContactRecord(_sessionKey, BEACON_SEEDS_RECORD_ID, ownerFingerprint, next);
+    const won = await commitIfUnchanged(await openDB(), [{ store: 'settings', key, expected: row ?? null }], [{ store: 'settings', value: { key, value: payload } }]);
+    if (won) return next;
+  }
+  throw new Error('beacon seeds: could not commit the update');
+}
+
+// ── #822 (a) S2b-1: the CONFIRMED pairs (DARK; nothing calls the writer except the live ceremony) ─────────────────────────────────
+// Which pairs this device has confirmed by a LIVE exchange (see beacon-confirmed.ts for the one rule). DEVICE-LOCAL pairing state: sealed like the seeds (a reserved AAD
+// id), owner-local, never on the wire, NEVER in any export and NEVER restored: a restored device starts with nothing confirmed.
+const BEACON_CONFIRMED_RECORD_ID = 'piece822:beacon-confirmed'; // reserved AAD id
+function beaconConfirmedSettingKey(ownerFingerprint: string): string {
+  return `beacon_confirmed:${ownerFingerprint}`;
+}
+/** The confirmed row exists but cannot be opened. It is NEVER read as empty and NEVER overwritten. */
+export class BeaconConfirmedUnreadable extends Error {
+  readonly code = 'unreadable' as const;
+  constructor(message = 'beacon confirmed: a stored row cannot be opened; refusing to overwrite it') { super(message); this.name = 'BeaconConfirmedUnreadable'; }
+}
+/** The session is locked: nothing can be read or written (fail-closed). */
+export class BeaconConfirmedLocked extends Error {
+  readonly code = 'locked' as const;
+  constructor(message = 'Session locked — refusing to touch the confirmed pairs (fail-closed)') { super(message); this.name = 'BeaconConfirmedLocked'; }
+}
+
+/** STRICT read: an ABSENT row is the empty map; a row that exists but cannot be opened THROWS; a locked session THROWS. */
+export async function readBeaconConfirmed(ownerFingerprint: string): Promise<BeaconConfirmed> {
+  if (!_sessionKey) throw new BeaconConfirmedLocked();
+  const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', beaconConfirmedSettingKey(ownerFingerprint));
+  if (!row) return {};
+  if (!row.value) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not readable; refusing to overwrite it');
+  let m: unknown;
+  try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_CONFIRMED_RECORD_ID, ownerFingerprint, row.value); }
+  catch { throw new BeaconConfirmedUnreadable(); }
+  if (!isBeaconConfirmed(m)) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not a valid map; refusing to overwrite it');
+  return m;
+}
+
+/** ATOMIC read-modify-write of the confirmed map (the same shape as updateBeaconSeeds): an absent row starts empty; an unreadable one THROWS and writes nothing. */
+async function updateBeaconConfirmed(ownerFingerprint: string, mutate: (cur: BeaconConfirmed) => BeaconConfirmed): Promise<BeaconConfirmed> {
+  if (!_sessionKey) throw new BeaconConfirmedLocked('Session locked — refusing to update the confirmed pairs (fail-closed)');
+  const key = beaconConfirmedSettingKey(ownerFingerprint);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', key);
+    let cur: BeaconConfirmed = {};
+    if (row) {
+      if (!row.value) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not readable; refusing to overwrite it');
+      let m: unknown;
+      try { m = await decryptContactRecord<unknown>(_sessionKey, BEACON_CONFIRMED_RECORD_ID, ownerFingerprint, row.value); }
+      catch { throw new BeaconConfirmedUnreadable(); }
+      if (!isBeaconConfirmed(m)) throw new BeaconConfirmedUnreadable('beacon confirmed: a stored row is not a valid map; refusing to overwrite it');
+      cur = m;
+    }
+    const next = mutate({ ...cur });
+    if (!isBeaconConfirmed(next)) throw new Error('refusing to store a malformed confirmed map');
+    const payload = await encryptContactRecord(_sessionKey, BEACON_CONFIRMED_RECORD_ID, ownerFingerprint, next);
+    const won = await commitIfUnchanged(await openDB(), [{ store: 'settings', key, expected: row ?? null }], [{ store: 'settings', value: { key, value: payload } }]);
+    if (won) return next;
+  }
+  throw new Error('beacon confirmed: could not commit the update');
+}
+
+/** The LOCAL id of the pair with this contact on THIS device (the blinded id every beacon row is keyed by). Needs the unlocked session. */
+export async function beaconPairIdFor(contactFingerprint: string): Promise<string> {
+  if (!_contactKeys) throw new BeaconConfirmedLocked();
+  return beaconPairId(_contactKeys.indexKey, contactFingerprint);
+}
+
+/** The port the beacon client asks "is this pair confirmed?" through: reads the confirmed row; ANY doubt answers false. */
+export function createBeaconConfirmedPort(ownerFingerprint: string): PairConfirmedPort {
+  return createConfirmedPort(() => readBeaconConfirmed(ownerFingerprint));
+}
+
+/** Mark this contact's pair confirmed at this generation. The ONLY writer: called from the live ceremony, never from an import, a file or the wire. */
+export async function markBeaconPairConfirmed(ownerFingerprint: string, contactFingerprint: string, generation: number): Promise<void> {
+  const pairId = await beaconPairIdFor(contactFingerprint);
+  await updateBeaconConfirmed(ownerFingerprint, (cur) => withConfirmed(cur, pairId, generation));
 }
 
 // ── #588 D1/D2: the identity's beacon key record (x + generation + jitter secret) — IDENTITY STATE, DARK ─────────────────────
@@ -885,6 +1043,17 @@ export async function importBeaconKeyRecord(ownerFingerprint: string, candidate:
  * EVERY owner-sealed record in `settings`: a payload under the session key, a reserved id, and the owner as authenticated data. This list is the one place
  * that names them: the restore's passphrase check opens each one that is present, and its before/after snapshot compares each one. A new sealed record MUST be
  * added here; a static test fails when an encryptContactRecord(_sessionKey, <ID>, ...) call site uses an id that is not listed.
+ *
+ * THE BEACON ROWS, CLASSIFIED for the go-live gate. None of them is in the backup, so on a fresh device each starts empty. CACHE = rebuilt or re-earned with nothing
+ * weakened. TIGHTENING = it records a stop, so losing it silently loosens. Read from the code; no restore-a-removed-pair test pins this yet (that is the gate's job).
+ *  - latch rows (beacon_latch:<owner>:local|remote:<pair>, sealed with a caller-chosen AAD, not listed above because they are a collection): TIGHTENING. A 'removed' latch is the
+ *    Remove / Block stop, and a Remove made while the switch is off is recorded here too (the local latch, beacon-wire.ts). Every row is opened by the restore check below.
+ *  - pair rows (beacon_pair:<owner>:<pair>, same collection rule): MIXED, so treat as TIGHTENING. pendingWithdraws (a deposit still owed a withdrawal), spentEpochs (an epoch
+ *    whose slot was withdrawn is never deposited again) and the deletion tombstones are stops; refusedEpochs, firstMatchEpoch and observedMatch are caches or facts, not stops.
+ *  - 'beacon-seeds': not a tightening itself but the secret that SIGNS a later withdraw. Without it a deposit already made cannot be withdrawn from this device; after a
+ *    restore the client re-deposits (beacon-seeds.ts). Whether the relay still holds such a deposit, and for how long, is not checked here.
+ *  - 'beacon-key': this device's own key material, neither. The restore path imports it only when none is held (importBeaconKeyRecord).
+ *  - 'beacon-confirmed': a permission, not a stop. Absent means no request is made for the pair, so losing it is safe (the pair has to be confirmed again).
  */
 export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: string; settingKey: (ownerFingerprint: string) => string }> = [
   { name: 'suppression', recordId: SUPPRESSION_RECORD_ID, settingKey: suppressionSettingKey },
@@ -893,6 +1062,7 @@ export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: stri
   { name: 'lens-book', recordId: LENS_BOOK_RECORD_ID, settingKey: lensBookSettingKey },
   { name: 'beacon-seeds', recordId: BEACON_SEEDS_RECORD_ID, settingKey: beaconSeedsSettingKey },
   { name: 'beacon-key', recordId: BEACON_KEY_RECORD_ID, settingKey: beaconKeySettingKey },
+  { name: 'beacon-confirmed', recordId: BEACON_CONFIRMED_RECORD_ID, settingKey: beaconConfirmedSettingKey },
 ];
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
@@ -972,12 +1142,109 @@ export async function verifyPassphrase(fingerprint: string, passphrase: string):
 
 // ── Restore key-domain guard ──────────────────────────────
 
-/** Does this device hold any encrypted record for this owner? Presence only: no decryption, no writes. */
-export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
-  for (const store of ['keys', 'pq_keys', 'vaults', 'shards', 'device_mailbox']) {
-    if (await txGet<unknown>(store, fingerprint)) return true;
+/** One record this device holds for an owner, and where the key that opens it comes from. */
+/**
+ * What state a held record is in. 'encrypted': in the current format, every field an opener needs is there. 'legacy': the old UNENCRYPTED form, positively identified (no
+ * enc_version AND the old plaintext shape): under no passphrase, so nothing can be orphaned and unlock heals it. 'malformed': anything else: an enc_version that is present but
+ * not the current one, an encrypted record missing a field, a row with no recognisable shape. A malformed record is never skipped: the checks refuse.
+ */
+type HeldForm = 'encrypted' | 'legacy' | 'malformed';
+
+/** One record this device holds for an owner, and where the key that opens it comes from. */
+interface HeldRecord {
+  kind: 'key' | 'contact' | 'sealed' | 'beacon';
+  /** 'record-salt': the key is derived with the salt written in the record itself. 'settings-salt': it is the session key (the device's `key_encryption_salt`). */
+  keySource: 'record-salt' | 'settings-salt';
+  /** For 'record-salt' records, that salt. */
+  salt?: string;
+  form: HeldForm;
+  /** Opens it with this key: false or a throw means "does not open". Only called when the form is 'encrypted'. */
+  open: (key: CryptoKey) => Promise<boolean>;
+}
+
+/** The field that identifies a key store's old plaintext form (loadKey, loadPQKeys, loadVault, loadShards). device_mailbox has none: it was born encrypted, so a record there without the current enc_version is corrupt. */
+const LEGACY_KEY_SHAPE: Record<string, ((r: Record<string, unknown>) => boolean) | undefined> = {
+  keys: (r) => typeof r.privateKey === 'string',
+  pq_keys: (r) => typeof r.bundle === 'object' && r.bundle !== null,
+  vaults: (r) => typeof r.vault === 'object' && r.vault !== null,
+  shards: (r) => typeof r.shards_data === 'object' && r.shards_data !== null,
+  device_mailbox: undefined,
+};
+
+function keyRecordForm(store: string, r: Record<string, unknown>): HeldForm {
+  if (r.enc_version === ENC_VERSION) return typeof r.salt === 'string' && typeof r.iv === 'string' && typeof r.ciphertext === 'string' ? 'encrypted' : 'malformed';
+  if (r.enc_version !== undefined) return 'malformed'; // present, but not the current version
+  return LEGACY_KEY_SHAPE[store]?.(r) ? 'legacy' : 'malformed'; // no enc_version: legacy only when the old plaintext shape is positively there
+}
+
+function contactRowForm(r: Record<string, unknown>): HeldForm {
+  if (r.enc_version === CONTACT_ENC_VERSION) return typeof r.iv === 'string' && typeof r.ciphertext === 'string' ? 'encrypted' : 'malformed';
+  if (r.enc_version !== undefined) return 'malformed';
+  return ['fingerprint', 'name', 'email', 'public_key'].every((f) => typeof r[f] === 'string') ? 'legacy' : 'malformed';
+}
+
+/** A sealed payload ({ iv, ciphertext, enc_version }) of a settings record or a beacon row: there is no old plaintext form for these, so it is encrypted or malformed. */
+function sealedPayloadForm(p: { iv?: unknown; ciphertext?: unknown; enc_version?: unknown } | null | undefined): HeldForm {
+  if (!p || typeof p.iv !== 'string' || typeof p.ciphertext !== 'string') return 'malformed';
+  return p.enc_version === undefined || p.enc_version === CONTACT_ENC_VERSION ? 'encrypted' : 'malformed';
+}
+
+/**
+ * THE ONE DEFINITION of what a device holds for an owner. Three questions are answered from it and from nothing else, so they cannot disagree about what counts:
+ * deviceHoldsOwner (is the set non-empty), passphraseOpensEveryHeldKeyRecord (does this passphrase open every encrypted member) and sessionOpensOwner (does the open
+ * session). A record type added here is seen by all three; one left out is a hole (held, never checked) or a dead end (checked, never openable) for all three.
+ * Members: the key stores, the contact rows, every OWNER_SEALED_SETTINGS record, and every beacon pair and latch row (collections: each row is a member).
+ * NOT a member: the contact book manifest. It is a MAC over the book, not a record that can be opened, and nothing is orphaned by it (every contact write rewrites it);
+ * counting it would hold a device with nothing to open, and the restore would then refuse under every passphrase, the right one included.
+ * Reads only.
+ */
+async function readHeldSet(fingerprint: string): Promise<HeldRecord[]> {
+  const held: HeldRecord[] = [];
+  for (const store of OWNER_KEY_STORES) {
+    const record = await txGet<{ enc_version?: number; salt?: unknown; iv?: unknown; ciphertext?: unknown }>(store, fingerprint);
+    if (!record) continue;
+    held.push({ kind: 'key', keySource: 'record-salt', salt: typeof record.salt === 'string' ? record.salt : undefined, form: keyRecordForm(store, record as Record<string, unknown>), open: (key) => keyRecordOpens(record, key, ENC_VERSION) });
   }
-  return (await txGetByIndex<unknown>('contacts', 'owner', fingerprint)).length > 0;
+  // Contacts and every owner-sealed settings record are under the session key (the settings salt), not under a record's own salt. Key rows under B beside a contact or a
+  // sealed record (a blocklist, the receipts default, ...) under A is the two-passphrase state, and a restore that wrote more rows there would read as "stopped partway"
+  // on every re-run, or leave a record unreadable for good.
+  for (const rec of await txGetByIndex<any>('contacts', 'owner', fingerprint)) {
+    if (!rec) continue;
+    held.push({ kind: 'contact', keySource: 'settings-salt', form: contactRowForm(rec), open: async (key) => { await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext }); return true; } });
+  }
+  for (const sealed of OWNER_SEALED_SETTINGS) {
+    const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
+    if (!row) continue;
+    const value = row.value;
+    held.push({ kind: 'sealed', keySource: 'settings-salt', form: sealedPayloadForm(value), open: async (key) => { await decryptContactRecord(key, sealed.recordId, fingerprint, { enc_version: value!.enc_version, iv: value!.iv as string, ciphertext: value!.ciphertext as string }); return true; } });
+  }
+  // The beacon pair and latch rows (beacon-ports.ts) are COLLECTIONS, so each row is a member, not one per collection. A pair id is derived from the passphrase, so a restore
+  // that changed the passphrase-derived keys on a device holding them would orphan every row (the lookups find nothing, read "no latch", and a Block would silently stop
+  // applying). They count by themselves: a device with latch rows and NO contacts (a Remove deletes the contact and keeps the latch) is held.
+  for (const prefix of beaconRowPrefixes(fingerprint)) {
+    for (const key of await txKeysWithPrefix('settings', prefix)) {
+      const row = await txGet<{ key: string; value?: unknown }>('settings', key);
+      if (!row) continue;
+      const aad = beaconRowAad(fingerprint, key);
+      const raw = row.value;
+      let payload: { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null = null;
+      if (aad !== null && typeof raw === 'string') { try { payload = JSON.parse(raw); } catch { payload = null; } }
+      const form: HeldForm = aad === null ? 'malformed' : sealedPayloadForm(payload);
+      held.push({ kind: 'beacon', keySource: 'settings-salt', form, open: async (k) => { await decryptContactRecord(k, aad!, fingerprint, { enc_version: payload!.enc_version, iv: payload!.iv as string, ciphertext: payload!.ciphertext as string }); return true; } });
+    }
+  }
+  return held;
+}
+
+/**
+ * Does this device hold this owner, for the passphrase-domain decisions? The held set has at least one member that is not LEGACY (an encrypted one, or a malformed one that
+ * the checks must refuse). Presence only: no decryption, no writes. A device holding the owner ONLY in the old unencrypted form is not held: nothing on it is under a
+ * passphrase, so nothing can be orphaned, it needs the device-password floor like a fresh one, and unlock heals its rows. A device whose KEYS were cleared but whose settings
+ * rows were not (the state a partial wipe leaves) is held and gets the passphrase check.
+ * BOUND: on such a device a restore refuses when the passphrase differs or the settings salt is gone, until the latches travel in the backup or are rebuilt fail-closed.
+ */
+export async function deviceHoldsOwner(fingerprint: string): Promise<boolean> {
+  return (await readHeldSet(fingerprint)).some((r) => r.form !== 'legacy');
 }
 
 const digestOf = async (value: unknown): Promise<string> =>
@@ -999,66 +1266,63 @@ export async function snapshotOwnerRows(fingerprint: string): Promise<OwnerSnaps
     const row = await txGet<unknown>('settings', sealed.settingKey(fingerprint));
     await put(`sealed:${sealed.name}`, row ? [row] : []);
   }
+  // The beacon pair and latch rows are COLLECTIONS: one entry per prefix, the count and the digest of the key-sorted key + value rows. A restore never writes them, so an
+  // entry that did not change is a runtime check of "a restore does not touch a Block", not only a test assertion; one that did change is read like any other place.
+  const [pairPrefix, latchPrefix] = beaconRowPrefixes(fingerprint);
+  for (const [place, prefix] of [['beacon-pair-rows', pairPrefix], ['beacon-latch-rows', latchPrefix]] as const) {
+    const keys = prefix ? (await txKeysWithPrefix('settings', prefix)).slice().sort() : [];
+    const rows: unknown[] = [];
+    for (const key of keys) rows.push({ key, value: (await txGet<{ value?: unknown }>('settings', key))?.value });
+    await put(place, rows);
+  }
   return out;
 }
 
-/** Does the OPEN session hold the key this owner's records are under? Non-destructive and fail-closed, like verifyPassphrase. */
+/**
+ * Does the OPEN session decrypt every encrypted record this device holds for the owner (the held set, with the session key in place of a derived one)? Whether a record
+ * opens is decided by decrypting it, not by comparing salts. A device with no key record is judged on the records it does hold. Non-destructive and fail-closed.
+ */
 export async function sessionOpensOwner(fingerprint: string): Promise<boolean> {
-  if (!_sessionKey) return false;
-  return keyRecordOpens(await txGet<unknown>('keys', fingerprint), _sessionKey, ENC_VERSION);
+  const sessionKey = _sessionKey;
+  if (!sessionKey) return false;
+  return openEveryHeldRecord(fingerprint, async () => sessionKey);
 }
 
 /**
- * Does this passphrase open EVERY encrypted record this device holds for the owner (keys, pq_keys, vaults, shards, device_mailbox, the contact rows, and every OWNER_SEALED_SETTINGS record)?
- * Not "the keys record": a restore that died half way can leave records with no `keys` row, and a device holding the owner under TWO passphrases
- * must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the old unencrypted form is
- * under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
+ * Does this passphrase open EVERY encrypted record this device holds for the owner (the held set: keys, pq_keys, vaults, shards, device_mailbox, the contact rows, every
+ * OWNER_SEALED_SETTINGS record, and EVERY beacon pair and latch row)? Not "the keys record": a restore that died half way can leave records with no `keys` row, and a
+ * device holding the owner under TWO passphrases must not accept a restore under either one (it would write more rows beside rows it cannot open). A record still in the
+ * old unencrypted form is under no passphrase, so it is skipped, not failed; a malformed encrypted record fails. At least one encrypted record must exist. Reads only.
  */
 export async function passphraseOpensEveryHeldKeyRecord(fingerprint: string, passphrase: string): Promise<boolean> {
   const derived = new Map<string, CryptoKey>(); // records written in one session share a salt: derive once per salt
+  return openEveryHeldRecord(fingerprint, async (salt) => {
+    let key = derived.get(salt);
+    if (!key) { key = await deriveSessionKey(passphrase, fromBase64(salt)); derived.set(salt, key); }
+    return key;
+  });
+}
+
+/** The ONE opening loop over the held set: `keyFor(salt)` is where the key comes from (a passphrase derivation, or the open session). false at the first record that does not open. */
+async function openEveryHeldRecord(fingerprint: string, keyFor: (salt: string) => Promise<CryptoKey>): Promise<boolean> {
+  const held = await readHeldSet(fingerprint);
+  let settingsSalt: string | undefined;
   let opened = 0;
-  for (const store of OWNER_KEY_STORES) {
-    const record = await txGet<{ enc_version?: number; salt?: unknown; iv?: unknown; ciphertext?: unknown }>(store, fingerprint);
-    if (!record) continue;
-    if (record.enc_version !== ENC_VERSION) continue;
-    if (typeof record.salt !== 'string' || typeof record.iv !== 'string' || typeof record.ciphertext !== 'string') return false;
+  for (const rec of held) {
+    if (rec.form === 'legacy') continue;
+    if (rec.form === 'malformed') return false;
+    let salt = rec.salt;
+    if (rec.keySource === 'settings-salt') {
+      if (settingsSalt === undefined) settingsSalt = (await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt'))?.value ?? '';
+      salt = settingsSalt;
+    }
+    if (!salt) return false;
     try {
-      let key = derived.get(record.salt);
-      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(record.salt)); derived.set(record.salt, key); }
-      if (!(await keyRecordOpens(record, key, ENC_VERSION))) return false;
+      if (!(await rec.open(await keyFor(salt)))) return false;
     } catch {
       return false;
     }
     opened++;
-  }
-  // Contacts and every owner-sealed settings record (OWNER_SEALED_SETTINGS) are in the passphrase domain too: their records are under the session key (the settings
-  // salt), not under a record's own salt. Key rows under B beside a contact or a sealed record (a blocklist, the receipts default, ...) under A is the
-  // two-passphrase state, and a restore that wrote more rows there would read as "stopped partway" on every re-run, or leave a record unreadable for good.
-  const encryptedContacts = (await txGetByIndex<any>('contacts', 'owner', fingerprint)).filter((r) => r && r.enc_version && r.ciphertext);
-  const heldSealed: Array<{ recordId: string; value: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }> = [];
-  for (const sealed of OWNER_SEALED_SETTINGS) {
-    const row = await txGet<{ key: string; value?: { iv?: unknown; ciphertext?: unknown; enc_version?: number } }>('settings', sealed.settingKey(fingerprint));
-    if (row?.value) heldSealed.push({ recordId: sealed.recordId, value: row.value });
-  }
-  if (encryptedContacts.length > 0 || heldSealed.length > 0) {
-    const setting = await txGet<{ key: string; value?: string }>('settings', 'key_encryption_salt');
-    if (!setting?.value) return false;
-    try {
-      let key = derived.get(setting.value);
-      if (!key) { key = await deriveSessionKey(passphrase, fromBase64(setting.value)); derived.set(setting.value, key); }
-      for (const rec of encryptedContacts) {
-        if (typeof rec.iv !== 'string' || typeof rec.ciphertext !== 'string') return false;
-        await decryptContactRecord(key, rec.id, rec.owner_fingerprint, { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext });
-        opened++;
-      }
-      for (const held of heldSealed) {
-        if (typeof held.value.iv !== 'string' || typeof held.value.ciphertext !== 'string') return false;
-        await decryptContactRecord(key, held.recordId, fingerprint, { enc_version: held.value.enc_version, iv: held.value.iv, ciphertext: held.value.ciphertext });
-        opened++;
-      }
-    } catch {
-      return false;
-    }
   }
   return opened > 0;
 }
@@ -2713,4 +2977,64 @@ export async function removeGateArrival(ownerFp: string, peerFp: string): Promis
   delete map[ownerFp][peerFp];
   if (Object.keys(map[ownerFp]).length === 0) delete map[ownerFp];
   await saveGateMap(map);
+}
+
+// ── #822 (a) S1b: the IndexedDB glue under the beacon ports (DARK; nothing calls createBeaconPorts yet) ───────────────────────────────────────────
+// beacon-ports.ts holds the rules (sealed, compare-and-swap, fail-closed) over two injected things; this block is those two things on the real database:
+//  - the KV is rows of the `settings` store ({key, value: <string>}). A write is commitIfUnchanged, so the compare and the write happen in ONE
+//    transaction; the row is compared by its JSON (no top-level enc_version), and `expected` is built in the same property order as the put.
+//  - the sealer is the same AAD-bound AES path as the records above, keyed by the session key. A locked session THROWS (the store then cannot read or
+//    write, and the latch reads 'removed'); a stored blob that does not open is an error, never "absent".
+// Rows are `beacon_pair:<owner>:<pairId>` and `beacon_latch:<owner>:<pairId>:<kind>`; nothing else in this file enumerates the settings store.
+async function txKeysWithPrefix(storeName: string, prefix: string): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const request = tx.objectStore(storeName).getAllKeys(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    request.onsuccess = () => resolve((request.result as IDBValidKey[]).filter((k): k is string => typeof k === 'string'));
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => { db.close(); reject(tx.error ?? new Error('transaction aborted')); };
+  });
+}
+
+function beaconSettingsKV(): BeaconKV {
+  return {
+    async get(key) {
+      const row = await txGet<{ key: string; value: unknown }>('settings', key);
+      if (!row) return undefined;
+      if (typeof row.value !== 'string') throw new Error('beacon kv: a stored row is not readable');
+      return row.value;
+    },
+    async swap(key, expected, next) {
+      return commitIfUnchanged(
+        await openDB(),
+        [{ store: 'settings', key, expected: expected === undefined ? null : { key, value: expected } }],
+        [next === undefined ? { store: 'settings', delete: key } : { store: 'settings', value: { key, value: next } }],
+      );
+    },
+    keys: (prefix) => txKeysWithPrefix('settings', prefix),
+  };
+}
+
+function beaconSessionSealer(ownerFingerprint: string): Sealer {
+  return {
+    async seal(aad, value) {
+      if (!_sessionKey) throw new Error('Session locked — refusing to store a beacon record unencrypted (fail-closed)');
+      return JSON.stringify(await encryptContactRecord(_sessionKey, aad, ownerFingerprint, value));
+    },
+    async open(aad, blob) {
+      if (!_sessionKey) throw new Error('beacon record unreadable: session locked');
+      const payload = JSON.parse(blob) as { iv?: unknown; ciphertext?: unknown; enc_version?: number } | null;
+      if (!payload || typeof payload.iv !== 'string' || typeof payload.ciphertext !== 'string') throw new Error('beacon record unreadable: malformed');
+      return decryptContactRecord<unknown>(_sessionKey, aad, ownerFingerprint, { iv: payload.iv, ciphertext: payload.ciphertext, enc_version: payload.enc_version });
+    },
+  };
+}
+
+/** The two persistence ports createBeaconClient needs, over the app's IndexedDB, scoped to one owner. DARK: no caller yet. */
+export function createBeaconPorts(ownerFingerprint: string): { store: BeaconStorePort; latch: LatchPort } {
+  const kv = beaconSettingsKV();
+  const sealer = beaconSessionSealer(ownerFingerprint);
+  return { store: createBeaconStore(kv, sealer, ownerFingerprint), latch: createBeaconLatch(kv, sealer, ownerFingerprint) };
 }
