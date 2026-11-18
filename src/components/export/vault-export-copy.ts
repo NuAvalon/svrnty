@@ -10,6 +10,14 @@ import { BlocksIncompleteError } from '@/lib/trust/block-latch';
 export const VAULT_EXPORT_FAILED = "The vault export didn't finish. Try again.";
 
 /**
+ * Shown directly under the disabled "Encrypting..." button ONLY when the key derivation is still running VAULT_EXPORT_SLOW_AFTER_MS after Export was pressed, and removed the moment the
+ * export finishes or fails (copy ledger rows 306, 306e and 308). Reviewed copy: do not reword. It states a possibility ("can take several minutes"), never an estimate, and there is no percentage, bar or
+ * timer anywhere, because the derivation reports no progress.
+ */
+export const VAULT_EXPORT_SLOW = "Still encrypting your backup. On some devices this can take several minutes. Keep this page open; your backup file is saved only when it finishes.";
+export const VAULT_EXPORT_SLOW_AFTER_MS = 5000;
+
+/**
  * The sentence for a sealed export that REFUSED because the blocks could not be made whole first (BlocksIncomplete, thrown before any file is made). Reviewed copy: do not reword it here.
  * It says that NOTHING was exported and why, never the generic "didn't finish" (a refusal that hides a block).
  */

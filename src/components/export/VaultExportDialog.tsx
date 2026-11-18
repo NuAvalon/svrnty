@@ -21,6 +21,8 @@ import { Download, Eye, EyeOff, RefreshCw, ShieldCheck } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { ExportAuthGate } from './ExportAuthGate';
 import { vaultExportFailureMessage } from './vault-export-copy';
+import { VAULT_EXPORT_SLOW, VAULT_EXPORT_SLOW_AFTER_MS } from './vault-export-copy';
+import { startSlowNotice } from './slow-notice';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/crypto/kdf';
 import { PASSPHRASE_LOSS_NOTICE_BACKUP } from '@/lib/identity/passphrase-loss-notice';
 
@@ -61,6 +63,7 @@ export function VaultExportDialog({
   const [confirm, setConfirm] = useState('');
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [slow, setSlow] = useState(false); // the "still encrypting" line: only when the work is still running a few seconds in
   const [error, setError] = useState<string | null>(null);
   const [beaconUnreadable, setBeaconUnreadable] = useState(false);
   const [suppressionLeftOut, setSuppressionLeftOut] = useState(false);
@@ -74,6 +77,7 @@ export function VaultExportDialog({
     setConfirm('');
     setShow(false);
     setLoading(false);
+    setSlow(false);
     setError(null);
     setBeaconUnreadable(false);
     setSuppressionLeftOut(false);
@@ -111,6 +115,7 @@ export function VaultExportDialog({
     if (!fingerprint || !strongEnough || !match) return;
     setLoading(true);
     setError(null);
+    const stopSlow = startSlowNotice(setSlow, VAULT_EXPORT_SLOW_AFTER_MS);
     try {
       const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord, exportSuppressionCarry, repairSuppressionOrRefuse } = await import(
         '@/lib/identity/client-store'
@@ -170,6 +175,7 @@ export function VaultExportDialog({
     } catch (err) {
       setError(vaultExportFailureMessage(err));
     } finally {
+      stopSlow();
       setLoading(false);
     }
   };
@@ -365,6 +371,9 @@ export function VaultExportDialog({
             </Button>
           )}
         </DialogFooter>
+        <p data-testid="vault-export-slow" aria-live="polite" className="text-sm" style={{ margin: 0, padding: slow ? '0 24px 16px' : 0, fontFamily: E.fontSans }}>
+          {slow ? VAULT_EXPORT_SLOW : ''}
+        </p>
       </DialogContent>
     </Dialog>
   );
