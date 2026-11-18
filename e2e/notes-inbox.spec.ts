@@ -76,6 +76,13 @@ test('galaxy star Chat opens that conversation in the Thread Field', async ({ pa
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
   const star = page.locator(`[data-testid="trust-node"][data-fingerprint="${fp}"]`);
   await expect(star).toBeVisible({ timeout: 15_000 });
+  // The star must be the hit target at its own centre: a click retry must not hide an overlap (e.g. the Gate).
+  const hit = await star.evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return el && (el === n || n.contains(el)) ? 'star' : el ? el.outerHTML.slice(0, 120) : 'none';
+  });
+  expect(hit, 'the element at the star centre is not the star').toBe('star');
   await star.click();
   await expect(page.getByTestId('trust-node-detail')).toBeVisible();
   await page.getByTestId('galaxy-open-note').click();

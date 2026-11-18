@@ -19,6 +19,7 @@ import { buildSignedBytes, SUITE_HYBRID } from '../crypto/sign-envelope';
 import { canonicalPubsFromArmoredPublicKey, KEM_PUB_LEN, AUTH_ED25519_SIG_BYTES, normalizeFingerprintHex } from '../identity/fingerprint';
 import { sign as pqSign, verify as pqVerify, uint8ToBase64, base64ToUint8 } from './pq';
 import { sealToMailbox, openMailboxEnvelope, deriveMailboxFp, type MailboxEnvelopePackage } from './mailbox-envelope';
+import { ContactKeysMismatch } from './contact-keys-mismatch';
 
 const DOMAIN_CONTACT_MSG = 'svrnty:contact-msg:v1';
 const ARMOR_BEGIN = '-----BEGIN SVRNTY ENCRYPTED MESSAGE-----';
@@ -137,7 +138,7 @@ export async function sealSignedToRecipient(
 export async function encryptToContact(message: string, contact: ContactKeys, sender: SenderKeys): Promise<string> {
   const pubs = await canonicalPubsFromArmoredPublicKey(contact.public_key, contact.pq_kem_public_key, contact.pq_sig_public_key);
   if (contact.fingerprint && pubs.fingerprint !== normalizeFingerprintHex(contact.fingerprint))
-    throw new Error('encryptToContact: contact keys do not match its claimed fingerprint — refusing to encrypt (anti-poison)');
+    throw new ContactKeysMismatch();
   return sealSignedToRecipient(message, { x25519Pub: pubs.encPub, mlkem1024Pub: pubs.kemPub, fingerprint: pubs.fingerprint }, sender);
 }
 

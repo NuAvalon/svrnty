@@ -20,6 +20,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Download, Eye, EyeOff, RefreshCw, ShieldCheck } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { ExportAuthGate } from './ExportAuthGate';
+import { vaultExportFailureMessage } from './vault-export-copy';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/crypto/kdf';
 import { PASSPHRASE_LOSS_NOTICE_BACKUP } from '@/lib/identity/passphrase-loss-notice';
 
@@ -28,6 +29,13 @@ import { PASSPHRASE_LOSS_NOTICE_BACKUP } from '@/lib/identity/passphrase-loss-no
 export const BEACON_KEY_UNREADABLE_NOTICE =
   "This backup doesn't include your trust key, because it couldn't be read on this device. Your contacts are included. "
   + "If you restore from this backup, the trusts you've made would need to be made again.";
+
+// Shown BEFORE the file is saved, only when the owner's blocks and removed contacts cannot be put in it (an unreadable record or list, or one too large to carry), because then the backup
+// silently lacks them. It does not appear when there is nothing to carry and it does not block the export. The words are the reviewed copy: they name neither cause (it can be either), name
+// both lists, and say that a restored device starts private, so nothing here implies exposure.
+export const SUPPRESSION_LEFT_OUT_NOTICE =
+  "This backup doesn't include your list of blocked and removed people, because it couldn't be added to the file. Your contacts are included. "
+  + "If you restore from this backup, you'll need to block or remove those people again; until then, the restored device stays private.";
 
 export interface VaultExportDialogProps {
   open: boolean;
@@ -55,6 +63,7 @@ export function VaultExportDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [beaconUnreadable, setBeaconUnreadable] = useState(false);
+  const [suppressionLeftOut, setSuppressionLeftOut] = useState(false);
 
   const match = password === confirm;
   const strongEnough = password.length >= MIN_PASSPHRASE_LENGTH;
@@ -67,6 +76,7 @@ export function VaultExportDialog({
     setLoading(false);
     setError(null);
     setBeaconUnreadable(false);
+    setSuppressionLeftOut(false);
   };
 
   const handleClose = () => {
@@ -85,15 +95,32 @@ export function VaultExportDialog({
     return () => { cancelled = true; };
   }, [step, fingerprint]);
 
+  // The same look for the blocks: a failed look is doubt, so it shows the notice; "nothing to carry" does not.
+  useEffect(() => {
+    if (step !== 'passphrase' || !fingerprint) return;
+    let cancelled = false;
+    import('@/lib/identity/client-store')
+      // The same repair the export runs, so the notice describes the record the export will actually read. Its outcome does not change the notice (a failed look is doubt).
+      .then(async (m) => { await m.repairSuppressionRecord(fingerprint).catch(() => undefined); return m.readSuppressionCarryStatus(fingerprint); })
+      .then((r) => { if (!cancelled) setSuppressionLeftOut(r === 'left-out'); })
+      .catch(() => { if (!cancelled) setSuppressionLeftOut(true); });
+    return () => { cancelled = true; };
+  }, [step, fingerprint]);
+
   const handleExport = async () => {
     if (!fingerprint || !strongEnough || !match) return;
     setLoading(true);
     setError(null);
     try {
-      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord } = await import(
+      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord, exportSuppressionCarry, repairSuppressionOrRefuse } = await import(
         '@/lib/identity/client-store'
       );
+      // A blocked contact missing from the suppression record is added BEFORE the sealed export reads it. If that repair itself fails the export REFUSES: a backup that silently
+      // lacks a block is worse than no backup. (An unreadable or absent record is not an error here: the existing left-out notice already covers it.)
+      await repairSuppressionOrRefuse(fingerprint);
       const backup = await exportAll(fingerprint, true);
+      // The owner's suppression record and removed list go ONLY in this password-sealed vault (never in exportAll's plaintext output); left out when it cannot be read whole.
+      const suppression = await exportSuppressionCarry(fingerprint);
       const pqKeys = await loadPQKeys(fingerprint);
       const vaultData = await loadVault(fingerprint);
 
@@ -123,6 +150,7 @@ export function VaultExportDialog({
         contacts: backup.contacts,
         // task #714 R2a: the global delivery-receipt default rides the vault so a restore keeps it (absent when it could not be read).
         delivery_receipts_default: backup.delivery_receipts_default,
+        ...(suppression ? { suppression } : {}),
       };
 
       const { createVaultContents, packVault, downloadVault } = await import(
@@ -140,7 +168,7 @@ export function VaultExportDialog({
       setStep('done');
       onDownloaded?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Vault export failed');
+      setError(vaultExportFailureMessage(err));
     } finally {
       setLoading(false);
     }
@@ -206,6 +234,13 @@ export function VaultExportDialog({
               <Alert data-testid="beacon-key-unreadable-notice" style={{ borderColor: E.borderLit }}>
                 <AlertDescription className="text-sm" style={{ color: E.text }}>
                   {BEACON_KEY_UNREADABLE_NOTICE}
+                </AlertDescription>
+              </Alert>
+            )}
+            {suppressionLeftOut && (
+              <Alert data-testid="suppression-left-out-notice" style={{ borderColor: E.borderLit }}>
+                <AlertDescription className="text-sm" style={{ color: E.text }}>
+                  {SUPPRESSION_LEFT_OUT_NOTICE}
                 </AlertDescription>
               </Alert>
             )}

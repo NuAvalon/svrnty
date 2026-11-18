@@ -6,6 +6,7 @@
 //     and a receiver drops only versions at or below the last applied one).
 // Run: npx tsx --test src/components/soverentity-frontend-copy.test.ts
 import { errorTag } from '@/lib/contacts/contact-io-errors';
+import { dbUpgradeBlockedMessage } from '@/lib/db-upgrade-blocked';
 
 export const FRONTEND_FAILURE_MESSAGES = Object.freeze({
   createIdentity: "Creating your identity didn't finish. Reload the page before you try again.",
@@ -16,6 +17,8 @@ export type FrontendFailureSite = keyof typeof FRONTEND_FAILURE_MESSAGES;
 
 /** The site's fixed sentence; the real error is logged by tag only. */
 export function frontendFailureMessage(err: unknown, site: FrontendFailureSite): string {
+  const blocked = dbUpgradeBlockedMessage(err);   // another tab holds the database: an expected stop, not an unknown failure, so not logged
+  if (blocked !== null) return blocked;
   console.error(`${site} failed:`, errorTag(err));
   return FRONTEND_FAILURE_MESSAGES[site];
 }

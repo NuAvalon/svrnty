@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { errorTag } from '@/lib/error-tag';
 import { ContactUpdateRefused } from '@/lib/identity/contact-identity';
 import { CONTACT_REFUSAL_MESSAGES } from '@/lib/contacts/contact-refusal';
+import { DB_UPGRADE_BLOCKED_MESSAGE, DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
 import { JOINER_FAILURE_MESSAGES, joinerFailureMessage, type JoinerFailureSite } from './joiner-ceremony-copy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,7 +62,7 @@ const REFUSALS: ReadonlyArray<readonly [string, unknown, string]> = [
   ['update refused: binding (a real ContactUpdateRefused)', new ContactUpdateRefused('binding', 'HOSTILE ' + HOSTILE), CONTACT_REFUSAL_MESSAGES.updateBinding],
   ['update refused: verify-before-trust (real class)', new ContactUpdateRefused('verify-before-trust', HOSTILE), CONTACT_REFUSAL_MESSAGES.verifyBeforeTrust],
   ['update refused: identity-immutable (real class)', new ContactUpdateRefused('identity-immutable', HOSTILE), CONTACT_REFUSAL_MESSAGES.identityImmutable],
-  ['contact refused: binding, by code', Object.assign(new Error(HOSTILE), { code: 'contact-refused', reason: 'binding' }), CONTACT_REFUSAL_MESSAGES.updateBinding],
+  ['contact refused: binding, by code (a NEW card that fails its check: the card sentence)', Object.assign(new Error(HOSTILE), { code: 'contact-refused', reason: 'binding' }), CONTACT_REFUSAL_MESSAGES.importBinding],
   ['trust refused: blocked, by code', Object.assign(new Error(HOSTILE), { code: 'trust-refused', reason: 'blocked' }), CONTACT_REFUSAL_MESSAGES.blocked],
 ];
 
@@ -101,9 +102,39 @@ test('JC6 a refusal is not logged as an unknown failure (it is an expected stop)
   } finally { console.error = real; }
 });
 
-test('JC7 THE LEAF STAYS LIGHT: the joiner copy module imports only the two leaf modules (error-tag, contact-refusal), so the public page loads no store code', () => {
+test('JC7 THE LEAF STAYS LIGHT: the joiner copy module imports only the three leaf modules (error-tag, contact-refusal, db-upgrade-blocked), so the public page loads no store code', () => {
   const src = code('joiner-ceremony-copy.ts');
   // every way a module can be pulled in: `import x from 'm'`, a bare `import 'm'` (side effect), `import('m')`, `require('m')`
   const specs = [...src.matchAll(/(?:^|[\s;])import\s+(?:[^'"()]*?\s+from\s+)?['"]([^'"]+)['"]/g), ...src.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1]).sort();
-  assert.deepEqual(specs, ['@/lib/contacts/contact-refusal', '@/lib/error-tag']);
+  assert.deepEqual(specs, ['@/lib/contacts/contact-refusal', '@/lib/db-upgrade-blocked', '@/lib/error-tag']);
+});
+
+test('JC8 a blocked database upgrade shows THE one sentence at EVERY site (any of them can touch the store), is not logged as an unknown failure, and is recognised by code only', () => {
+  const calls: unknown[][] = [];
+  const real = console.error; console.error = (...a: unknown[]) => { calls.push(a); };
+  try {
+    for (const [site] of SITES) {
+      assert.equal(joinerFailureMessage(new DbUpgradeBlocked(), site), DB_UPGRADE_BLOCKED_MESSAGE, site);
+      assert.equal(joinerFailureMessage({ code: 'db-upgrade-blocked' }, site), DB_UPGRADE_BLOCKED_MESSAGE, `${site} by code`);
+      assert.notEqual(DB_UPGRADE_BLOCKED_MESSAGE, JOINER_FAILURE_MESSAGES[site]);
+      assert.equal(joinerFailureMessage(new Error('svrnty database is upgrading — close other svrnty tabs and reload'), site), JOINER_FAILURE_MESSAGES[site], `${site}: the old plain text is not a code`);
+    }
+    assert.equal(calls.filter((c) => String(c[0]).includes('Joiner')).length, SITES.length, 'only the three plain-text errors were logged, by tag');
+  } finally { console.error = real; }
+});
+
+test('JC9 THE ADMIT SITE (copy ledger row 254b): a card whose fingerprint does not match its key shows the CARD sentence with its tamper warning, a change to a stored contact still shows its own, and the call passes the card context exactly once', () => {
+  const real = console.error; console.error = () => {};
+  try {
+    const card = joinerFailureMessage(Object.assign(new Error(HOSTILE), { code: 'contact-refused', reason: 'binding' }), 'addToGate');
+    assert.equal(card, CONTACT_REFUSAL_MESSAGES.importBinding);
+    assert.ok(card.includes('This can mean it was changed after they signed it.'), 'the warning that a signed card may have been changed is on screen');
+    assert.notEqual(card, CONTACT_REFUSAL_MESSAGES.updateBinding);
+    const update = joinerFailureMessage(new ContactUpdateRefused('binding', HOSTILE), 'addToGate');
+    assert.equal(update, CONTACT_REFUSAL_MESSAGES.updateBinding);
+    assert.notEqual(update, card);
+  } finally { console.error = real; }
+  const src = code('joiner-ceremony-copy.ts');
+  assert.equal(src.split("contactRefusalMessage(err, 'import')").length - 1, 1, 'the card context is passed once');
+  assert.ok(!/contactRefusalMessage\(err\)/.test(src), 'no call without the context');
 });

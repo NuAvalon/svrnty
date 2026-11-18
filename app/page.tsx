@@ -22,12 +22,11 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
-import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
+import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
 import { blockPatch, ownerVerifyHeldPatch, distressWentHeldPatch, acceptIntroHeldPatch, addLabelHeldPatch, trustMapEditPatch } from '@/lib/contacts/metadata-patches';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
-import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   loadMethodHistory,
@@ -860,19 +859,15 @@ export default function Home() {
                   await refreshContacts();
                 }}
                 onRemoveContact={async (edge) => {
-                  const { removeContact } = await import('@/lib/identity/client-store');
+                  const { removeContactWithLatch } = await import('@/lib/trust/block-latch-wiring');
                   // #572 part 2 (6th invariant-exit, Flint seal #157713): contact-REMOVE is a reveal-set
                   // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
                   // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
                   const removedFp = edge.peer_fingerprint;
                   // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
-                  // The caller shows a failure's message, so a contention failure is rethrown in plain words.
-                  try {
-                    await withSafetyWrite(edge.id, () => removeContact(edge.id));
-                  } catch (err) {
-                    const words = describeSafetyWriteFailure(err, 'Remove');
-                    throw words ? new Error(words) : err;
-                  }
+                  // The caller words a failure by its class (applyTrustAction), so the original error is rethrown, not wrapped.
+                  // The removal is recorded, the beacon latch is set, and only then is the contact deleted (a contact with no canonical fingerprint is simply deleted).
+                  await withSafetyWrite(edge.id, () => removeContactWithLatch(identity.identity.fingerprint, edge.id, edge.peer_fingerprint));
                   if (removedFp) {
                     void reconcileAllowedOnConsentChange({
                       ownerFp: identity.identity.fingerprint,
@@ -885,14 +880,13 @@ export default function Home() {
                 onBlockContact={async (edge, blocked) => {
                   // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison, and it
                   // is built from the record held when it runs. Blocking clears trust and open_visibility so the peer leaves every PSI reveal set
-                  // (the read side is fail-closed too: ownerEdges !blocked). See blockPatch. The caller shows a failure's message, so a contention
-                  // failure is rethrown in plain words.
-                  try {
+                  // (the read side is fail-closed too: ownerEdges !blocked). See blockPatch. The caller words a failure by its class (applyTrustAction), so the
+                  // original error is rethrown, not wrapped.
+                  // Block sets the beacon latch FIRST, then this flag, then the AWAITED suppression write (see setContactBlocked); Unblock leaves the latch.
+                  const { setContactBlocked, BlockUnfinishedError } = await import('@/lib/trust/block-latch-wiring');
+                  const { finished } = await setContactBlocked(identity.identity.fingerprint, edge.peer_fingerprint, blocked, async () => {
                     await withSafetyWrite(edge.id, () => updateContact(edge.id, (fresh) => blockPatch(fresh, blocked)));
-                  } catch (err) {
-                    const words = describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock');
-                    throw words ? new Error(words) : err;
-                  }
+                  });
                   // TrustMap path: block -> DELETE the allowed_senders row, so a blocked peer cannot keep discovering the owner through a stale row.
                   // Unblock does NOT re-add: trust + open-vis must be re-granted explicitly. The consent is read back from the stored record.
                   const afterBlock = await getContact(edge.id);
@@ -901,10 +895,10 @@ export default function Home() {
                     senderFp: edge.peer_fingerprint,
                     consent: afterBlock ? consentFromRecord(afterBlock) : NO_CONSENT,
                   });
-                  // Piece-2 (#579): block ALSO populates the durable suppression RECORD (load-bearing
-                  // emit-side source; the `blocked` flag is defense-in-depth). Fire-and-forget + fail-closed.
-                  void applyBlockSuppression(identity.identity.fingerprint, edge.peer_fingerprint, blocked);
+                  // Piece-2: block ALSO populates the durable suppression RECORD (load-bearing emit-side source; the `blocked` flag is defense-in-depth). That write is fail-closed and now
+                  // runs inside setContactBlocked (awaited). If it did not finish, the failure PROPAGATES (applyTrustAction words it) after the map has refreshed.
                   await refreshContacts();
+                  if (!finished) throw new BlockUnfinishedError();
                 }}
                 onAcceptIntro={async (edge) => {
                   await updateContact(edge.id, (fresh) => acceptIntroHeldPatch(fresh));

@@ -198,11 +198,17 @@ def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: 
 
 
 def default_epoch_cap(db_path: str, *, environ=os.environ, disk_usage=shutil.disk_usage) -> int:
-    """BEACON_PER_EPOCH_CAP if set, else what one full epoch can take of a tenth of this disk's free space. Between EPOCH_CAP_MIN and
-    EPOCH_CAP_MAX; an unreadable disk gets the maximum. Read once, at mount."""
+    """BEACON_PER_EPOCH_CAP if set, else what one full epoch can take of a tenth of this disk's free space. Always between EPOCH_CAP_MIN and
+    EPOCH_CAP_MAX, the setting included: a cap of a few would let anyone fill an epoch and read "full", and one extra zero would let the
+    beacon database fill the relay's disk. A setting outside the range is clamped and ONE line says so (requested vs used), so an operator
+    sees that the override did not take. An unreadable disk gets the maximum. Read once, at mount."""
     raw = environ.get("BEACON_PER_EPOCH_CAP", "")
     if _POSITIVE.fullmatch(raw):
-        return int(raw)
+        asked = int(raw)
+        used = min(EPOCH_CAP_MAX, max(EPOCH_CAP_MIN, asked))
+        if used != asked:
+            print(f"[beacon] BEACON_PER_EPOCH_CAP={asked} is outside {EPOCH_CAP_MIN}..{EPOCH_CAP_MAX}; using {used}", flush=True)
+        return used
     try:
         free = disk_usage(os.path.dirname(db_path) or ".").free
     except OSError:

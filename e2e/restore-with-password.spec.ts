@@ -99,6 +99,11 @@ const ownerSettingKeys = (page: Page, fpr: string) => page.evaluate((f) => new P
   open.onerror = () => resolve([]);
   open.onsuccess = () => { const db = open.result; const r = db.transaction('settings').objectStore('settings').getAllKeys(); r.onsuccess = () => { db.close(); resolve((r.result as string[]).filter((k) => String(k).includes(f)).map(String).sort()); }; };
 }), fpr);
+/** The pieces row for this owner exactly as stored (ciphertext and all), or the string "null". Reads only. */
+const rawShardsRecord = (page: Page, fp: string) => page.evaluate((f) => new Promise<string>((resolve) => {
+  const open = indexedDB.open('svrnty');
+  open.onsuccess = () => { const db = open.result; const r = db.transaction('shards').objectStore('shards').get(f); r.onsuccess = () => { db.close(); resolve(JSON.stringify(r.result ?? null)); }; };
+}), fp);
 const rawKeyRecord = (page: Page, fp: string) => page.evaluate((f) => new Promise<string>((resolve) => {
   const open = indexedDB.open('svrnty');
   open.onsuccess = () => { const db = open.result; const r = db.transaction('keys').objectStore('keys').get(f); r.onsuccess = () => { db.close(); resolve(JSON.stringify(r.result ?? null)); }; };
@@ -118,7 +123,7 @@ async function openRestoreScreen(page: Page, file: string) {
   await page.setInputFiles('[data-testid="restore-file-input"]', file);
 }
 const PROMPT = (p: Page) => p.getByTestId('device-password-prompt');
-const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
+const ERROR_RE = /didn't open this file|This device already has this identity|has no password yet|can't read|can't be read|isn't a backup|Something went wrong|stopped partway|stopped before any of your data was saved|may have been saved/i;
 /** After pressing the restore button: wait for the first thing that settles the attempt. */
 async function settle(page: Page): Promise<'restored' | 'prompt' | 'error'> {
   const restored = page.getByRole('tab', { name: 'Contacts', exact: true });
@@ -323,7 +328,7 @@ test('n. a device with NO contacts whose receipts default is under another passp
 });
 
 // Every owner-sealed settings record other than the receipts default (cases l, n, m): held ALONE under one passphrase beside the key under another, a restore under either is refused.
-for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds', 'beacon-key']) {
+for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed']) {
   test(`o. owner-sealed record "${sealed}" under another passphrase than the key: a restore under either passphrase is refused, and nothing changes`, async ({ browser }, testInfo) => {
     const { ctx, page } = await newPage(browser);
     await rh(page, 'seedKeyAndSealed', fp, backup.keys, UNLOCK_PW, OTHER_PW, sealed);
@@ -343,6 +348,260 @@ for (const sealed of ['suppression', 'held-affirms', 'lens-book', 'beacon-seeds'
     await ctx.close();
   });
 }
+
+// The beacon pair and latch rows are COLLECTIONS under the same passphrase domain: a restore that changed the passphrase-derived keys on a device holding them would orphan every row
+// (the pair id is derived from the passphrase), and a Block would silently stop applying. Each kind, held ALONE (no contact row) under one passphrase beside the key under another: refused.
+const BEACON_KINDS = ['pair', 'latch-local', 'latch-remote'] as const;
+for (const kind of BEACON_KINDS) {
+  test(`p. beacon row "${kind}" under another passphrase than the key (and no contact at all): a restore under either passphrase is refused, and nothing changes`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedKeyAndBeaconRow', fp, backup.keys, UNLOCK_PW, OTHER_PW, kind);
+    await page.reload();
+    const keysBefore = await ownerSettingKeys(page, fp);
+    expect(keysBefore.filter((k) => k.startsWith('beacon_')).length, `the ${kind} row is on the device`).toBe(1);
+    const stBefore = await deviceState(page);
+    expect(stBefore.contacts, 'no contact row: the beacon row alone makes the two domains').toBe(0);
+    for (const pw of [UNLOCK_PW, OTHER_PW]) {
+      const file = writeFull(testInfo, `full-p-${kind}-${pw.slice(0, 4)}.json`, noVault(), pw);
+      await page.reload();
+      expect(await restoreWith(page, file, pw), `${kind}: restore under ${pw.slice(0, 4)}…`).toBe('error');
+      await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+      expect(await deviceState(page)).toEqual(stBefore);
+      expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+    }
+    await ctx.close();
+  });
+
+  // CONTROL: the same device with the beacon row under the SAME passphrase as the key is NOT refused, so the refusal above is the domain check and not the mere presence of a beacon row; and the restore leaves the row alone.
+  test(`r. CONTROL: beacon row "${kind}" under the SAME passphrase as the key: the restore under it is accepted and the row is untouched`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedKeyAndBeaconRow', fp, backup.keys, UNLOCK_PW, UNLOCK_PW, kind);
+    await page.reload();
+    const keysBefore = (await ownerSettingKeys(page, fp)).filter((k) => k.startsWith('beacon_'));
+    expect(keysBefore.length, `the ${kind} row is on the device`).toBe(1);
+    const file = writeFull(testInfo, `full-r-${kind}.json`, noVault(), UNLOCK_PW);
+    await page.reload(); await page.addScriptTag({ content: HARNESS });
+    expect(await restoreWith(page, file, UNLOCK_PW), `${kind}: restore under the one passphrase`).toBe('restored');
+    expect((await ownerSettingKeys(page, fp)).filter((k) => k.startsWith('beacon_')), 'the restore did not touch the beacon row').toEqual(keysBefore);
+    await ctx.close();
+  });
+}
+
+// EVERY row, not one per collection: two latch rows, the first in key order under the key's passphrase and the second under another. A check that stops at the first row of the collection accepts this device.
+test('s. two latch rows, the first under the key\'s passphrase and the second under another: a restore under either passphrase is refused, and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedKeyAndTwoLatchRows', fp, backup.keys, UNLOCK_PW, OTHER_PW);
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  expect(keysBefore.filter((k) => k.startsWith('beacon_latch:')).length, 'both latch rows are on the device').toBe(2);
+  const stBefore = await deviceState(page);
+  for (const pw of [UNLOCK_PW, OTHER_PW]) {
+    const file = writeFull(testInfo, `full-s-${pw.slice(0, 4)}.json`, noVault(), pw);
+    await page.reload();
+    expect(await restoreWith(page, file, pw), `restore under ${pw.slice(0, 4)}…`).toBe('error');
+    await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+    expect(await deviceState(page)).toEqual(stBefore);
+    expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+  }
+  await ctx.close();
+});
+
+// A beacon row ALONE (no key, no contact): what is left when an identity's keys are cleared but its settings rows are not. A restore under a DIFFERENT passphrase would put new keys beside rows it can no longer open
+// (the pair id is derived from the passphrase), so every latch would be orphaned. EXPECTED TO REFUSE; the control (the SAME passphrase) is accepted.
+for (const kind of ['pair', 'latch-local'] as const) {
+  test(`t. beacon row "${kind}" ALONE (no key, no contact) under another passphrase than the restore: the restore is refused and nothing changes`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedBeaconRowOnly', fp, OTHER_PW, kind);
+    await page.reload();
+    const keysBefore = await ownerSettingKeys(page, fp);
+    expect(keysBefore.filter((k) => k.startsWith('beacon_')).length, `the ${kind} row is on the device`).toBe(1);
+    const stBefore = await deviceState(page);
+    expect(stBefore.contacts, 'no contact row').toBe(0);
+    const file = writeFull(testInfo, `full-t-${kind}.json`, noVault(), UNLOCK_PW);
+    await page.reload();
+    expect(await restoreWith(page, file, UNLOCK_PW), `${kind}: restore under a passphrase the row is not under`).toBe('error');
+    expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+    await ctx.close();
+  });
+
+  // CONTROL: the same beacon row alone under the SAME passphrase as the restore is accepted, and the row is untouched: the refusal above is the passphrase check, not the mere presence of a row.
+  test(`t2. CONTROL: beacon row "${kind}" ALONE under the SAME passphrase as the restore: accepted, and the row is untouched`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedBeaconRowOnly', fp, UNLOCK_PW, kind);
+    await page.reload();
+    const keysBefore = (await ownerSettingKeys(page, fp)).filter((k) => k.startsWith('beacon_'));
+    expect(keysBefore.length, `the ${kind} row is on the device`).toBe(1);
+    const file = writeFull(testInfo, `full-t2-${kind}.json`, noVault(), UNLOCK_PW);
+    await page.reload(); await page.addScriptTag({ content: HARNESS });
+    expect(await restoreWith(page, file, UNLOCK_PW), `${kind}: restore under the passphrase the row is under`).toBe('restored');
+    expect((await ownerSettingKeys(page, fp)).filter((k) => k.startsWith('beacon_')), 'the restore did not touch the beacon row').toEqual(keysBefore);
+    await ctx.close();
+  });
+}
+
+// Every owner-sealed settings record ALONE (no key, no contact) under another passphrase than the restore: refused, nothing changes (the entry condition counts them, not only the key stores).
+for (const sealed of ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed']) {
+  test(`u. owner-sealed record "${sealed}" ALONE (no key, no contact) under another passphrase than the restore: the restore is refused and nothing changes`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedSealedOnly', fp, OTHER_PW, sealed);
+    await page.reload();
+    const keysBefore = await ownerSettingKeys(page, fp);
+    expect(keysBefore.length, `the ${sealed} record is on the device`).toBeGreaterThanOrEqual(1);
+    const file = writeFull(testInfo, `full-u-${sealed}.json`, noVault(), UNLOCK_PW);
+    await page.reload();
+    expect(await restoreWith(page, file, UNLOCK_PW), `${sealed}: restore under a passphrase the record is not under`).toBe('error');
+    expect(await ownerSettingKeys(page, fp), 'no settings row was written or removed').toEqual(keysBefore);
+    await ctx.close();
+  });
+}
+
+// The contact book MANIFEST is deliberately NOT counted as holding the owner: it is a MAC over the book, not a record the check can open, so a device holding only a manifest has nothing to open and nothing to orphan.
+// Counting it would refuse the restore under EVERY passphrase, the right one included.
+test('v. a device holding ONLY a contact book manifest (no key, no contact, no sealed record) still restores', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedContactManifestOnly', fp, OTHER_PW, { name: 'Added Then Removed', email: 'gone@example.test', public_key: '', fingerprint: '', trust_level: 'known' });
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  expect(keysBefore.some((k) => k.startsWith('contact_manifest:')), 'the manifest is on the device').toBe(true);
+  expect(keysBefore.filter((k) => !k.startsWith('contact_manifest:') && k !== 'key_encryption_salt').length, 'and nothing else of the owner').toBe(0);
+  const stBefore = await deviceState(page);
+  expect(stBefore.contacts, 'no contact row').toBe(0);
+  const file = writeFull(testInfo, 'full-v.json', noVault(), UNLOCK_PW);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  expect(await restoreWith(page, file, UNLOCK_PW), 'restore under a passphrase the manifest is not under').toBe('restored');
+  await ctx.close();
+});
+
+// THE AGREEMENT MATRIX. "Does this device hold this owner" (deviceHoldsOwner), "does this passphrase open it" (the passphrase check) and "does the open session open it" (the guard
+// inside the import) answer from ONE held set, so over every combination of what a device can hold they must agree. Each state is seeded with every kind under ONE passphrase:
+//   held     + the RIGHT passphrase  => the restore succeeds (never a dead end, a keyless device included);
+//   held     + a WRONG passphrase    => refused, and nothing on the device changes (a Block is never orphaned);
+//   not held                         => nothing to check: the restore succeeds as on a fresh device.
+const HELD_KINDS = ['key', 'contact', 'sealed', 'beacon'] as const;
+for (let mask = 0; mask < 16; mask++) {
+  const kinds = HELD_KINDS.filter((_, bit) => mask & (1 << bit));
+  const label = kinds.length ? kinds.join(' + ') : 'nothing at all';
+  test(`w. agreement matrix [${label}]: ${kinds.length ? 'the right passphrase restores, a wrong one refuses with nothing written' : 'not held, so the restore needs no check'}`, async ({ browser }, testInfo) => {
+    const { ctx, page } = await newPage(browser);
+    await rh(page, 'seedState', fp, backup.keys, UNLOCK_PW, [...kinds], { name: 'Held Here', email: 'held@example.test', public_key: '', fingerprint: '', trust_level: 'known' });
+    await page.reload();
+    if (kinds.length) {
+      const keysBefore = await ownerSettingKeys(page, fp);
+      const stBefore = await deviceState(page);
+      const wrong = writeFull(testInfo, `full-w-${mask}-wrong.json`, noVault(), OTHER_PW);
+      await page.reload();
+      expect(await restoreWith(page, wrong, OTHER_PW), `[${label}] a wrong passphrase`).toBe('error');
+      await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+      expect(await deviceState(page), `[${label}] nothing was written`).toEqual(stBefore);
+      expect(await ownerSettingKeys(page, fp), `[${label}] no settings row was written or removed`).toEqual(keysBefore);
+    }
+    const right = writeFull(testInfo, `full-w-${mask}-right.json`, noVault(), UNLOCK_PW);
+    await page.reload(); await page.addScriptTag({ content: HARNESS });
+    expect(await restoreWith(page, right, UNLOCK_PW), `[${label}] the right passphrase`).toBe('restored');
+    await ctx.close();
+  });
+}
+
+// LEGACY AND CORRUPT ROWS. A record still in the old UNENCRYPTED form is under no passphrase, so nothing can be orphaned: a device holding the owner ONLY in that form is not held, restores
+// with a password like a fresh one, and unlock heals its rows. It is recognised POSITIVELY (no enc_version AND the old plaintext shape). Anything else that is not in the current encrypted
+// shape (an enc_version that is not the current one, an encrypted record missing a field) is malformed and REFUSES the restore: it is never skipped as legacy.
+const LEGACY_CONTACT = (owner: string) => ({ id: 'legacy-contact-1', owner_fingerprint: owner, fingerprint: '', name: 'Legacy Contact', email: 'legacy@example.test', public_key: '', trust_level: 'known', added_at: '2026-01-01T00:00:00.000Z' });
+test('x1. a device holding the owner ONLY as an old unencrypted KEY record is not held: the restore succeeds with a password', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, privateKey: backup.keys!.privateKey, passphrase: backup.keys!.passphrase } }]);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  const file = writeFull(testInfo, 'full-x1.json', noVault(), UNLOCK_PW);
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a legacy-only key record').toBe('restored');
+  await ctx.close();
+});
+test('x2. a device holding the owner ONLY as an old unencrypted CONTACT row is not held: the restore succeeds with a password', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: LEGACY_CONTACT(fp) }]);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  const file = writeFull(testInfo, 'full-x2.json', noVault(), UNLOCK_PW);
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a legacy-only contact row').toBe('restored');
+  await ctx.close();
+});
+test('x3. a legacy contact beside an ENCRYPTED record: the check runs on the encrypted one (the right passphrase restores, a wrong one refuses with nothing written)', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedSealedOnly', fp, UNLOCK_PW, 'suppression');
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: LEGACY_CONTACT(fp) }]);
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  const stBefore = await deviceState(page);
+  const wrong = writeFull(testInfo, 'full-x3-wrong.json', noVault(), OTHER_PW);
+  await page.reload();
+  expect(await restoreWith(page, wrong, OTHER_PW), 'a wrong passphrase').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  expect(await ownerSettingKeys(page, fp)).toEqual(keysBefore);
+  const right = writeFull(testInfo, 'full-x3-right.json', noVault(), UNLOCK_PW);
+  await page.reload(); await page.addScriptTag({ content: HARNESS });
+  expect(await restoreWith(page, right, UNLOCK_PW), 'the right passphrase').toBe('restored');
+  await ctx.close();
+});
+test('x4. a key record with an enc_version that is NOT the current one is malformed, not legacy: the restore is refused and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, enc_version: 99, salt: 'AAAA', iv: 'AAAA', ciphertext: 'AAAA' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x4.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'enc_version 99').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+test('x5. a contact row with an enc_version but NO ciphertext is malformed, not legacy: the restore is refused and nothing changes', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: { id: 'broken-contact-1', owner_fingerprint: fp, enc_version: 1, iv: 'AAAA' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x5.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'enc_version with no ciphertext').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+
+test('x6. a malformed record BESIDE an encrypted one still refuses, under the right passphrase too: it is never skipped', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedSealedOnly', fp, UNLOCK_PW, 'suppression');
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, enc_version: 99, salt: 'AAAA', iv: 'AAAA', ciphertext: 'AAAA' } }]);
+  await page.reload();
+  const keysBefore = await ownerSettingKeys(page, fp);
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x6.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'the right passphrase, a malformed key record beside an encrypted sealed record').toBe('error');
+  await expect(page.getByText(/This device already has this identity/)).toBeVisible();
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  expect(await ownerSettingKeys(page, fp)).toEqual(keysBefore);
+  await ctx.close();
+});
+test('x7. a key row with NO enc_version and NOT the old plaintext shape is malformed, not legacy: the restore is refused', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'keys', row: { fingerprint: fp, note: 'neither encrypted nor the old plaintext shape' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x7.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a row of no recognisable shape').toBe('error');
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
+test('x8. a contact row with NO enc_version and NOT the plaintext fields is malformed, not legacy: the restore is refused', async ({ browser }, testInfo) => {
+  const { ctx, page } = await newPage(browser);
+  await rh(page, 'seedRaw', fp, [{ store: 'contacts', row: { id: 'junk-contact-1', owner_fingerprint: fp, name: 'Only a name' } }]);
+  await page.reload();
+  const stBefore = await deviceState(page);
+  const file = writeFull(testInfo, 'full-x8.json', noVault(), UNLOCK_PW);
+  await page.reload();
+  expect(await restoreWith(page, file, UNLOCK_PW), 'a contact row of no recognisable shape').toBe('error');
+  expect(await deviceState(page), 'nothing was written').toEqual(stBefore);
+  await ctx.close();
+});
 
 test('m. a device that already holds the owner but has no receipts default: a failure AFTER the default is written reads as part saved, never as "before any of your data was saved"', async ({ browser }, testInfo) => {
   const { ctx, page } = await newPage(browser);
@@ -487,4 +746,67 @@ test('f. a restore that stops after ANY write, run again with the same file, end
     await ctx.close();
   }
   console.log(`[restore-pw] f. summary: ${results.join(' | ')}`);
+});
+
+test('p. a recovery-pieces record that is not a usable set is left out and the rest of the backup restores, and the screen says so; a usable record restores and stores it', async ({ browser }, testInfo) => {
+  const piece = (i: number, t: number, o: Record<string, unknown> = {}) => ({ index: i + 1, data: 'AAAA', identity_fingerprint: fp, threshold: t, ...o });
+  const withShards = (shards: unknown): Record<string, unknown> => { const b = clean(noVault()) as Record<string, unknown>; b.shards = shards; return b; };
+  const set = (threshold: number, total: number, n: number, edit: (p: Record<string, unknown>, i: number) => Record<string, unknown> = (x) => x) => ({ threshold, total, shards: Array.from({ length: n }, (_, i) => edit(piece(i, threshold), i)) });
+  const bad: Array<[string, unknown]> = [
+    ['a threshold of 1 (the give-a-piece screen would print "Any 1 of your keepers ... no single piece can")', set(1, 2, 2)],
+    ['a piece that names another identity', set(3, 5, 5, (x, i) => (i === 2 ? { ...x, identity_fingerprint: 'f'.repeat(64) } : x))],
+    ['two pieces with the same index', set(3, 5, 5, (x, i) => (i === 3 ? { ...x, index: 1 } : x))],
+  ];
+  for (const [name, shards] of bad) {
+    const { ctx, page } = await newPage(browser);
+    expect(await restoreWith(page, writeFull(testInfo, 'full-p-bad.json', withShards(shards), FILE_PW), FILE_PW), `${name}: the rest of the backup restores`).toBe('restored');
+    await expect(page.getByTestId('plaintext-import-note'), `${name}: the screen says the record was not restored`).toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+    const st = await deviceState(page);
+    console.log(`[restore-pw] p. left out (${name}), device state:`, JSON.stringify(st));
+    expect(st.identities, name).toBe(1); expect(st.keys, name).toBe(1); expect(st.contacts, name).toBe(4); expect(st.salt, name).toBe(true);
+    expect(st.shards, `${name}: nothing was stored as the pieces record`).toBe(0);
+    await ctx.close();
+  }
+  // the control: the same backup with a usable 3-of-5 record restores, stores it, and says nothing about pieces
+  const ok = await newPage(browser);
+  expect(await restoreWith(ok.page, writeFull(testInfo, 'full-p-ok.json', withShards(set(3, 5, 5)), FILE_PW), FILE_PW)).toBe('restored');
+  await expect(ok.page.getByTestId('plaintext-import-note')).not.toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+  const stored = await deviceState(ok.page);
+  console.log('[restore-pw] p. control restored, device state:', JSON.stringify(stored));
+  expect(stored.keys).toBe(1); expect(stored.shards).toBe(1);
+  await ok.ctx.close();
+});
+
+test('q. a damaged pieces record in the backup, restored onto a device that already holds a good one: the device\'s record is kept byte for byte and the screen says nothing about pieces; with no record of its own the same restore says so', async ({ browser }, testInfo) => {
+  const piece = (i: number, t: number) => ({ index: i + 1, data: 'AAAA', identity_fingerprint: fp, threshold: t });
+  const set = (threshold: number, total: number, n: number) => ({ threshold, total, shards: Array.from({ length: n }, (_, i) => piece(i, threshold)) });
+  const damaged = (): Record<string, unknown> => { const b = clean(noVault()) as Record<string, unknown>; b.shards = set(1, 2, 2); return b; }; // a threshold of 1: not a usable set
+  const file = writeFull(testInfo, 'full-q.json', damaged(), UNLOCK_PW);
+  // the device already holds the owner AND its own good 3-of-5 record
+  const held = await newPage(browser);
+  await rh(held.page, 'seedKeyAndShards', fp, backup.keys, UNLOCK_PW, set(3, 5, 5));
+  await held.page.reload(); await held.page.addScriptTag({ content: HARNESS });
+  const before = await rawShardsRecord(held.page, fp);
+  expect(before, 'the device holds its own pieces record before the restore').not.toBe('null');
+  expect(await restoreWith(held.page, file, UNLOCK_PW)).toBe('restored');
+  const note = held.page.getByTestId('plaintext-import-note');
+  await expect(note, 'the restore note is on screen').toBeVisible();
+  await expect(note, 'a good record is already here: nothing is said about pieces').not.toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+  await expect(held.page.getByText(RESTORE_MESSAGES.piecesRecordNotRestored), 'and the sentence is nowhere on the screen').toHaveCount(0);
+  const after = await rawShardsRecord(held.page, fp);
+  console.log(`[restore-pw] q. held device: pieces row before ${before.length} chars, after ${after.length} chars, identical ${after === before}`);
+  expect(after, 'the device\'s own record is byte for byte what it was (not rewritten, not dropped)').toBe(before);
+  const st = await deviceState(held.page);
+  expect(st.shards, 'one pieces row, the device\'s own').toBe(1); expect(st.keys).toBe(1); expect(st.contacts, 'the rest of the backup restored').toBe(4);
+  await held.ctx.close();
+  // the control: the device holds the owner's key but NO pieces record: the same file now says so, and stores none
+  const bare = await newPage(browser);
+  await rh(bare.page, 'seedKeyAndShards', fp, backup.keys, UNLOCK_PW);
+  await bare.page.reload(); await bare.page.addScriptTag({ content: HARNESS });
+  expect(await rawShardsRecord(bare.page, fp)).toBe('null');
+  expect(await restoreWith(bare.page, file, UNLOCK_PW)).toBe('restored');
+  await expect(bare.page.getByTestId('plaintext-import-note'), 'no record of its own: the sentence is shown').toContainText(RESTORE_MESSAGES.piecesRecordNotRestored);
+  const stBare = await deviceState(bare.page);
+  expect(stBare.shards, 'nothing was stored as the pieces record').toBe(0); expect(stBare.contacts).toBe(4);
+  await bare.ctx.close();
 });

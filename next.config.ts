@@ -1,8 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { NextConfig } from 'next';
+import { beaconDevArtifactsFlag } from './src/lib/beacon-dev-flag';
 
 const nextConfig: NextConfig = {
+  // #822 (a)-Z: ALWAYS defined ('true' only in a dev build that opted in to the beacon wire), so the bundler can drop the dev-only proving-key pin from every other build.
+  // See src/lib/beacon-dev-flag.ts for why an unset NEXT_PUBLIC_ variable is not enough.
+  env: {
+    NEXT_PUBLIC_BEACON_DEV_ARTIFACTS: beaconDevArtifactsFlag(process.env),
+  },
   eslint: {
     ignoreDuringBuilds: true,
   },

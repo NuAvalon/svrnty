@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive, isLensDeliveryLive } from './claim-gates';
+import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive, isLensDeliveryLive, isBeaconWireLive } from './claim-gates';
 
 /** Runs fn with the build domain (NEXT_PUBLIC_SVRNTY_DOMAIN) set to `value`, or unset when undefined. */
 function withPsiEnv(value: string | undefined, fn: () => void): void {
@@ -84,5 +84,62 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
 
   it('isRelayMigrateLive is FALSE until migrateRelay + config override + card re-sign are wired', () => {
     assert.equal(isRelayMigrateLive(), false);
+  });
+});
+
+/** Runs fn with the build domain and the beacon opt-in set to the given values (undefined = unset), restoring both afterwards. */
+function withBeaconEnv(domain: string | undefined, flag: string | undefined, fn: () => void): void {
+  const prevD = process.env.NEXT_PUBLIC_SVRNTY_DOMAIN;
+  const prevF = process.env.NEXT_PUBLIC_BEACON_LIVE;
+  if (domain === undefined) delete process.env.NEXT_PUBLIC_SVRNTY_DOMAIN; else process.env.NEXT_PUBLIC_SVRNTY_DOMAIN = domain;
+  if (flag === undefined) delete process.env.NEXT_PUBLIC_BEACON_LIVE; else process.env.NEXT_PUBLIC_BEACON_LIVE = flag;
+  try {
+    fn();
+  } finally {
+    if (prevD === undefined) delete process.env.NEXT_PUBLIC_SVRNTY_DOMAIN; else process.env.NEXT_PUBLIC_SVRNTY_DOMAIN = prevD;
+    if (prevF === undefined) delete process.env.NEXT_PUBLIC_BEACON_LIVE; else process.env.NEXT_PUBLIC_BEACON_LIVE = prevF;
+  }
+}
+
+describe('claim-gates — #822 (a) the beacon trust wire: dev build AND explicit opt-in, dark otherwise', () => {
+  it('is live ONLY in a dev build with NEXT_PUBLIC_BEACON_LIVE === "true"', () => {
+    withBeaconEnv('dev.svrnty.is', 'true', () => assert.equal(isBeaconWireLive(), true));
+  });
+
+  it('a dev build WITHOUT the opt-in is dark: unset, "false", "TRUE", "1", "yes", empty', () => {
+    for (const flag of [undefined, 'false', 'TRUE', 'True', '1', 'yes', '', ' true', 'true ']) {
+      withBeaconEnv('dev.svrnty.is', flag, () => assert.equal(isBeaconWireLive(), false, `flag ${JSON.stringify(flag)} must not turn it on`));
+    }
+  });
+
+  it('the opt-in WITHOUT a dev build is dark: prod, a self-hoster, an unset or empty domain all fail closed', () => {
+    for (const domain of [undefined, '', 'svrnty.is', 'example.com', 'devsvrnty.is', 'notdev.svrnty.is']) {
+      withBeaconEnv(domain, 'true', () => assert.equal(isBeaconWireLive(), false, `domain ${JSON.stringify(domain)} must stay dark even with the opt-in`));
+    }
+  });
+
+  it('uses the SAME dev predicate as the PSI gate, so the two cannot disagree about what a dev build is', () => {
+    for (const domain of [undefined, '', 'dev.svrnty.is', 'svrnty.is', 'example.com', 'dev.example.org']) {
+      withBeaconEnv(domain, 'true', () => assert.equal(isBeaconWireLive(), isPSIDiscoveryLive(), `domain ${JSON.stringify(domain)}`));
+    }
+  });
+
+  it('turning it on does NOT turn on the mutual-trust copy switch or the other dark gates', () => {
+    withBeaconEnv('dev.svrnty.is', 'true', () => {
+      assert.equal(isBeaconWireLive(), true);
+      assert.equal(isMutualTrustWireLive(), false, 'the copy switch stays false: it needs reviewed evidence, not an env var');
+      assert.equal(isPiece2MutualBlockLive(), false);
+      assert.equal(isLensDeliveryLive(), false);
+    });
+  });
+
+  it('[static] reads NEXT_PUBLIC_BEACON_LIVE as a plain process.env reference (Next inlines only that form) and no other env name', () => {
+    const src = readFileSync(join(process.cwd(), 'src/lib/claim-gates.ts'), 'utf8');
+    const start = src.indexOf('export function isBeaconWireLive');
+    const body = src.slice(start, src.indexOf('\n}\n', start));
+    assert.match(body, /process\.env\.NEXT_PUBLIC_BEACON_LIVE\s*===\s*'true'/);
+    assert.match(body, /isDevBuild\(process\.env\.NEXT_PUBLIC_SVRNTY_DOMAIN\)/);
+    assert.doesNotMatch(body, /process\.env\[/, 'a computed env lookup is not inlined at build time');
+    assert.equal((body.match(/process\.env/g) ?? []).length, 2, 'exactly the two env reads, nothing else decides this gate');
   });
 });

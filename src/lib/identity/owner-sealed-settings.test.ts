@@ -42,13 +42,16 @@ test('S2 the list has no duplicate name, id or key, and its ids are the reserved
   assert.equal(new Set(listed.map((l) => l.name)).size, listed.length, 'names are unique');
   assert.equal(new Set(listed.map((l) => l.recordId)).size, listed.length, 'record ids are unique');
   assert.equal(new Set(listed.map((l) => l.settingKey)).size, listed.length, 'setting keys are unique');
-  assert.deepEqual(listed.map((l) => l.name), ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key']);
+  assert.deepEqual(listed.map((l) => l.name), ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed', 'removed-contacts', 'suppression-pending']);
   for (const l of listed) assert.match(store, new RegExp(`const ${l.recordId} = '[a-z0-9]+:[a-z-]+';`), `${l.recordId} is a reserved id constant`);
 });
 
-test('S3 the contact-row path is the only other sealed write, and it uses the row id, not a reserved one', () => {
+test('S3 the sealed writes that are NOT a listed record are exactly two: the contact row (its own id) and the beacon ports\' sealer (a caller-chosen AAD for the pair and latch rows)', () => {
   const m = [...store.matchAll(/encryptContactRecord\(\s*_sessionKey\s*,\s*([a-z][A-Za-z0-9_]*)\s*,/g)].map((x) => x[1]);
-  assert.deepEqual(m, ['id'], 'one lowercase-id call site: the contact row');
+  assert.deepEqual(m, ['id', 'aad'], 'the contact row, then the beacon sealer: a third lowercase-id site must be classified and covered by the restore check before it is added here');
+  const a = store.indexOf('function beaconSessionSealer(');
+  assert.ok(a >= 0, 'the sealer exists');
+  assert.match(store.slice(a, store.indexOf('\n}\n', a)), /encryptContactRecord\(\s*_sessionKey\s*,\s*aad\s*,/, 'the aad site is the beacon sealer');
 });
 
 test('S4 every encryptContactRecord( call in src/ is one S1 or S3 recognises (a call with another key variable, or a lowercase id, cannot slip past them)', () => {
@@ -63,4 +66,96 @@ test('S4 every encryptContactRecord( call in src/ is one S1 or S3 recognises (a 
   }
   assert.ok(all >= 7, `the calls are found (found ${all})`);
   assert.equal(all, s1 + s3, `${all} encryptContactRecord( calls in src/ but S1 and S3 recognise ${s1 + s3}: a sealed record written another way is not covered by the list`);
+});
+
+// ---- the restore's passphrase check also opens EVERY beacon pair and latch row (collections, not single records) ----
+const codeOnlyText = (text: string) => text.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+const fnOf = (head: string) => {
+  const a = store.indexOf(head);
+  assert.ok(a >= 0, `${head} exists`);
+  const ends = ['\nexport ', '\n/**'].map((m) => store.indexOf(m, a + 1)).filter((i) => i !== -1);
+  return codeOnlyText(store.slice(a, Math.min(...ends)));
+};
+const heldSetBody = fnOf('async function readHeldSet(');
+const openLoopBody = fnOf('async function openEveryHeldRecord(');
+
+test('S5 the held set has EVERY row of both beacon collections, mapped with the ports\' own AAD; a row that cannot be mapped or parsed is malformed, and a malformed record refuses', () => {
+  assert.match(heldSetBody, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\) \{/, 'both collections are enumerated');
+  assert.match(heldSetBody, /for \(const key of await txKeysWithPrefix\('settings', prefix\)\) \{/, 'EVERY key of the collection (no slice, no first-only)');
+  assert.match(heldSetBody, /const aad = beaconRowAad\(fingerprint, key\);/, 'the AAD comes from the ports\' one definition');
+  assert.match(heldSetBody, /const form: HeldForm = aad === null \? 'malformed' : sealedPayloadForm\(payload\);/, 'an unmappable row is malformed, and so is one whose payload is not in the current shape');
+  assert.match(heldSetBody, /kind: 'beacon', keySource: 'settings-salt', form, open:/, 'a beacon row has no legacy form: it is encrypted or malformed, never skipped');
+  assert.match(heldSetBody, /decryptContactRecord\(k, aad!, fingerprint,/, 'each row is opened with its own AAD');
+  assert.match(openLoopBody, /if \(rec\.form === 'malformed'\) return false;/, 'a malformed record refuses the restore');
+  assert.match(openLoopBody, /if \(!\(await rec\.open\(await keyFor\(salt\)\)\)\) return false;/, 'EVERY member is opened (not one per collection)');
+});
+
+test('S6 the beacon row AAD has ONE definition, in beacon-ports.ts: client-store builds none of its own', () => {
+  assert.doesNotMatch(codeOnlyText(store), /beacon-(pair|latch):/, 'no AAD template in client-store.ts');
+  const ports = codeOnlyText(readFileSync(new URL('../trust/beacon-ports.ts', import.meta.url), 'utf8'));
+  assert.equal(ports.split('`beacon-pair:${').length - 1, 1, 'one pair AAD builder');
+  assert.equal(ports.split('`beacon-latch:${').length - 1, 1, 'one latch AAD builder');
+  assert.match(ports, /const aadOf = \(pairId: string\) => pairAad\(owner, pairId\);/, 'the store uses the shared builder');
+  assert.match(ports, /const aadOf = \(source: Source, pairId: string\) => latchAad\(owner, source, pairId\);/, 'the latch uses the shared builder');
+});
+
+// ---- ONE held set: holding, the passphrase check and the open session all read it ----
+const fnBody = (head: string) => fnOf(head);
+
+test('S7 deviceHoldsOwner is "the held set has a member that is not legacy", the held set counts every owner-sealed settings record and every beacon row, and NOT the contact manifest (stated in its definition)', () => {
+  assert.match(fnBody('export async function deviceHoldsOwner'), /return \(await readHeldSet\(fingerprint\)\)\.some\(\(r\) => r\.form !== 'legacy'\);/, 'holding = the held set has a member that is not legacy');
+  assert.match(heldSetBody, /for \(const sealed of OWNER_SEALED_SETTINGS\) \{\s*const row = await txGet<[^\n]*>\('settings', sealed\.settingKey\(fingerprint\)\);\s*if \(!row\) continue;/, 'every listed record');
+  assert.match(heldSetBody, /for \(const prefix of beaconRowPrefixes\(fingerprint\)\)/, 'every beacon pair and latch row');
+  assert.doesNotMatch(heldSetBody + fnBody('export async function deviceHoldsOwner'), /contactManifestSettingKey|contact_manifest/, 'the manifest holds nothing that can be opened: counting it would refuse every restore on such a device');
+  assert.match(store, /NOT a member: the contact book manifest/, 'the exclusion is stated in the definition');
+});
+
+test('S9 the passphrase check and the open session iterate the SAME held set, so the three questions cannot disagree about what counts', () => {
+  assert.match(fnBody('export async function passphraseOpensEveryHeldKeyRecord'), /return openEveryHeldRecord\(fingerprint, async \(salt\) => \{/, 'the passphrase check');
+  assert.match(fnBody('export async function sessionOpensOwner'), /return openEveryHeldRecord\(fingerprint, async \(\) => sessionKey\);/, 'the open session');
+  assert.match(openLoopBody, /const held = await readHeldSet\(fingerprint\);/, 'both read the one held set');
+  const callers = [...store.matchAll(/await readHeldSet\(fingerprint\)/g)].length;
+  assert.equal(callers, 2, 'readHeldSet is read by exactly two functions: deviceHoldsOwner and the opening loop');
+});
+
+test('S8 the snapshot has one entry per beacon collection: the count and the digest of the key-sorted key + value rows', () => {
+  const b = fnBody('export async function snapshotOwnerRows');
+  assert.match(b, /beaconRowPrefixes\(fingerprint\)/, 'the prefixes come from the ports\' one definition');
+  assert.match(b, /\['beacon-pair-rows', pairPrefix\], \['beacon-latch-rows', latchPrefix\]/, 'one entry per collection');
+  assert.match(b, /\(await txKeysWithPrefix\('settings', prefix\)\)\.slice\(\)\.sort\(\)/, 'every key, sorted (a digest that does not depend on the order IndexedDB returns them)');
+  assert.match(b, /rows\.push\(\{ key, value: \(await txGet<\{ value\?: unknown \}>\('settings', key\)\)\?\.value \}\);\s*await put\(place, rows\);/, 'each row contributes its key and its value');
+});
+
+// ---- the form of every held record is decided POSITIVELY: encrypted, legacy, or malformed ----
+// Each form function is cut out by its OWN start and end markers: slicing to the next doc comment would let one function's lines satisfy another's pin (the contact and the key function share a line).
+const between = (from: string, to: string) => {
+  const a = store.indexOf(from);
+  const b = store.indexOf(to, a + from.length);
+  assert.ok(a >= 0 && b > a, `${from} .. ${to} found`);
+  return codeOnlyText(store.slice(a, b));
+};
+const keyForm = between('function keyRecordForm(', 'function contactRowForm(');
+const contactForm = between('function contactRowForm(', '/** A sealed payload');
+const payloadForm = between('function sealedPayloadForm(', '\n}\n');
+
+test('S10 a key record is legacy ONLY when it has no enc_version AND its store\'s old plaintext shape; an enc_version that is not the current one, or a missing field, is malformed (never skipped)', () => {
+  assert.match(keyForm, /if \(r\.enc_version === ENC_VERSION\) return typeof r\.salt === 'string' && typeof r\.iv === 'string' && typeof r\.ciphertext === 'string' \? 'encrypted' : 'malformed';/, 'current version: encrypted, or malformed when a field is missing');
+  assert.match(keyForm, /if \(r\.enc_version !== undefined\) return 'malformed';/, 'an enc_version that is present but not the current one is malformed');
+  assert.match(keyForm, /return LEGACY_KEY_SHAPE\[store\]\?\.\(r\) \? 'legacy' : 'malformed';/, 'no enc_version: legacy only when the old plaintext shape is positively there');
+  const shapes = codeOnlyText(store.slice(store.indexOf('const LEGACY_KEY_SHAPE'), store.indexOf('function keyRecordForm(')));
+  for (const [s, f] of [['keys', 'privateKey'], ['pq_keys', 'bundle'], ['vaults', 'vault'], ['shards', 'shards_data']]) assert.match(shapes, new RegExp(`${s}: \\(r\\) => [^\\n]*r\\.${f}`), `${s} is legacy by its ${f}`);
+  assert.match(shapes, /device_mailbox: undefined,/, 'device_mailbox has no legacy form: it was born encrypted');
+});
+
+test('S11 a contact row is legacy ONLY when it has no enc_version AND the plaintext fields; the current enc_version without iv or ciphertext, or any other enc_version, is malformed', () => {
+  assert.match(contactForm, /if \(r\.enc_version === CONTACT_ENC_VERSION\) return typeof r\.iv === 'string' && typeof r\.ciphertext === 'string' \? 'encrypted' : 'malformed';/, 'the current version without iv or ciphertext is malformed (it was skipped as legacy)');
+  assert.match(contactForm, /if \(r\.enc_version !== undefined\) return 'malformed';/, 'another enc_version is malformed');
+  assert.match(contactForm, /\['fingerprint', 'name', 'email', 'public_key'\]\.every\(\(f\) => typeof r\[f\] === 'string'\) \? 'legacy' : 'malformed'/, 'no enc_version: legacy only with the plaintext fields');
+  assert.doesNotMatch(heldSetBody, /enc_version && /, 'no truthiness test on enc_version decides the form any more');
+});
+
+test('S12 a sealed payload (settings record or beacon row) has no legacy form: encrypted, or malformed (a missing field or an enc_version that is not the current one)', () => {
+  assert.match(payloadForm, /if \(!p \|\| typeof p\.iv !== 'string' \|\| typeof p\.ciphertext !== 'string'\) return 'malformed';/);
+  assert.match(payloadForm, /return p\.enc_version === undefined \|\| p\.enc_version === CONTACT_ENC_VERSION \? 'encrypted' : 'malformed';/);
+  assert.doesNotMatch(payloadForm, /'legacy'/, 'there is no old plaintext form for these');
 });
