@@ -9,7 +9,10 @@ process.env.E2E_PROD = '1';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /(demo-arc|csp-script-lock|csp-egress|contact-beacon-key)\.spec\.ts/,
+  // Vault export/restore specs run here too: argon2-off-main-thread and restore-error-honesty state they need a production
+  // build (the Argon2id worker chunk and the production script policy exist only there), and the other two cover the same
+  // export/restore flows. Under `next dev` alone, CI never exercised these flows on what users actually get.
+  testMatch: /(demo-arc|csp-script-lock|csp-egress|contact-beacon-key|argon2-off-main-thread|restore-error-honesty|password-envelope-roundtrip|contacts-sealed-import)\.spec\.ts/,
   // beat-3 is a HEAVY 2-device prod ceremony — genesis×2 (OpenPGP + ML-DSA-87 + ML-KEM-1024 keygen)
   // + grow + join + add-to-gate + 2× Argon2id(64MiB) unlocks, across 2 prod contexts. That real
   // crypto cost sits right at the old 180s cap: the failure slid between the Galaxy-tab click (line
