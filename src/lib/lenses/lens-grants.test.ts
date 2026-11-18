@@ -92,7 +92,23 @@ test('R1: the record rides no wire path (source guard — unchanged boundary)', 
   assert.equal(/getAllContacts|updateContact|addContact/.test(grantSrc), false);
 });
 
-test('R2: corrupt or unreadable records read as EMPTY — identical to no record', async () => {
+test('R2: raw == null (absent) reads as a readable EMPTY book', async () => {
+  const s = memStorage();                                              // nothing stored — getItem returns null
+  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {} },
+    'an absent record is the ONE case that reads empty + readable (R2 — zero methods, writable book)');
+  // a storage that answers undefined (some shims do) must read empty too; the cast is test-only, the interface stays string | null
+  const undef = { getItem: () => undefined as unknown as string | null, setItem: () => {} };
+  assert.deepEqual(await loadLensGrants(OWNER, undef), { v: 1, grants: {}, inSeq: {} });
+});
+
+test('R2a: raw === "" (present but empty) reads UNREADABLE — never a readable empty', async () => {
+  const s = memStorage();
+  s.map.set(lensGrantKey(OWNER), '');
+  assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {}, unreadable: true },
+    'a stored empty string is a record that did not read — read-only stand-in, not no-record');
+});
+
+test('R2: corrupt or unreadable records read UNREADABLE — empty for the filter, flagged for the send', async () => {
   const s = memStorage();
   s.map.set(lensGrantKey(OWNER), '{not json');
   assert.deepEqual(await loadLensGrants(OWNER, s), { v: 1, grants: {}, inSeq: {}, unreadable: true },
@@ -174,7 +190,7 @@ test('item 4: nextLensSeq is max(prev+1, whole seconds since epoch) — a wiped 
 });
 
 test('receive floor: acceptInSeq accepts strictly-greater seqs and refuses a far-future seq', () => {
-  let book = emptyBook();
+  const book = emptyBook();
   const a1 = acceptInSeq(book, FP_A, 5, NOW);
   assert.notEqual(a1, null);
   assert.equal(acceptInSeq(a1!, FP_A, 5, NOW), null); // replay
