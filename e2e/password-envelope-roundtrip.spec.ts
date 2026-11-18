@@ -13,15 +13,16 @@ import { openWithPassword } from '../src/lib/crypto/password-envelope';
  *  C. A wrong password stores nothing.
  *  D. The key export asks for 12 characters on screen (label, and the button is disabled below 12).
  *
- * NOT driven in a browser, and why (all existing behaviour, reported separately, each checked against the unchanged build where it says so):
- *  - the "export a new copy" notice after an old-format restore. The two old-format restore paths that exist cannot show it today: a key-only restore at the
- *    gate stores the key and shows nothing (there is no identity record to land on), and the old full-backup restore fails on a fresh device with "Incorrect
- *    encryption password" in the UNCHANGED build too (same file, same message). The notice is set on both paths in code; its text is unit-tested.
- *  - the contacts export/import dialogs: SecureImportDialog is not mounted anywhere (nothing imports it), so no screen reaches it.
- *  - the gate only reads a file as JSON when its NAME ends in .json or .svrnty, and Download Keys names its file *.svrnty-keys; this spec restores a copy
- *    named .json.
+ * The key file is picked at the gate under the name the app gave it (*.svrnty-keys): the gate decides what a file is by what it CONTAINS, not by its name
+ * (restore-error-honesty.spec.ts test 5 asserts that on its own).
  *
- * "The key is in IndexedDB" is the observable result of a key-only restore, since no screen reports one. Needs a PRODUCTION build (`next build && next start`).
+ * Covered by other specs, through the real screens:
+ *  - what the screen says after a key-only restore, and the old-format FULL backup restoring on a fresh device: restore-error-honesty.spec.ts (tests 1 to 4);
+ *  - the contacts export coming back in through Import Contacts: contacts-sealed-import.spec.ts.
+ * This spec does not assert the "export a new copy" notice after an old-format restore (its text is unit-tested).
+ *
+ * After a key-only restore these tests check that the key is in IndexedDB, which is stronger than the sentence on screen (restore-error-honesty.spec.ts test 4 asserts the sentence).
+ * It passes on `next dev`; whether a production build changes anything is not tested here.
  */
 
 const UNLOCK_PW = 'unlock-e2e-pass-1234';
@@ -61,24 +62,13 @@ async function downloadKeys(page: Page, dest: string) {
   await (await download).saveAs(dest);
 }
 
-/**
- * The restore picker (handleFileSelect) reads a file as JSON only when its NAME ends in .json or .svrnty, and the picker's accept list is ".svrnty,.json";
- * Download Keys names its file *.svrnty-keys, which the picker then rejects ("Not a valid .svrnty vault file"). That is existing behaviour, separate from
- * the password envelope, and is reported on its own; here the file is restored under a .json name, as a user would have to rename it.
- */
-function asJson(file: string): string {
-  const copy = file.replace(/\.svrnty-keys$/, '.json');
-  writeFileSync(copy, readFileSync(file));
-  return copy;
-}
-
 /** A fresh device: pick the key file at the gate and enter its password. Returns the page, un-submitted. */
 async function openRestore(browser: Browser, file: string, password: string) {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   await page.goto('/');
   await page.getByRole('button', { name: /restore your identity from a vault file/i }).click();
-  await page.setInputFiles('[data-testid="restore-file-input"]', asJson(file));
+  await page.setInputFiles('[data-testid="restore-file-input"]', file);
   await page.getByPlaceholder('Encryption password from export').fill(password);
   return { ctx, page };
 }
@@ -92,7 +82,7 @@ function oldFormat(plain: string, password: string, extra: Record<string, unknow
   return { ...extra, algorithm: 'AES-256-GCM', kdf: 'PBKDF2-SHA256-100k', salt: salt.toString('base64'), iv: iv.toString('base64'), data: ct.toString('base64') };
 }
 
-/** Is a private key stored for this fingerprint in the app's own IndexedDB? (What a key-only restore leaves; there is no screen for it.) */
+/** Is a private key stored for this fingerprint in the app's own IndexedDB? (What a key-only restore leaves; the screen also says so, which another spec asserts.) */
 async function keyStored(page: Page, fingerprint: string): Promise<boolean> {
   return page.evaluate((fp) => new Promise<boolean>((resolve) => {
     const open = indexedDB.open('svrnty');
