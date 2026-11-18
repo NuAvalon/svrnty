@@ -50,10 +50,10 @@ test('the poll\'s contact store yields: it provides a guard built on the same lo
 test('removing a contact takes the contact lock around its write, in both places that remove one', () => {
   const ui = src('../../components/ContactManagement.tsx');
   const del = body(ui, 'const handleDeleteContact', 'const handleToggleTrust');
-  assert.match(del, /await withSafetyWrite\(contactId, \(\) => removeContact\(contactId\)\);/);
+  assert.match(del, /await withSafetyWrite\(contactId, \(\) => removeContactWithLatch\(fingerprint, contactId, removedFp\)\);/);
   assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? contactFailureMessage\(err, 'remove'\)\)/);
   const page = noComments(src('../../../app/page.tsx'));
-  assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContact\(edge\.id\)\);/);
+  assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContactWithLatch\(identity\.identity\.fingerprint, edge\.id, edge\.peer_fingerprint\)\);/);
   assert.doesNotMatch(page, /throw words \? new Error\(words\) : err;/);
   const rm = page.slice(page.indexOf('onRemoveContact={async'), page.indexOf('onBlockContact={async'));
   assert.ok(rm.length > 100, 'the remove handler was found');

@@ -121,7 +121,7 @@ test('TA8 THE PAGE (row 257b): the trust map\'s remove and block callbacks rethr
   const remove = p.slice(p.indexOf('onRemoveContact={async (edge) => {'), p.indexOf('onBlockContact={async (edge, blocked) => {'));
   const block = p.slice(p.indexOf('onBlockContact={async (edge, blocked) => {'), p.indexOf('onAcceptIntro={async (edge) => {'));
   assert.ok(remove.length > 100 && block.length > 100, 'both callbacks are found');
-  assert.equal(remove.split('await withSafetyWrite(edge.id, () => removeContact(edge.id));').length - 1, 1);
+  assert.equal(remove.split('await withSafetyWrite(edge.id, () => removeContactWithLatch(identity.identity.fingerprint, edge.id, edge.peer_fingerprint));').length - 1, 1);
   assert.equal(block.split('await withSafetyWrite(edge.id, () => updateContact(edge.id, (fresh) => blockPatch(fresh, blocked)));').length - 1, 1);
   for (const [name, body] of [['remove', remove], ['block', block]] as const) {
     assert.ok(!body.includes('describeSafetyWriteFailure'), `${name}: no safety words are built in the page`);

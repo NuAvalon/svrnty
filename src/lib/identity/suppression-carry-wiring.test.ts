@@ -93,12 +93,21 @@ test('W6 each of the two new records is sealed in ONE place with its own reserve
   assert.match(store, /\{ name: 'suppression-pending', recordId: SUPPRESSION_PENDING_RECORD_ID, settingKey: suppressionPendingSettingKey \},/);
 });
 
-test('W7 TRIPWIRE: nothing records a Remove yet. The day a caller appears it must record BEFORE the latch write, and this test must be rewritten to say so', () => {
-  assert.deepEqual(callersOf('recordRemovedContact'), [], 'no caller outside the store');
+test('W7 TRIPWIRE (rewritten now that a Remove caller exists, as it instructed): the ONE caller of recordRemovedContact records BEFORE the latch write and before the delete, and no file calls removeAtTap yet', () => {
+  assert.deepEqual(callersOf('recordRemovedContact'), ['src/lib/trust/block-latch-wiring.ts'], 'the single caller is the shared Remove helper, never a screen');
   assert.equal([...store.matchAll(/recordRemovedContact\(/g)].length, 1, 'only its definition in the store');
-  // beacon-wire.ts and beacon-client.ts DEFINE and wrap removeAtTap; any other file naming it is a caller that reaches the latch write.
+  const wiring = codeOnly(readFileSync(new URL('../trust/block-latch-wiring.ts', import.meta.url), 'utf8'));
+  assert.match(wiring, /recordRemoved: \(id\) => recordRemovedContact\(ownerFingerprint, id\),/, 'the helper hands the record step to removeWithLatch');
+  const latchFile = codeOnly(readFileSync(new URL('../trust/block-latch.ts', import.meta.url), 'utf8'));
+  const head = latchFile.indexOf('export async function removeWithLatch(');
+  assert.ok(head >= 0);
+  const body = latchFile.slice(head, latchFile.indexOf('\n}\n', head));
+  const [rec, latch, del] = [body.indexOf('await a.recordRemoved(id)'), body.indexOf('await a.latch.setLatched('), body.lastIndexOf('await a.removeContactRecord()')];
+  assert.ok(rec > 0 && rec < latch && latch < del, 'record, THEN latch, THEN delete');
+  // beacon-wire.ts and beacon-client.ts DEFINE and wrap removeAtTap; any other file naming it is a caller. Block and Remove write the SAME local latch the wire writes while it is OFF, through
+  // blockLatchPortsFor; moving that call to removeAtTap is a go-live gate (the first importer of the beacon client), and whoever makes it must rewrite this line.
   const reachingTheLatch = callersOf('removeAtTap').filter((f) => !/\/lib\/(trust\/beacon-wire|crypto\/beacon-client)\.ts$/.test(f));
-  assert.deepEqual(reachingTheLatch, [], 'no path reaches the latch write yet');
+  assert.deepEqual(reachingTheLatch, [], 'no file calls removeAtTap yet (the local latch is written through blockLatchPortsFor)');
 });
 
 test('W8 no screen imports the confirmation or the readers yet (the copy is not cleared for screens until the build is green)', () => {
@@ -144,7 +153,7 @@ test('W12 the export screen\'s look is the sealed read: it tells absent from unr
   assert.match(body, /readSealed<SuppressionRecord>\(ownerFingerprint, suppressionSettingKey\(ownerFingerprint\), SUPPRESSION_RECORD_ID, \(x\) => \(isSuppressionRecord\(x\) \? x : null\)\);/, 'the record is read as ok / absent / unreadable, not through the null-for-everything getter');
   assert.match(body, /return suppressionCarryStatus\(record, await readRemovedList\(ownerFingerprint\)\);/);
   const d = codeOnly(dialog);
-  assert.match(d, /m\.readSuppressionCarryStatus\(fingerprint\)\)\s*\.then\(\(r\) => \{ if \(!cancelled\) setSuppressionLeftOut\(r === 'left-out'\); \}\)\s*\.catch\(\(\) => \{ if \(!cancelled\) setSuppressionLeftOut\(true\); \}\);/, 'only left-out shows it; a failed look is doubt and shows it');
+  assert.match(d, /\.then\(async \(m\) => \{ await m\.repairSuppressionRecord\(fingerprint\)\.catch\(\(\) => undefined\); return m\.readSuppressionCarryStatus\(fingerprint\); \}\)\s*\.then\(\(r\) => \{ if \(!cancelled\) setSuppressionLeftOut\(r === 'left-out'\); \}\)\s*\.catch\(\(\) => \{ if \(!cancelled\) setSuppressionLeftOut\(true\); \}\);/, 'the same repair the export runs, THEN the sealed look; only left-out shows the notice; a failed look is doubt and shows it');
   assert.match(d, /\{suppressionLeftOut && \(\s*<Alert data-testid="suppression-left-out-notice"/);
   assert.match(d, /setSuppressionLeftOut\(false\);\s*\};/, 'closing the dialog resets it');
 });
