@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname, normalize } from 'node:path';
 
 const ROOT = process.cwd();
 const walk = (dir: string): string[] =>
@@ -79,4 +79,58 @@ test('S6 deleteThread deletes what the owner can SEE and leaves every held note,
   assert.match(d, /held: true/, 'the thread row that anchors held notes is kept, flagged held (hidden from every default reader)');
   assert.match(d, /else await txDelete\('threads', threadId\);/, 'the thread row is deleted ONLY when no held note remains');
   assert.doesNotMatch(d, /txDelete\('threads', threadId\);[\s\S]*held: true/, 'and the delete does not come before the keep');
+});
+
+// ── Who may touch the messaging store at all ──
+// A backup, an export, a search index or an unblock that read or wrote the notes store could carry a held note or turn it back into an ordinary one. Today none does:
+// the vault backup (SovereignBackup) carries contacts, keys and settings but no notes or threads, there is no search over notes, and unblock only changes the contact.
+// This pins the EXACT set of modules that import the store (or the messaging index that re-exports it), so a new importer fails here until it is added on purpose, in
+// review, with a reason. (Test 4 "a backup excludes held", test 5 "an unblock moves zero rows" and test 7 "a search index has no held row" rest on this.)
+const resolveSpec = (from: string, spec: string): string | null => {
+  const base = spec.startsWith('@/') ? `src/${spec.slice(2)}` : spec.startsWith('.') ? normalize(join(dirname(from), spec)) : null;
+  return base ? base.replace(/\.(ts|tsx)$/, '') : null;
+};
+const STORE_TARGETS = new Set(['src/lib/messaging/store', 'src/lib/messaging', 'src/lib/messaging/index']);
+
+test('S7 the modules that import the messaging store (or its index) are exactly these: no backup, export, search or unblock path reaches the notes store', () => {
+  const importers = SOURCES.filter((f) => {
+    const t = text(f);
+    for (const m of t.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)) {
+      const r = resolveSpec(f, m[1]);
+      if (r && STORE_TARGETS.has(r)) return true;
+    }
+    return false;
+  }).sort();
+  assert.deepEqual(importers, [
+    'app/msg/page.tsx',
+    'src/components/notes/NotesInbox.tsx',
+    'src/components/notes/notes-field.ts',
+    'src/components/notes/seed-demo-notes.ts',
+    'src/lib/messaging/adopt-floor-store.ts',
+    'src/lib/messaging/dead-letter-store.ts',
+    'src/lib/messaging/direct-session.ts',
+    'src/lib/messaging/index.ts',
+    'src/lib/messaging/ratchet-test-io.ts',
+    'src/lib/messaging/reset-flag-store.ts',
+    'src/lib/messaging/transport.ts',
+    'src/lib/sync/live-book-poll.ts',
+  ]);
+});
+
+test('S8 the held flag on a note or thread is written in exactly three places and never cleared: no path can turn a held row back into an ordinary one', () => {
+  // `held: true` on a RECORD is written by transport.ts (the note and the thread it creates) and by deleteThread in store.ts. Other files use the word for unrelated
+  // things (a mailbox hold in consume-mailbox and the lens reader, the seam result in live-book-poll) and are deliberately not counted.
+  const writes = (f: string) => (text(f).match(/\bheld: true as const\b|\bheld: true \}\)/g) || []).length;
+  assert.equal(writes('src/lib/messaging/transport.ts'), 2, 'the held note and the thread created only because of held notes');
+  assert.equal(writes('src/lib/messaging/store.ts'), 1, 'deleteThread flagging the row it keeps');
+  const elsewhere = SOURCES.filter((f) => !['src/lib/messaging/transport.ts', 'src/lib/messaging/store.ts'].includes(f)).filter((f) => /\bheld: true as const\b/.test(text(f)));
+  assert.deepEqual(elsewhere, []);
+  // and nothing clears, unsets or falsifies it. NAME- and PLACE-BASED (weaker than a type fence): a note or thread identifier assigned or deleted, or `held: false/undefined`
+  // inside the messaging files. Unrelated features have a `held` of their own (summary.held in consume-mailbox counts held mailbox blobs) and are deliberately not matched.
+  const clearers = SOURCES.filter((f) => {
+    const t = text(f);
+    if (/\bdelete\s+(note|thread|n|t|rec|record|row)\.held\b|\b(note|thread|n|t|rec|record|row)\.held\s*=[^=]/.test(t)) return true;
+    return (f.startsWith('src/lib/messaging/') || f === 'src/lib/sync/live-book-poll.ts') && /\bheld\s*:\s*(false|undefined)\b/.test(t);
+  });
+  assert.deepEqual(clearers, []);
 });
