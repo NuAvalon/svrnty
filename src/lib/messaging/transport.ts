@@ -7,7 +7,8 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
+import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
+import { HOLD_CAP_PER_SENDER } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
@@ -278,6 +279,9 @@ export { noteOpenpgpDecryptor };
 export async function acceptInboundNote(args: {
   wire: NoteWireV0;
   isAdmitted: (fingerprint: string) => Promise<boolean>;
+  /** Freeze keep: asked ONLY when isAdmitted said no. True = the sender is FROZEN (in the book and blocked): the note is authenticated, opened and stored
+   *  HELD (kept as evidence, hidden from every default reader) instead of dropped. Absent or false = today's drop, unchanged. */
+  isFrozen?: (fingerprint: string) => Promise<boolean>;
   peerDisplayName?: string;
   peerKind?: ParticipantKind;
   /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. May return the plaintext (already committed, legacy)
@@ -290,7 +294,7 @@ export async function acceptInboundNote(args: {
   /** L-318a: told AFTER the note is stored and the session committed that this open STARTED the session (a first frame, or a replacement), with that frame's SIGNED sent_at, so the adopt floor can be raised. Best effort: a throw is swallowed and the floor simply stays where it was. */
   onSessionStarted?: (fromFingerprint: string, signedSentAt: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
+  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote; countHeldFrom?: typeof countHeldFrom };
   /**
    * #714 R1: told (once, at the END of the flow: note and thread stored, session committed) that THIS call CREATED the note row. Never told for a
    * redelivery of a stored note, a first-write-wins refusal, a frame whose key was already spent, or a drop. The receipt layer answers only this
@@ -316,9 +320,20 @@ export async function acceptInboundNote(args: {
     args.onDrop?.('unverified');
     return null; // unsigned / forged sender — structural drop
   }
+  let held = false;
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
-    args.onDrop?.('not-in-book');
-    return null; // spam / stranger — structural drop
+    if (args.isFrozen && (await args.isFrozen(args.wire.from_fingerprint))) {
+      // Frozen: keep it, below, through the SAME open and store steps, unless this sender already has HOLD_CAP_PER_SENDER notes held. Past the cap the note is
+      // NOT stored and gets no receipt: the same drop a stranger gets, before any ratchet work. A count that cannot be read THROWS (retryable): never "no cap".
+      if ((await (args.io?.countHeldFrom ?? countHeldFrom)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER) {
+        args.onDrop?.('not-in-book');
+        return null;
+      }
+      held = true;
+    } else {
+      args.onDrop?.('not-in-book');
+      return null; // spam / stranger — structural drop
+    }
   }
   // note_id is chosen by the SENDER, and the notes store is keyed on note_id ALONE (store.ts: keyPath 'note_id', putNote is a put), so a note that
   // reuses an id would silently REPLACE the stored row: our own outbound copy of a note we sent this contact (they hold that id: we sent it to
@@ -386,6 +401,7 @@ export async function acceptInboundNote(args: {
     participant_kind: args.wire.participant_kind || args.peerKind || 'human',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    ...(held ? { held: true as const } : {}),
   };
   // Created = the write itself found no row. With the real store that is one readwrite transaction (putNoteReportingCreated), so a second tab
   // delivering the same blob cannot also report a creation. An injected plain putNote (tests) falls back to "no stored row was seen above".
@@ -396,6 +412,7 @@ export async function acceptInboundNote(args: {
 
   const threads = await (args.io?.listThreads ?? listThreads)();
   let thread = threads.find((t) => t.thread_id === record.thread_id);
+  const threadExisted = !!thread;
   if (!thread) {
     thread = {
       thread_id: record.thread_id,
@@ -411,11 +428,13 @@ export async function acceptInboundNote(args: {
       created_at: sent_at,
       last_activity_at: nextLastActivity(undefined, sent_at, Date.now()),
       retention: { expires_at: null },
+      ...(held ? { held: true as const } : {}),
     };
   } else {
     thread = { ...thread, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
   }
-  await (args.io?.putThread ?? putThread)(thread);
+  // A held note on a thread that already exists writes NOTHING to it: a moved last_activity_at would show the owner's own screen that something arrived.
+  if (!(held && threadExisted)) await (args.io?.putThread ?? putThread)(thread);
   // R4: ONLY NOW is the ratchet advance persisted: the note and its thread are durably stored. A failure anywhere above leaves the
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
