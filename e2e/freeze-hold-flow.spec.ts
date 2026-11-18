@@ -142,3 +142,44 @@ test('HF5 CONTROL for HF1: the same arrival from an UNBLOCKED contact while Chat
   expect(dep.status).toBe(200);
   await expect(page.getByRole('tab', { name: 'Chat, new messages', exact: true })).toBeVisible({ timeout: 60_000 });
 });
+
+// Desktop notifications ride the SAME arrival bus as the Chat tab ember (useMailNotifications -> decideMailNotification -> the service worker's showNotification).
+// They need: the opt-in pref, Notification.permission 'granted', a HIDDEN page, and an arrival event for the active identity. Headless Chromium has none of those, so the
+// page is given exactly those four things and the service worker registration is replaced by a recorder; everything else (the poll, the seam, the consume loop, the store)
+// is the real app. The hidden state is FAKED (document.visibilityState), which is the only way to get it in a headless page.
+async function stubNotifications(page: Page) {
+  await page.addInitScript(() => {
+    (window as unknown as { __notifs: unknown[] }).__notifs = [];
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    try { Object.defineProperty(Notification, 'permission', { configurable: true, get: () => 'granted' }); } catch { /* leave it */ }
+    const registration = { showNotification: async (title: string, opts?: { body?: string }) => { (window as unknown as { __notifs: unknown[] }).__notifs.push({ title, body: opts?.body ?? null }); } };
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { ready: Promise.resolve(registration) } });
+  });
+}
+const mailPrefsOn = (page: Page) => page.evaluate(() => localStorage.setItem('svrnty:mail-notify:v1', JSON.stringify({ enabled: true, showSender: false })));
+const raised = (page: Page) => page.evaluate(() => (window as unknown as { __notifs: Array<{ title: string; body: string | null }> }).__notifs);
+
+test('HF6 a note from a BLOCKED contact raises NO desktop notification (opted in, permission granted, page hidden)', async ({ page, request, baseURL }) => {
+  test.setTimeout(180_000);
+  await stubNotifications(page);
+  const { aliceFp, aliceArmoredPub, bob } = await setup(page);
+  await mailPrefsOn(page);
+  await setBlocked(page, bob.fingerprint, true);
+  const dep = await depositNote(request, { baseURL, sender: bob, recipientFingerprint: aliceFp, recipientPublicKeyArmored: aliceArmoredPub, fields: { body: 'a note from a blocked contact' } });
+  expect(dep.status).toBe(200);
+  // the note really was consumed and held (so a quiet result is not just "nothing happened yet")
+  await expect.poll(() => heldIds(page, dep.thread_id), { timeout: 60_000, intervals: [1000] }).toEqual([`${dep.note_id}:held`]);
+  await page.waitForTimeout(4_000);
+  expect(await raised(page), 'no desktop notification for a held note').toEqual([]);
+});
+
+test('HF7 CONTROL for HF6: the same setup with an UNBLOCKED contact DOES raise one notification, titled "New note", with no sender and no text', async ({ page, request, baseURL }) => {
+  test.setTimeout(180_000);
+  await stubNotifications(page);
+  const { aliceFp, aliceArmoredPub, bob } = await setup(page);
+  await mailPrefsOn(page);
+  const dep = await depositNote(request, { baseURL, sender: bob, recipientFingerprint: aliceFp, recipientPublicKeyArmored: aliceArmoredPub, fields: { body: 'a note from an unblocked contact' } });
+  expect(dep.status).toBe(200);
+  await expect.poll(() => raised(page).then((r) => r.length), { timeout: 60_000, intervals: [500] }).toBe(1);
+  expect(await raised(page)).toEqual([{ title: 'New note', body: null }]);
+});
