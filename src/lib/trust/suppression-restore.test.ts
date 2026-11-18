@@ -648,11 +648,13 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test('WIRING pin: the non-test importers of suppression-restore are the identity store (the storage under it), the block path and the genesis hook (types only)', () => {
+test('WIRING pin: the non-test importers of suppression-restore are the identity store (the storage under it), the block path, the latch repair and the genesis hook (types only)', () => {
   const roots = ['src', 'app'].map((d) => join(process.cwd(), d)).filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } });
   assert.ok(roots.length >= 1);
   const importers = roots.flatMap((r) => walk(r)).filter((f) => !/\.test\.[a-z]+$/.test(f) && !f.endsWith('suppression-restore.ts') && /suppression-restore/.test(readFileSync(f, 'utf8')));
-  assert.deepEqual(importers.map((f) => f.slice(f.indexOf('/src/') + 1)).sort(), ['src/lib/identity/client-store.ts', 'src/lib/trust/block-suppression.ts', 'src/lib/trust/piece2-genesis.ts']);      // CHANGED ON PURPOSE: genesis takes the update's TYPES now
+  assert.deepEqual(importers.map((f) => f.slice(f.indexOf('/src/') + 1)).sort(), ['src/lib/identity/client-store.ts', 'src/lib/trust/block-latch.ts', 'src/lib/trust/block-suppression.ts', 'src/lib/trust/piece2-genesis.ts']);      // CHANGED ON PURPOSE: genesis takes the update's TYPES now
   const block = readFileSync(join(process.cwd(), 'src', 'lib', 'trust', 'block-suppression.ts'), 'utf8');
   assert.match(block, /^import type \{ Decision, SealedRead, Update \} from '@\/lib\/trust\/suppression-restore';$/m, 'the block path takes only TYPES from the restore module: no runtime dependency');
+  const latch = readFileSync(join(process.cwd(), 'src', 'lib', 'trust', 'block-latch.ts'), 'utf8');
+  assert.match(latch, /^import type \{ Update \} from '@\/lib\/trust\/suppression-restore';$/m, 'the latch repair takes only the Update TYPE from the restore module: no runtime dependency');
 });

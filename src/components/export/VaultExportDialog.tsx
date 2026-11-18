@@ -100,7 +100,8 @@ export function VaultExportDialog({
     if (step !== 'passphrase' || !fingerprint) return;
     let cancelled = false;
     import('@/lib/identity/client-store')
-      .then((m) => m.readSuppressionCarryStatus(fingerprint))
+      // The same repair the export runs, so the notice describes the record the export will actually read. Its outcome does not change the notice (a failed look is doubt).
+      .then(async (m) => { await m.repairSuppressionRecord(fingerprint).catch(() => undefined); return m.readSuppressionCarryStatus(fingerprint); })
       .then((r) => { if (!cancelled) setSuppressionLeftOut(r === 'left-out'); })
       .catch(() => { if (!cancelled) setSuppressionLeftOut(true); });
     return () => { cancelled = true; };
@@ -111,9 +112,12 @@ export function VaultExportDialog({
     setLoading(true);
     setError(null);
     try {
-      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord, exportSuppressionCarry } = await import(
+      const { exportAll, loadPQKeys, loadVault, getBeaconKeyRecord, exportSuppressionCarry, repairSuppressionOrRefuse } = await import(
         '@/lib/identity/client-store'
       );
+      // A blocked contact missing from the suppression record is added BEFORE the sealed export reads it. If that repair itself fails the export REFUSES: a backup that silently
+      // lacks a block is worse than no backup. (An unreadable or absent record is not an error here: the existing left-out notice already covers it.)
+      await repairSuppressionOrRefuse(fingerprint);
       const backup = await exportAll(fingerprint, true);
       // The owner's suppression record and removed list go ONLY in this password-sealed vault (never in exportAll's plaintext output); left out when it cannot be read whole.
       const suppression = await exportSuppressionCarry(fingerprint);

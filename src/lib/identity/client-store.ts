@@ -23,6 +23,8 @@ import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirma
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
 import { createBeaconStore, createBeaconLatch, beaconRowPrefixes, beaconRowAad, type BeaconKV, type Sealer } from '../trust/beacon-ports';
+import { admitContact } from '../trust/admit-contact';
+import { relatchFromRecord, repairBlockedButUnsuppressed, BlocksIncompleteError, type RepairOutcome } from '../trust/block-latch';
 import { isBeaconConfirmed, withConfirmed, createConfirmedPort, type BeaconConfirmed } from '../trust/beacon-confirmed';
 import { beaconPairId } from '../trust/beacon-pair-id';
 import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/beacon-client';
@@ -184,6 +186,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // piece-2: lazily ensure every identity has a device mailbox (heals pre-v4 identities). Best-effort,
   // never throws into unlock; regenerates only on genuine absence, never on a decrypt-fail (see fn).
   await ensureDeviceMailboxesOnUnlock();
+  // Complete a Block whose record write did not finish, and latch every person the record or the removed list names that has no latch yet (a crash between a restore and its
+  // rebuild leaves exactly that). Best-effort, never throws into unlock.
+  await repairBlocksOnUnlock();
 }
 
 /**
@@ -807,6 +812,61 @@ export async function restoreCarriedSuppression(ownerFingerprint: string, carrie
 export async function recordRemovedContact(ownerFingerprint: string, durableId: string): Promise<void> {
   const refusal = removalRefusal(await recordRemoval(createRestorePorts(ownerFingerprint).updateRemoved, durableId));
   if (refusal !== null) throw new Error(refusal);
+}
+
+// ── Block and Remove set the beacon latch; the suppression record and the latches are repaired at unlock and before every export ─────────────────────────────────
+// DARK: nothing here sends a request. `blockLatchPortsFor` is the ONE place a screen gets the latch from. It writes the same LOCAL latch createBeaconWire writes while the wire is OFF
+// (beacon-wire.ts, removeAtTap). When the beacon client gets its first importer, THIS is what moves to wire.client.removeAtTap (a go-live gate), so Block and Remove also withdraw.
+
+/** What a Block / Remove screen needs: the pair id of a contact (the unlocked session) and this owner's latch. */
+export function blockLatchPortsFor(ownerFingerprint: string): { pairIdFor: (durableId: string) => Promise<string>; latch: LatchPort } {
+  return { pairIdFor: beaconPairIdFor, latch: createBeaconPorts(ownerFingerprint).latch };
+}
+
+/** Each contact's durable id and whether it is BLOCKED, by the same rule admitContact applies everywhere else (the blocked flag, top level or in metadata). */
+async function blockedContactsOf(ownerFingerprint: string): Promise<Array<{ durableId: string; blocked: boolean }>> {
+  return (await getAllContacts(ownerFingerprint)).map((c) => ({ durableId: String((c as { fingerprint?: unknown }).fingerprint ?? ''), blocked: !admitContact(c) }));
+}
+
+/**
+ * Forward repair: a contact whose blocked flag is set but who is not in the suppression record is added to it (atomic, adds only, never writes an unreadable or absent record).
+ * Runs at unlock and BEFORE every sealed export; 'error' means the repair write itself failed, and the export must REFUSE.
+ */
+export async function repairSuppressionRecord(ownerFingerprint: string): Promise<RepairOutcome> {
+  return (await repairBlockedButUnsuppressed({ contacts: () => blockedContactsOf(ownerFingerprint), updateSuppression: updateSuppressionRecord(ownerFingerprint) })).outcome;
+}
+
+/** The export's gate: the forward repair, and the export REFUSES (throws) when the repair write itself failed. An unreadable or absent record is not a refusal here (the left-out notice covers it). */
+export async function repairSuppressionOrRefuse(ownerFingerprint: string): Promise<void> {
+  if ((await repairSuppressionRecord(ownerFingerprint)) === 'error') throw new BlocksIncompleteError();
+}
+
+/** Reverse pass: every person in the suppression record and every removed id that has no latch gets one (tighten only). Counts only. */
+export async function relatchBlocksForOwner(ownerFingerprint: string): ReturnType<typeof relatchFromRecord> {
+  const { pairIdFor, latch } = blockLatchPortsFor(ownerFingerprint);
+  return relatchFromRecord({
+    readPersons: async () => (await getSuppressionRecord(ownerFingerprint))?.persons ?? null,
+    readRemoved: async () => {
+      const r = await readRemovedList(ownerFingerprint);
+      return r.state === 'ok' ? r.value : r.state === 'absent' ? [] : null;
+    },
+    readBookIds: async () => (await getAllContacts(ownerFingerprint)).map((x) => String((x as { fingerprint?: unknown }).fingerprint ?? '')).filter(Boolean),
+    pairIdFor,
+    latch,
+  });
+}
+
+/** At unlock, for every owner this session verifies: the forward repair, then the reverse pass. Best effort, never throws into unlock; the log carries counts only, never an id. */
+async function repairBlocksOnUnlock(): Promise<void> {
+  for (const owner of _unlockVerifiedOwners) {
+    try {
+      const record = await repairSuppressionRecord(owner).catch(() => 'error' as const);
+      const latches = await relatchBlocksForOwner(owner);
+      console.info(`[beacon-latch] unlock repair: record ${record}; latches ${latches.outcome} (${latches.latched} set, ${latches.failed} failed)`);
+    } catch {
+      console.warn('[beacon-latch] unlock repair did not finish; the device stays as private as it was');
+    }
+  }
 }
 
 /** The person's confirmation after a restore: switch global OFF. Needs the marker a restore left; see confirmPendingGlobalOff. */
@@ -2798,6 +2858,9 @@ export async function importVaultContentsReport(
   const contacts = (contents.trustGraph as unknown as { contacts?: any[] } | null)?.contacts;
   const contactsReport = await restoreVaultContacts(contacts, (contact) => addContact(fp, contact));
 
+  // The record, the removed list AND the book are now on this device; latch every person the record names and every removed id whose contact is NOT back in the book, BEFORE any
+  // depositing path can run (a removed contact who is in the restored book follows Block / Trust, not the append-only list). Best-effort: a failure is repaired at the next unlock.
+  await relatchBlocksForOwner(fp).catch(() => undefined);
   await setActiveFingerprint(fp);
   return { fingerprint: fp, contacts: contactsReport };
 }

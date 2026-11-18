@@ -67,7 +67,7 @@ import { toggleTagPatch, renameTagPatch, removeTagPatch, addTagPatch } from '@/l
 import { shareSettingsPatch, consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
 import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
 import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
-import { applyBlockSuppression } from '@/lib/trust/block-suppression';
+import { removeContactWithLatch, setContactBlocked, BlockUnfinishedError } from '@/lib/trust/block-latch-wiring';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage, unverifiedCardMessage, addedUnverifiedContactMessage } from '@/lib/identity/authority-pin-copy';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
@@ -505,7 +505,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // block. Fire-and-forget + fail-soft (gated dark pre-flip). removeContact does NO satellite call.
       const removedFp = contacts.find((c) => c.id === contactId)?.fingerprint;
       // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
-      await withSafetyWrite(contactId, () => removeContact(contactId));
+      // Remove records the removal FIRST (a restore rebuilds the latch from that list), then sets the beacon latch, and only then deletes the contact. A contact with no
+      // canonical fingerprint has no pair to latch and is simply deleted (see removeWithLatch).
+      await withSafetyWrite(contactId, () => removeContactWithLatch(fingerprint, contactId, removedFp));
       if (removedFp) {
         void reconcileAllowedOnConsentChange({
           ownerFp: fingerprint,
@@ -588,7 +590,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // Blocking clears open_visibility so the peer leaves every PSI reveal set (a blocked peer must never keep discovering you via a stale
       // open_vis flag); the read side is fail-closed too (ownerEdges !blocked). See blockPatch.
       // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
-      await withSafetyWrite(contact.id, () => updateContact(contact.id, (fresh) => blockPatch(fresh, blocked)));
+      // Block sets the beacon latch FIRST (it is the write that stops deposits), then the flag, then the suppression-record write, which is now AWAITED: a record write that did
+      // not finish is said out loud (and the repair at the next unlock or export completes it). Unblock undoes the flag and the record entry and leaves the latch (a later Trust tap clears its own).
+      const writeBlockFlag = async () => { await withSafetyWrite(contact.id, () => updateContact(contact.id, (fresh) => blockPatch(fresh, blocked))); };
+      const { finished } = await setContactBlocked(fingerprint, contact.fingerprint, blocked, writeBlockFlag);
       const afterBlock = await getContact(contact.id);
       setShowDetailDialog(false);
       // #572 part 2 (flip-blocker b + #111 satellite-completeness): block → DELETE the allowed_senders
@@ -599,12 +604,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         senderFp: contact.fingerprint,
         consent: afterBlock ? consentFromRecord(afterBlock) : NO_CONSENT,
       });
-      // Piece-2 (#579): block ALSO populates the durable owner-local suppression RECORD (the load-bearing
-      // emit-side source; the `blocked` flag set above is defense-in-depth). Fire-and-forget + fail-closed —
-      // never reduces suppression on doubt, never throws (the block still holds). DARK until emit is wired.
-      void applyBlockSuppression(fingerprint, contact.fingerprint, blocked);
+      // Piece-2: block ALSO populates the durable owner-local suppression RECORD (the load-bearing emit-side source; the `blocked` flag is defense-in-depth). That write is
+      // fail-closed and never throws; it now runs inside blockWithLatch / unblockKeepingLatch above (awaited), so this screen can say when it did not finish.
       await loadContacts();
       onContactsChange?.();
+      // The suppression write did not finish (the latch and the flag are in place): the existing catch words it as a failed Block, after the screen above has refreshed.
+      if (!finished) throw new BlockUnfinishedError();
     } catch (err) {
       setError(describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock') ?? contactFailureMessage(err, blocked ? 'block' : 'unblock'));
     } finally {
