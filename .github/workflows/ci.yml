@@ -53,7 +53,13 @@ jobs:
             exit 1
           fi
           if [ "$ACTUAL" -lt "$BASE" ]; then
-            echo "::notice::tsc errors drained $BASE -> $ACTUAL — lower the baseline in this PR"
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/dev" ]; then
+              # Slack on dev: a merge drained errors without lowering the baseline, so new errors could land unnoticed.
+              # Warn only: failing a dev push would block every merge for slack someone else left.
+              echo "::warning::tsc baseline $BASE is $((BASE - ACTUAL)) above dev's measured $ACTUAL; lower tsc_errors in scripts/ci-baseline.json in the next PR"
+            else
+              echo "::notice::tsc errors drained $BASE -> $ACTUAL — lower the baseline in this PR"
+            fi
           fi
       - name: Lint — ratchet (fails if error count grows)
         run: |
@@ -67,7 +73,13 @@ jobs:
             exit 1
           fi
           if [ "$ACTUAL" -lt "$BASE" ]; then
-            echo "::notice::lint errors drained $BASE -> $ACTUAL — lower the baseline in this PR"
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/dev" ]; then
+              # Slack on dev: a merge drained errors without lowering the baseline, so new errors could land unnoticed.
+              # Warn only: failing a dev push would block every merge for slack someone else left.
+              echo "::warning::lint baseline $BASE is $((BASE - ACTUAL)) above dev's measured $ACTUAL; lower lint_errors in scripts/ci-baseline.json in the next PR"
+            else
+              echo "::notice::lint errors drained $BASE -> $ACTUAL — lower the baseline in this PR"
+            fi
           fi
       - name: Contract guards — lockstep divergence (contact.update verify↔apply allowlist ≡) — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/contact-update-allowlist-guard.test.ts
