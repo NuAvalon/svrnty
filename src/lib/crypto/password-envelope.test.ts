@@ -11,6 +11,7 @@ import { argon2id } from '@noble/hashes/argon2.js';
 import {
   sealWithPassword, openWithPassword, EnvelopeRefused, EnvelopeWrongPassword, LEGACY_PBKDF2_ITERATIONS, MIN_EXPORT_PASSWORD_LENGTH, ENVELOPE_KDF_ARGON2ID, ENVELOPE_KDF_LEGACY_PBKDF2, LEGACY_PASSWORD_METHOD_NOTICE,
 } from './password-envelope';
+import { CONTACT_IO_MESSAGES } from '../contacts/contact-io-errors';
 import { ARGON2_MAX_MEMORY_COST, ARGON2_MAX_TIME_COST } from './kdf';
 
 const PW = 'envelope-pass-123';
@@ -173,7 +174,7 @@ test('E12 the export password floor is 12 (the same as every other password in t
   assert.equal(dec((await openWithPassword(ok, twelve)).plaintext), PLAIN, '12 characters are accepted');
   // the dialogs: every check and every line of copy comes from the constant; no literal 8 is left in them
   const dlg = code(join(SRC, 'components/SecureImportExportDialogs.tsx'));
-  assert.ok((dlg.match(/MIN_EXPORT_PASSWORD_LENGTH/g) ?? []).length >= 7, 'the import plus six uses: 2 checks, 1 flag, 1 button guard, 1 placeholder, 1 label');
+  assert.ok((dlg.match(/MIN_EXPORT_PASSWORD_LENGTH/g) ?? []).length >= 6, 'the import plus five uses: the checks, the flag, the button guard, the placeholder, the label (the refusal sentence now lives in contact-io-errors.ts, pinned by E13)');
   assert.ok(!/\.length\s*(<|>=|>|<=)\s*8\b/.test(dlg), 'no length compared with a literal 8');
   assert.ok(!/\b8\+\s*char|minimum 8|at least 8|\(8\b/i.test(dlg), 'no copy that says 8');
   // and no other copy or test in the repo pins the old floor for these dialogs
@@ -186,11 +187,15 @@ test('E13 the export dialog\'s three on-screen lines are the copy owner\'s words
   const once = (needle: string) => assert.equal(dlg.split(needle).length - 1, 1, needle);
   once('`Password (minimum ${MIN_EXPORT_PASSWORD_LENGTH} characters)`');                                               // the label (the key export)
   once('placeholder={`At least ${MIN_EXPORT_PASSWORD_LENGTH} characters`}');                                          // the placeholder
-  once('throw new Error(`Enter a password of at least ${MIN_EXPORT_PASSWORD_LENGTH} characters to export your contacts.`);'); // the refusal (missing or too short only)
+  once("throw new ContactIoRefused('export-password-short');");                                                 // the refusal (missing or too short only): a typed code, the sentence is a constant
+  const io = code(join(SRC, 'lib/contacts/contact-io-errors.ts'));
+  assert.equal(io.split('`Enter a password of at least ${min} characters to export your contacts.`').length - 1, 1, 'the sentence lives once, in the constants module, built from its argument');
+  assert.equal(CONTACT_IO_MESSAGES.exportPasswordShort(MIN_EXPORT_PASSWORD_LENGTH), `Enter a password of at least ${MIN_EXPORT_PASSWORD_LENGTH} characters to export your contacts.`, 'byte-identical to the sentence the dialog threw before');
+  assert.ok(!/(minimum|least)\s+\d|\(\d+\+/i.test(io), 'no digit is written out next to the copy in the constants module either');
   assert.ok(!/Enter a password \(|\+ characters\)|is required to export contacts/.test(dlg), 'the old wordings are gone');
   assert.ok(!/(minimum|least)\s+\d|\(\d+\+/i.test(dlg), 'no digit is written out next to the copy: the number comes from the constant');
   // the refusal is only for a missing or too-short password
-  assert.match(dlg, /if \(!password \|\| password\.length < MIN_EXPORT_PASSWORD_LENGTH\) \{\s*throw new Error\(`Enter a password of at least/);
+  assert.match(dlg, /if \(!password \|\| password\.length < MIN_EXPORT_PASSWORD_LENGTH\) \{\s*throw new ContactIoRefused\('export-password-short'\);/);
 });
 
 test('E-typed a wrong password on EITHER format is the typed EnvelopeWrongPassword (code "wrong-password"); a right one opens; anything else is not retyped', async () => {

@@ -51,10 +51,17 @@ test('removing a contact takes the contact lock around its write, in both places
   const ui = src('../../components/ContactManagement.tsx');
   const del = body(ui, 'const handleDeleteContact', 'const handleToggleTrust');
   assert.match(del, /await withSafetyWrite\(contactId, \(\) => removeContact\(contactId\)\);/);
-  assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? \(err instanceof Error \? err\.message : 'Failed to delete contact'\)\)/);
+  assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? contactFailureMessage\(err, 'remove'\)\)/);
   const page = noComments(src('../../../app/page.tsx'));
   assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContact\(edge\.id\)\);/);
-  assert.match(page, /const words = describeSafetyWriteFailure\(err, 'Remove'\);\s*throw words \? new Error\(words\) : err;/);
+  assert.doesNotMatch(page, /throw words \? new Error\(words\) : err;/);
+  const rm = page.slice(page.indexOf('onRemoveContact={async'), page.indexOf('onBlockContact={async'));
+  assert.ok(rm.length > 100, 'the remove handler was found');
+  assert.doesNotMatch(rm, /\bcatch\b/, 'a failed block or remove must PROPAGATE: no catch (and no .catch) in the handler, so applyTrustAction words the failure and the map does not clear focus as if it had worked');
+  // the plain words for a failed protecting write are made where the failure is worded, BY CLASS (copy ledger row 257), so the page rethrows the original error and does not wrap it
+  const actions = noComments(src('../../components/trust-actions/trust-actions.ts'));
+  assert.match(actions, /const SAFETY_WHAT: Partial<Record<TrustActionKind, string>> = \{ remove: 'Remove', block: 'Block', unblock: 'Unblock' \};/);
+  assert.match(actions, /describeSafetyWriteFailure\(err, what\)/);
 });
 
 test('no protecting write is nested inside another lock holder (a nested request for the same contact would wait forever)', () => {
@@ -70,7 +77,7 @@ test('no protecting write is nested inside another lock holder (a nested request
 test('a protecting write that could not be saved is told in plain words, not as a raw error', () => {
   const ui = src('../../components/ContactManagement.tsx');
   const block = body(ui, 'const handleSetBlocked', 'const confirmTarget');
-  assert.match(block, /setError\(describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\) \?\? \(err instanceof Error \? err\.message : 'Failed to update block'\)\)/);
+  assert.match(block, /setError\(describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\) \?\? contactFailureMessage\(err, blocked \? 'block' : 'unblock'\)\)/);
   const share = body(ui, 'const handleShareSettingsChange', '// --- Render ---');
   assert.match(share, /const words = describeSafetyWriteFailure\(err, 'Sharing setting'\);\s*if \(!words\) throw err;\s*setError\(words\);\s*return;/);
 });
@@ -82,7 +89,12 @@ test('the trust-map block is an owner-protecting write: under the safety lock, o
   assert.ok(a > 0 && b > a, 'the block handler was found');
   const h = page.slice(a, b);
   assert.match(h, /await withSafetyWrite\(edge\.id, \(\) => updateContact\(edge\.id, \(fresh\) => blockPatch\(fresh, blocked\)\)\);/);
-  assert.match(h, /describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\);\s*throw words \? new Error\(words\) : err;/);
+  assert.doesNotMatch(h, /throw words \? new Error\(words\) : err;/);
+  assert.doesNotMatch(h, /\bcatch\b/, 'a failed block or remove must PROPAGATE: no catch (and no .catch) in the handler, so applyTrustAction words the failure and the map does not clear focus as if it had worked');
+  // the plain words for a failed protecting write are made where the failure is worded, BY CLASS (copy ledger row 257), so the page rethrows the original error and does not wrap it
+  const actions = noComments(src('../../components/trust-actions/trust-actions.ts'));
+  assert.match(actions, /const SAFETY_WHAT: Partial<Record<TrustActionKind, string>> = \{ remove: 'Remove', block: 'Block', unblock: 'Unblock' \};/);
+  assert.match(actions, /describeSafetyWriteFailure\(err, what\)/);
   assert.match(h, /const afterBlock = await getContact\(edge\.id\);/);
   assert.match(h, /consent: afterBlock \? consentFromRecord\(afterBlock\) : NO_CONSENT,/);
   assert.doesNotMatch(h, /getAllContacts|recMeta/, 'the block no longer reads a snapshot of the book');
