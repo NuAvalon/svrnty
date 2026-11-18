@@ -1,5 +1,5 @@
 // src/lib/trust/block-latch.ts: Block and Remove set the beacon LATCH; a restore rebuilds it; a latch whose person is not in the suppression record is repaired.
-// DARK: nothing outside tests imports this yet (the screens are wired in a later step of the same PR), and no function here touches the wire. Every port is injected, so this is
+// No function here touches the wire; the screens call it through block-latch-wiring.ts. Every port is injected, so this is
 // unit-tested without IndexedDB and without the beacon client (type-only import below: nothing from the dark module is loaded).
 //
 // The orders. A step that fails leaves the EARLIER steps in place (a tightening is never rolled back) and writes none of the LATER ones:
