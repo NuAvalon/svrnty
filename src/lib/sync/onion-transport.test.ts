@@ -355,10 +355,16 @@ test('start drives drainSlot on the cadence (one slot/period); stop halts it', a
   });
   em.enqueue({ ...fakeOuter() }); // one real; the rest of the slots are cover
   em.start({ periodMs: 10 }); // no jitter → ~one slot every 10ms
-  await sleep(55); // ~5 slots elapse
-  const whileRunning = deposited.length;
-  assert.ok(whileRunning >= 2, `runner should fire multiple slots, got ${whileRunning}`);
-  em.stop();
+  try {
+    // Wait for the runner to fire at least two slots, with a generous deadline, instead of counting after a fixed 55 ms: a busy machine can starve a 10 ms
+    // timer for longer than that. The stop is in a finally because a failed assertion must not leave the runner's timer alive: a live timer keeps the whole
+    // test process from exiting, so the run stalls instead of reporting the failure.
+    const deadline = Date.now() + 5_000;
+    while (deposited.length < 2 && Date.now() < deadline) await sleep(5);
+    assert.ok(deposited.length >= 2, `runner should fire multiple slots, got ${deposited.length}`);
+  } finally {
+    em.stop();
+  }
   const atStop = deposited.length;
   await sleep(40); // after stop, the cadence must go silent
   assert.equal(deposited.length, atStop, 'no slots emitted after stop()');
