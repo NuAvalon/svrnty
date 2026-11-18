@@ -30,7 +30,7 @@ import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
 import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
-import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
+import { GalaxyGateMembrane, GATE_RESERVE_PX } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
@@ -480,7 +480,13 @@ export function TrustMap({
   useEffect(() => {
     const el = viewportElRef.current;
     const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
-    applyFit(boundsOf([layout.self, ...layout.nodes], 48), aspect, fittedOnce.current ? 'limits' : 'reset');
+    const gateReserve = el ? GATE_RESERVE_PX / Math.max(el.clientHeight, 1) : 0;
+    applyFit(
+      boundsOf([layout.self, ...layout.nodes], 48),
+      aspect,
+      fittedOnce.current ? 'limits' : 'reset',
+      gateReserve,
+    );
     fittedOnce.current = true;
   }, [layout, fullscreen, applyFit, viewportElRef, world]);
 
@@ -738,7 +744,8 @@ export function TrustMap({
     const t = window.setTimeout(() => {
       const el = viewportElRef.current;
       const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
-      applyFit(boundsOf(hits, 64), aspect, 'reset');
+      const gateReserve = el ? GATE_RESERVE_PX / Math.max(el.clientHeight, 1) : 0;
+      applyFit(boundsOf(hits, 64), aspect, 'reset', gateReserve);
     }, 160);
     return () => window.clearTimeout(t);
   }, [searchQuery, searchHitIds, layout.nodes, applyFit, viewportElRef]);

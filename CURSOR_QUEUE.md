@@ -76,7 +76,7 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 
 **Acceptance:** paste a grow-link → newcomer appears in GATE (not Known) with their card → one tap → added to your book (one-sided, local); Known only once the add is mutual (the wiring PR's return deposit + its e2e NEG: paste a link → the giver's Gate shows the joiner). Copy for the glass half: button "Add to your book", then "Added to your book."; at the Gate: "Their card is at your Gate. Nothing has been added yet; adding them is your call alone." Never "Known", "connected", "mutual", "they can see you" or "they'll be notified" on this one-way path, and no raw error text in the UI (fixed strings; the detail goes to the console). Paste errors: not a link: "That doesn't look like a svrnty connect link. Paste the whole link: it includes the key after the #." Bare code: "That's only a code. Ask them for their full connect link: it carries the key after the #." Any other failure: "Couldn't add them. Try again, or ask them for a fresh link." No-account → create → land-in-GATE works as one flow. All 5 invariants hold. Copy matches the copy of record. One PR into the canonical branch.
 
-## 4. Verify in the Galaxy (social graph) + guided fingerprint-compare  [render-glass]
+## ✅ 4. Verify in the Galaxy (social graph) + guided fingerprint-compare  [DONE — shipped 93f9a7a (VerifySheet on Galaxy + address book); pinned by verify-copy.test.ts + e2e/verify-sheet.spec.ts. Spec kept for provenance.]
 **Claimed by:** — (none recorded; related earlier work: #166, #258)
 
 **Problem** (Peter, 2026-09-30, from live first-contact): a KNOWN contact shows as a **dashed line** in the Galaxy / social graph, but **Verify is only reachable from the Living Address Book** (`ContactManagement.tsx:1761` wires `onOwnerVerify`; `TrustMapGalaxy.tsx` wires NOTHING) — no way to verify from the graph. And today's verify is a bare provenance tap (`in_person`/`other_channel`); it should be a **guided fingerprint match** so "Verify" means "I actually compared the key," not "I clicked a label."
@@ -137,3 +137,14 @@ For the DV/survivor population this copy protects, the surveillance fear ("could
 ### Scope / gate
 - Copy-only. **NO crypto / data-source change** (already fixed to `disclosed_circle` in 22fd5164). Update the `peerMeshLegend` string + its test assertion.
 - Gate: Hypatia re-greens the legend copy → Athena undraft + merge → #106 fully closed (both halves).
+
+## ✅ 6. Messaging UX — contact-row date, bubble wrap, 3-state send status  [DONE — shipped in 7be2d894, not a task]
+Built + merged (contact-list dates, `overflow-wrap: anywhere` with a Pixel 7 e2e NEG, honest "Sent to the relay" for a 2xx). Kept for provenance only.
+
+## ✅ 7. Galaxy: a star under the Gate button stays clickable  [render-glass] [DONE — this PR]
+**Claimed by:** NuAvalon · 2026-11-18 · this PR
+
+**Cause:** the Gate `<button>` took clicks over its whole 248 x 96 px box (transparent corners included), and the camera fit reserved nothing for it, so a star in the bottom-centre band opened the Gate instead of selecting the star.
+**Fix (pointer-events + camera fit only):** the box has `pointer-events: none` and the drawn membrane (rim + accretion disk) is the hit area; focus, `aria-label`, Enter / Space stay on the button. The default, refit and search fits keep stars out of the Gate's 98 px band (`fitCamera` bottom reserve). Pan and zoom are unchanged.
+**Tests:** `e2e/galaxy-gate-hit.spec.ts` (no star under the box after the fit at two viewports; the box corners take no click, the membrane does; a star panned under a corner is clicked as the star; click, Enter and Space open the Gate) + an `elementFromPoint` check before the star click in `e2e/notes-inbox.spec.ts` + `fitCamera` unit tests.
+**Unchanged:** what the Gate opens, its count, its sparks, and every trust / gate / PSI / beacon path. No copy change.

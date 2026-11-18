@@ -38,21 +38,30 @@ export function boundsOf(
   return { minX, minY, maxX, maxY };
 }
 
-/** Expand a bbox so its aspect matches the viewport (no SVG letterbox). */
-export function fitCamera(bounds: Bounds, aspect: number, extraPad = 28): Camera {
+/**
+ * Expand a bbox so its aspect matches the viewport (no SVG letterbox).
+ *
+ * bottomReserve: fraction (0..0.9) of the viewport HEIGHT, at the bottom, that the fitted bbox must stay out of
+ * (a screen-fixed overlay sits there, e.g. the Galaxy Gate). The bbox is fitted into the band above it; the
+ * returned camera still has the full viewport aspect. 0 = the plain fit.
+ */
+export function fitCamera(bounds: Bounds, aspect: number, extraPad = 28, bottomReserve = 0): Camera {
   const bw = Math.max(1, bounds.maxX - bounds.minX) + extraPad * 2;
   const bh = Math.max(1, bounds.maxY - bounds.minY) + extraPad * 2;
   const a = aspect > 0 ? aspect : 1;
+  const r = Number.isFinite(bottomReserve) ? Math.min(Math.max(bottomReserve, 0), 0.9) : 0;
+  const usable = a / (1 - r); // aspect of the band above the reserve
   let w = bw;
-  let h = bh;
-  if (w / h > a) {
-    h = w / a;
+  let hu = bh;
+  if (w / hu > usable) {
+    hu = w / usable;
   } else {
-    w = h * a;
+    w = hu * usable;
   }
+  const h = hu / (1 - r);
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cy = (bounds.minY + bounds.maxY) / 2;
-  return { x: cx - w / 2, y: cy - h / 2, w, h };
+  return { x: cx - w / 2, y: cy - hu / 2, w, h };
 }
 
 /**

@@ -11,6 +11,12 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { GATE_COPY } from '@/lib/trust/grow-gate';
 import { hash32 } from '@/lib/trust/graph-forces';
 
+/**
+ * Screen px at the bottom of the map viewport that the Gate box covers (bottom: 2 + height: 96).
+ * The camera fit keeps stars out of this band (TrustMap), so a fitted star is never under the Gate.
+ */
+export const GATE_RESERVE_PX = 98;
+
 type Props = {
   count: number;
   /** Fingerprints that just landed — spark once, then fade into the count. */
@@ -50,9 +56,12 @@ export function GalaxyGateMembrane({ count, sparkIds = [], onOpen }: Props) {
         border: 'none',
         background: 'transparent',
         cursor: 'pointer',
+        // The box itself takes no clicks: only the drawn membrane below does, so a star in the box's empty
+        // corners stays clickable. Focus, Enter/Space and aria stay on this button.
+        pointerEvents: 'none',
       }}
     >
-      <svg viewBox="0 0 240 96" width="248" height="96" aria-hidden="true">
+      <svg viewBox="0 0 240 96" width="248" height="96" aria-hidden="true" style={{ pointerEvents: 'none' }}>
         <defs>
           <radialGradient id="galaxy-gate-well" cx="50%" cy="42%" r="70%">
             <stop offset="0%" stopColor="#000000" />
@@ -74,6 +83,16 @@ export function GalaxyGateMembrane({ count, sparkIds = [], onOpen }: Props) {
             .tm-gate-spark { animation: none; opacity: 0.7; }
           }
         `}</style>
+        {/* Hit area = the drawn membrane: the rim's U + the accretion disk (no paint; first, so it sits behind). */}
+        <ellipse
+          data-testid="galaxy-gate-hit"
+          cx="120"
+          cy="58"
+          rx="86"
+          ry="32"
+          fill="none"
+          style={{ pointerEvents: 'all', cursor: 'pointer' }}
+        />
         {/* Known-sphere rim — faint U behind the hole */}
         <path
           d="M 52 34 L 50 58 Q 120 90 190 58 L 188 34"
@@ -130,6 +149,7 @@ export function GalaxyGateMembrane({ count, sparkIds = [], onOpen }: Props) {
           x="120"
           y="18"
           textAnchor="middle"
+          style={{ pointerEvents: 'visiblePainted', cursor: 'pointer' }}
           fill={live ? E.accent : E.muted}
           fontSize="9"
           letterSpacing="2.8"
