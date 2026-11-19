@@ -22,6 +22,7 @@ import {
   recordRemoval,
   removalRefusal,
   restoreSuppression,
+  setOwnerGlobalVisible,
   suppressionCarryStatus,
   suppressionToCarry,
   UPDATE_MAX_ATTEMPTS,
@@ -611,6 +612,79 @@ test('suppressionToCarry: ALL or nothing: an unreadable removed list, or a recor
   assert.equal(suppressionToCarry(null, { state: 'ok', value: [Y] }), undefined, 'an unreadable or absent record is omitted, so a restore stays dark');
   assert.equal(suppressionToCarry(rec({ persons: ['NOT-HEX'] }), { state: 'absent' }), undefined, 'a record the strict parser would refuse is omitted, never cleaned');
   assert.equal(suppressionToCarry(r, { state: 'ok', value: ids(1, CARRY_MAX_ENTRIES + 1) }), undefined, 'an oversize list is omitted, never truncated');
+});
+
+// ── the owner's own choice (settings panel): show up / stay out ───────────────────────────────────────────────────────────────────────────────────────────
+const MARKER: SealedRead<PendingGlobalOff> = { state: 'ok', value: { v: 1, backup_at: AT, restored_at: NOW } };
+const listed = (): SuppressionRecord => rec({ global: true, persons: [X], groups: ['family'] });
+
+test('OWNER show up: only global goes OFF; a blocked person and a group stay suppressed; the record is written BEFORE the marker is cleared', async () => {
+  const { ports, w, log } = makePorts({ supp: { state: 'ok', value: listed() }, pending: MARKER });
+  assert.equal(await setOwnerGlobalVisible(ports, true), 'set');
+  assert.deepEqual(okRec(w), { global: false, groups: ['family'], persons: [X] }, 'persons and groups exactly as they were');
+  assert.equal(suppressed(okRec(w), X), true, 'the blocked person stays suppressed');
+  assert.equal(isPartySuppressed(okRec(w), { durableId: OTHER, groupIds: ['family'] }), true, 'and so does the group');
+  assert.equal(suppressed(okRec(w), OTHER), false, 'an unlisted person is no longer suppressed by global');
+  assert.deepEqual(w.pending, { state: 'absent' }, 'the waiting offer is gone');
+  assert.deepEqual(writes(log), ['suppression:write', 'clearPending'], 'record first, then the marker');
+});
+
+test('OWNER stay out: the marker is cleared FIRST, then global goes ON; persons and groups untouched; a later confirm finds nothing to confirm and cannot flip them visible', async () => {
+  const { ports, w, log } = makePorts({ supp: { state: 'ok', value: rec({ global: false, persons: [X], groups: ['family'] }) }, pending: MARKER });
+  assert.equal(await setOwnerGlobalVisible(ports, false), 'set');
+  assert.deepEqual(okRec(w), { global: true, groups: ['family'], persons: [X] });
+  assert.deepEqual(w.pending, { state: 'absent' });
+  assert.deepEqual(writes(log), ['clearPending', 'suppression:write'], 'marker first, then the record');
+  assert.equal(await confirmPendingGlobalOff(ports), 'no-pending', 'the restore confirmation has nothing left to apply');
+  assert.equal(okRec(w).global, true, 'so it cannot turn them visible against their explicit choice');
+});
+
+test('OWNER refuses an ABSENT or UNREADABLE record in BOTH directions: nothing is written, the marker is left alone', async () => {
+  for (const supp of [{ state: 'absent' }, { state: 'unreadable' }] as const) {
+    for (const visible of [true, false]) {
+      const { ports, w, log } = makePorts({ supp, pending: MARKER });
+      assert.equal(await setOwnerGlobalVisible(ports, visible), 'refused', `${supp.state} / visible=${visible}`);
+      assert.deepEqual(w.supp, supp, 'the record is exactly as it was (never created, never overwritten)');
+      assert.deepEqual(w.pending, MARKER, 'the marker is untouched');
+      assert.deepEqual(writes(log), [], 'no write of any kind');
+    }
+  }
+});
+
+test('OWNER already in the chosen state: no record write, the marker is still cleared', async () => {
+  for (const visible of [true, false]) {
+    const { ports, w, log } = makePorts({ supp: { state: 'ok', value: rec({ global: !visible, persons: [X] }) }, pending: MARKER });
+    assert.equal(await setOwnerGlobalVisible(ports, visible), 'set');
+    assert.deepEqual(writes(log), ['clearPending'], 'only the marker');
+    assert.deepEqual(w.pending, { state: 'absent' });
+    assert.deepEqual(okRec(w), rec({ global: !visible, persons: [X] }));
+  }
+});
+
+test('OWNER failure lands on the private side: show up + a failed marker clear leaves the record changed and the offer standing (re-confirmable); stay out + a failed marker clear changes NOTHING', async () => {
+  const up = makePorts({ supp: { state: 'ok', value: listed() }, pending: MARKER, failOn: 'clearPending' });
+  await assert.rejects(setOwnerGlobalVisible(up.ports, true), /clearPending failed/);
+  assert.equal(okRec(up.w).global, false, 'show up: the record was written first');
+  assert.deepEqual(up.w.pending, MARKER, 'and the offer still matches the choice');
+  const later = makePorts({ supp: up.w.supp, pending: up.w.pending }); // the same stored state, on a store that is working again
+  assert.equal(await confirmPendingGlobalOff(later.ports), 'confirmed', 'so it can be confirmed again, idempotently');
+  assert.equal(okRec(later.w).global, false);
+  assert.deepEqual(later.w.pending, { state: 'absent' });
+
+  const out = makePorts({ supp: { state: 'ok', value: rec({ global: false, persons: [X] }) }, pending: MARKER, failOn: 'clearPending' });
+  await assert.rejects(setOwnerGlobalVisible(out.ports, false), /clearPending failed/);
+  assert.equal(okRec(out.w).global, false, 'stay out: the marker is cleared first, so a failure there writes nothing');
+  assert.deepEqual(out.w.pending, MARKER);
+});
+
+test('OWNER a write that lands between the read and the commit is kept: the choice is decided again on the newer record (a new Block is never lost)', async () => {
+  const { ports, w } = makePorts({
+    supp: { state: 'ok', value: rec({ global: true, persons: [X] }) },
+    pending: MARKER,
+    beforeCommit: once((world) => landSupp(world, rec({ global: true, persons: [X, Y] }))),
+  });
+  assert.equal(await setOwnerGlobalVisible(ports, true), 'set');
+  assert.deepEqual(okRec(w), { global: false, groups: [], persons: [X, Y] }, 'the newer Block on Y survived');
 });
 
 // ── static pins ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

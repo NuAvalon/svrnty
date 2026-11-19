@@ -98,7 +98,7 @@ export function isPSIDiscoveryLive(): boolean {
  * Flip to true ONLY when: emit+receive land over the shared transport, the §F3 churn-test matrix is GREEN
  * (Flint co-verify: zero-emit-to-suppressed across {rotation,rebuild,transfer}×{person,group,global} +
  * positive control), Hypatia's claims-contract holds (cadence-indistinguishable / latency ≤ 20min /
- * no-re-assert-to-suppressed), and Peter GOs. (A flipper MUST update claim-gates.test.ts.) Copy: "stops
+ * no-re-assert-to-suppressed), G8 (#872) merged: a restored person can become visible again, and Peter GOs. (A flipper MUST update claim-gates.test.ts.) Copy: "stops
  * newly surfacing you, including through mutual friends" only when true — until then, "blocked directly."
  */
 export function isPiece2MutualBlockLive(): boolean {

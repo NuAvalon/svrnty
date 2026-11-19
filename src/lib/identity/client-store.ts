@@ -17,7 +17,7 @@ import type { VaultContents } from '../sync/vault';
 import { CONTACT_ENC_VERSION, deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import type { CarriedSuppression } from '../trust/suppression-carry';
-import { confirmPendingGlobalOff, makeUpdate, parsePendingGlobalOff, parseRemovedList, recordRemoval, removalRefusal, restoreSuppression, suppressionCarryStatus, suppressionToCarry, type CarryStatus, type ConfirmOutcome, type PendingGlobalOff, type RestorePorts, type RestoreReport, type SealedRead, type Update } from '../trust/suppression-restore';
+import { confirmPendingGlobalOff, makeUpdate, parsePendingGlobalOff, parseRemovedList, recordRemoval, removalRefusal, restoreSuppression, setOwnerGlobalVisible, suppressionCarryStatus, suppressionToCarry, type CarryStatus, type ConfirmOutcome, type PendingGlobalOff, type VisibilityOutcome, type RestorePorts, type RestoreReport, type SealedRead, type Update } from '../trust/suppression-restore';
 import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
@@ -881,6 +881,15 @@ async function repairBlocksOnUnlock(): Promise<void> {
 
 /** The person's confirmation after a restore: switch global OFF. Needs the marker a restore left; see confirmPendingGlobalOff. */
 export const confirmGlobalOffAfterRestore = (ownerFingerprint: string): Promise<ConfirmOutcome> => confirmPendingGlobalOff(createRestorePorts(ownerFingerprint));
+
+/** The owner's own choice from the settings panel, any time: show up (global OFF) or stay out (global ON). Only the global flag changes; see setOwnerGlobalVisible. Its one caller is the trust-map setting in the Lenses & vault panel. */
+export const setOwnerGlobalVisibleForOwner = (ownerFingerprint: string, visible: boolean): Promise<VisibilityOutcome> => setOwnerGlobalVisible(createRestorePorts(ownerFingerprint), visible);
+
+/** What the settings panel shows: the stored choice, or 'unreadable' for a record that is ABSENT or cannot be read (no switch is offered then: a write would be a guess, and the writer refuses it). */
+export async function readOwnerGlobalVisibility(ownerFingerprint: string): Promise<'visible' | 'hidden' | 'unreadable'> {
+  const r = await readSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null));
+  return r.state === 'ok' ? (r.value.global ? 'hidden' : 'visible') : 'unreadable';
+}
 
 // ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
 // Anna's received+verified affirmatives {signer durable_id → {validUntil,epoch}} (held-affirmatives.ts).
