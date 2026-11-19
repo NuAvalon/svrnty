@@ -40,3 +40,50 @@ export function noteExpired(note: Flagged & { retention: { expires_at: string | 
 
 /** The most notes ONE frozen sender can have held at once. PETER'S NUMBER, provisional (ruled: past it the note is NOT stored and gets NO receipt: the same drop a stranger gets). */
 export const HOLD_CAP_PER_SENDER = 500;
+
+/**
+ * The hold's AGE LIMIT, in days: PETER'S NUMBER (30). 0 = the off switch: nothing is ever deleted (and nothing is stamped as expiring). One named number, read in ONE place (heldSweepAction's default),
+ * never scattered at call sites: a later owner-facing setting changes this one line's source, not the rule.
+ */
+export const HOLD_AGE_LIMIT_DAYS = 30;
+/** After the sweep FIRST sees a held note past the limit it only stamps it; the note is deleted no sooner than this many days after that stamp (a wrong device date that persists gets this long to be noticed). */
+export const HOLD_EXPIRY_GRACE_DAYS = 7;
+const DAY_MS = 86_400_000;
+
+/** What the age sweep does to ONE held note. Only 'delete' removes anything; the others rewrite the sealed row's own two stamps. */
+export type HeldSweepAction = 'keep' | 'stamp-held-at' | 'stamp-expiry' | 'clear-expiry' | 'delete';
+
+const timeMs = (v: unknown): number | null => {
+  if (typeof v !== 'string') return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+};
+
+/**
+ * The ONE rule for the age limit, on the OWNER'S clock (`nowMs`). A note's age runs from `held_at`, which the owner's device wrote when it first held the note: never from sent_at (the sender signs
+ * that, so a frozen sender could backdate a note and have the owner's evidence deleted) and never from the sender's retention. Unknown age means KEEP: a held note with no held_at (held before the
+ * field existed) or one that does not parse is STAMPED, never deleted on sight. Past the limit the first sweep only stamps `expiry_seen_at`; deletion needs the limit AND a grace after that stamp. If the
+ * clock is put back so the note is no longer past the limit, the stamp is cleared. A stamp in the future (a clock that went back) never deletes. A limit that is 0, negative or not a number deletes nothing.
+ */
+export function heldSweepAction(note: Flagged & { held_at?: unknown; expiry_seen_at?: unknown }, nowMs: number, limitDays: number = HOLD_AGE_LIMIT_DAYS, graceDays: number = HOLD_EXPIRY_GRACE_DAYS): HeldSweepAction {
+  if (!isHeldNote(note)) return 'keep';
+  if (!(limitDays > 0) || !Number.isFinite(nowMs)) return 'keep';
+  const heldAt = timeMs(note.held_at);
+  if (heldAt === null) return 'stamp-held-at';
+  const pastLimit = nowMs - heldAt >= limitDays * DAY_MS;
+  if (!pastLimit) return note.expiry_seen_at === undefined ? 'keep' : 'clear-expiry';
+  const seen = timeMs(note.expiry_seen_at);
+  if (seen === null) return 'stamp-expiry';
+  if (seen > nowMs) return 'keep';
+  return nowMs - seen >= graceDays * DAY_MS ? 'delete' : 'keep';
+}
+
+/** The row a stamping action leaves behind (a copy; the input is untouched). 'keep' and 'delete' return the note as it is: a delete is done by the counted delete, never by this. */
+export function stampedHeldNote<T extends Flagged & { held_at?: string; expiry_seen_at?: string }>(note: T, action: HeldSweepAction, nowMs: number): T {
+  const iso = new Date(nowMs).toISOString();
+  const rest = Object.fromEntries(Object.entries(note).filter(([k]) => k !== 'expiry_seen_at')) as T;   // a copy without the expiry stamp (the same way clearedHeld drops a key)
+  if (action === 'stamp-held-at') return { ...rest, held_at: iso };   // unknown age: start the clock now, and forget any stamp that was made against an age we do not know
+  if (action === 'stamp-expiry') return { ...note, expiry_seen_at: iso };
+  if (action === 'clear-expiry') return rest;
+  return note;
+}
