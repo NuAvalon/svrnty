@@ -9,6 +9,7 @@ import { onSessionLock } from '@/lib/identity/client-store';
 import { DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
 import { isAllowedSettingsPrefix, isAllowedSettingsRowKey } from './settings-row-keys';
 import { needsLastActivityHeal, healedLastActivity, activityMs } from './thread-activity';
+import { HELD_COUNTS_KEY, applyChange, countFrom, countsFromNotes, heldInboundSender, parseHeldCounts, sealedShape, type CountFallback, type HeldCounts, type HeldCountsRead } from './held-counts';
 
 const DB_NAME = 'svrnty-notes';
 const DB_VERSION = 2;
@@ -144,6 +145,46 @@ async function txPutIfUnchanged(store: string, key: string, expected: EncryptedB
   });
 }
 
+/**
+ * Compare-and-swap over SEVERAL rows, as ONE readwrite transaction: every row in `expects` must still be exactly the blob the caller read (same iv AND same ciphertext, as
+ * txPutIfUnchanged; `enc: null` = the row must still be ABSENT), and only then are all of `puts` written. If any one moved, nothing is written and the answer is false, so the caller
+ * reads again and decides again. This is how a note row and the held-count row change together: a sealed row cannot be read, changed and put inside one transaction (awaiting
+ * WebCrypto auto-commits it), so the caller decrypts, decides and encrypts BEFORE this, and this only checks and writes. A settings row may only be touched under an allowed key, so
+ * this can never reach 'notes_encryption_salt'.
+ */
+async function txCommitIfUnchanged(
+  expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }>,
+  puts: Array<{ store: string; value: unknown }>,
+): Promise<boolean> {
+  if (expects.length === 0) throw new Error('txCommitIfUnchanged needs at least one row to compare');
+  for (const e of expects) if (e.store === 'settings' && !isAllowedSettingsRowKey(e.key)) throw new Error('settings row key not allowed');
+  for (const p of puts) if (p.store === 'settings' && !isAllowedSettingsRowKey((p.value as { key?: unknown }).key)) throw new Error('settings row key not allowed');
+  const db = await openDb();
+  const stores = [...new Set([...expects.map((e) => e.store), ...puts.map((p) => p.store)])];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, 'readwrite');
+    let wrote = false;
+    let pending = expects.length;
+    let allSame = true;
+    for (const e of expects) {
+      const req = tx.objectStore(e.store).get(e.key);
+      req.onsuccess = () => {
+        const cur = req.result as { enc?: EncryptedBlob } | undefined;
+        const same = e.enc === null ? cur === undefined : !!cur?.enc && cur.enc.iv === e.enc.iv && cur.enc.ciphertext === e.enc.ciphertext;
+        if (!same) allSame = false;
+        // No await anywhere here: the last read answers, and the writes go out in the same callback, inside the same transaction.
+        if (--pending === 0 && allSame) {
+          for (const p of puts) tx.objectStore(p.store).put(p.value);
+          wrote = true;
+        }
+      };
+    }
+    tx.oncomplete = () => resolve(wrote);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 async function txDelete(store: string, key: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -199,7 +240,7 @@ async function decryptJson<T>(blob: EncryptedBlob): Promise<T> {
 }
 
 /** Unlock the notes DB with the same unlock passphrase the vault uses (separate salt). */
-export async function initNotesStore(passphrase: string, ownerFingerprint: string): Promise<void> {
+export async function initNotesStore(passphrase: string, ownerFingerprint: string, opts?: { reconcile?: boolean }): Promise<void> {
   if (!ownerFingerprint) {
     throw new Error('initNotesStore requires an ownerFingerprint (P1#1 owner-scope — per-identity DB)');
   }
@@ -223,6 +264,8 @@ export async function initNotesStore(passphrase: string, ownerFingerprint: strin
   _notesKey = key;
   _notesSalt = salt;
   _notesOwner = ownerFingerprint;
+  // Off the receive path: put the held-count row right from the notes (it also CREATES the row for everyone, so its presence says nothing about who is frozen).
+  if (opts?.reconcile !== false) scheduleHeldCountsReconcile();
 }
 
 export function isNotesStoreUnlocked(): boolean {
@@ -325,38 +368,71 @@ async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<Note
   }
 }
 
-export async function putNote(note: NoteRecord): Promise<void> {
-  const enc = await encryptJson(note);
-  await txPut('notes', {
-    note_id: note.note_id,
-    thread_id: note.thread_id,
-    enc,
-  } satisfies NoteRow);
+const NOTE_WRITE_ATTEMPTS = 8;
+
+// Note writes in THIS tab go one at a time. Every held write changes the one count row, and each commit is compare-and-swap against the blob it read, so writers racing inside one tab would
+// invalidate each other and only one would win per round (a burst of 50 would exhaust its attempts and throw). Across tabs the compare-and-swap is what keeps it right, and contention there is rare.
+let _noteWriteTail: Promise<unknown> = Promise.resolve();
+function serializeNoteWrite<T>(run: () => Promise<T>): Promise<T> {
+  const mine = _noteWriteTail.then(run, run);
+  _noteWriteTail = mine.catch(() => {});   // a failed write never blocks the next one
+  return mine;
 }
 
 /**
- * putNote that also says whether THIS write created the row. The existence check and the put are ONE readwrite transaction (no await between them,
- * and IndexedDB serialises readwrite transactions on a store), so two tabs delivering the same blob get exactly one `true`. The write itself is the
- * same put as putNote (an existing row is overwritten, as before); only the answer is new. Encrypt BEFORE the transaction: WebCrypto cannot run inside
- * one without it auto-committing. A row that exists but cannot be decrypted counts as existing (so no receipt for it), the safe side.
+ * THE one write of a note row. If the write changes what counts as a held inbound note (a new held note, a held row replaced by an ordinary one, or the other way round), the
+ * held-count row changes IN THE SAME TRANSACTION (held-counts.ts says why that row exists); every other write touches only the note row. Encrypt and decide BEFORE the
+ * transaction (WebCrypto cannot run inside one), then commit with a compare-and-swap over the rows that were read (the prior note row, and the count row when it is involved):
+ * if either moved meanwhile nothing is written and the whole decision is made again, a bounded number of times, then the write throws (the accept retries) and never leaves a note without
+ * its count. A count row that is absent, dirty or unreadable cannot be adjusted, so it is rewritten as DIRTY (a fresh blob, so a reconcile in flight sees it move) and a reconcile is
+ * scheduled; a prior row that cannot be decrypted may have been held, so the count row goes dirty then too. Returns whether THIS write created the row (existing and unreadable rows
+ * both count as existing, so no receipt for them).
+ */
+async function writeNote(note: NoteRecord): Promise<boolean> {
+  const after = heldInboundSender(note);
+  for (let attempt = 0; attempt < NOTE_WRITE_ATTEMPTS; attempt++) {
+    const priorRow = await txGet<NoteRow>('notes', note.note_id);
+    let before: string | null = null;
+    let priorUnreadable = false;
+    if (priorRow) {
+      try {
+        before = heldInboundSender(await decryptJson<NoteRecord>(priorRow.enc));
+      } catch {
+        priorUnreadable = true;
+      }
+    }
+    const enc = await encryptJson(note);
+    const expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }> = [{ store: 'notes', key: note.note_id, enc: priorRow?.enc ?? null }];
+    const puts: Array<{ store: string; value: unknown }> = [{ store: 'notes', value: { note_id: note.note_id, thread_id: note.thread_id, enc } satisfies NoteRow }];
+    let wroteDirty = false;
+    if (before !== after || priorUnreadable) {
+      const counter = await readHeldCountsRow();
+      expects.push({ store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc });
+      const usable = !priorUnreadable && counter.read !== 'absent' && counter.read !== null && counter.read.state === 'ok' ? counter.read.counts : null;
+      const next: HeldCountsRead = usable ? { state: 'ok', counts: applyChange(usable, before, after) } : { state: 'dirty' };
+      wroteDirty = usable === null;
+      puts.push({ store: 'settings', value: { key: HELD_COUNTS_KEY, enc: await encryptJson(sealedShape(next)) } satisfies SettingsRow });
+    }
+    if (await txCommitIfUnchanged(expects, puts)) {
+      if (wroteDirty) scheduleHeldCountsReconcile();
+      return priorRow === undefined;
+    }
+    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 4 * (attempt + 1))));   // another tab (or a reconcile) moved a row: back off a little, then decide again
+  }
+  throw new Error('note write kept losing the race: retry');
+}
+
+export async function putNote(note: NoteRecord): Promise<void> {
+  await serializeNoteWrite(() => writeNote(note));
+}
+
+/**
+ * putNote that also says whether THIS write created the row. The existence check is part of the same compare-and-swap that writes it (the prior row must still be absent), so two tabs
+ * delivering the same blob get exactly one `true`. An existing row is overwritten, as before; only the answer is new. A row that exists but cannot be decrypted counts as existing
+ * (so no receipt for it), the safe side.
  */
 export async function putNoteReportingCreated(note: NoteRecord): Promise<boolean> {
-  const enc = await encryptJson(note);
-  const value = { note_id: note.note_id, thread_id: note.thread_id, enc } satisfies NoteRow;
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('notes', 'readwrite');
-    const os = tx.objectStore('notes');
-    let created = false;
-    const existing = os.get(note.note_id);
-    existing.onsuccess = () => {
-      created = existing.result === undefined;
-      os.put(value);
-    };
-    tx.oncomplete = () => resolve(created);
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
+  return serializeNoteWrite(() => writeNote(note));
 }
 
 /** Fetch one stored note by id (any thread), or null if absent/corrupt. Used by the delivery-receipt
@@ -429,10 +505,77 @@ export async function countHeldFrom(peerFingerprint: string): Promise<number> {
   let count = 0;
   for (const t of await listThreadsIncludingHeld()) {
     for (const n of await listNotesIncludingHeld(t.thread_id)) {
-      if (isHeldNote(n) && n.direction === 'inbound' && n.from_fingerprint.toLowerCase() === want) count++;
+      if (heldInboundSender(n) === want) count++;   // the ONE rule (held-counts.ts), shared with the count row's write path and its reconcile
     }
   }
   return count;
+}
+
+/** The count row as stored: its blob (null = absent) and what it says. A row that cannot be decrypted or understood reads as null ("unreadable"), never as a number. Throws while locked. */
+async function readHeldCountsRow(): Promise<{ enc: EncryptedBlob | null; read: HeldCountsRead | 'absent' }> {
+  requireUnlocked();
+  const row = await txGet<SettingsRow>('settings', HELD_COUNTS_KEY);
+  if (!row?.enc) return { enc: null, read: 'absent' };
+  try {
+    return { enc: row.enc, read: parseHeldCounts(await decryptJson<unknown>(row.enc)) };
+  } catch {
+    return { enc: row.enc, read: null };
+  }
+}
+
+/** One sender's held count from the count row: a number, or the reason the row could not be used. Reads one row and decrypts it; never walks the notes. */
+export async function readHeldCount(sender: string): Promise<{ count: number } | { fallback: CountFallback }> {
+  return countFrom((await readHeldCountsRow()).read, sender);
+}
+
+const _warnedFallback = new Set<CountFallback>();
+
+/**
+ * The per-arrival cap check. Answers from the count row (one read). If the row cannot be used (absent, dirty, unreadable) it falls back to the full scan for THIS decision, which is slow
+ * but right: never to 0 (that would bypass the cap) and never to "full" (that would refuse a person's evidence early). The reason is logged (once per page load per reason) and a
+ * reconcile is scheduled, off this path, to put the row right. A store that cannot be read THROWS (the accept retries), exactly like the scan.
+ */
+export async function countHeldFromFast(sender: string): Promise<number> {
+  const got = await readHeldCount(sender);
+  if ('count' in got) return got.count;
+  if (!_warnedFallback.has(got.fallback)) {
+    _warnedFallback.add(got.fallback);
+    console.warn(`[held-count] the count row could not be used (${got.fallback}); using the full scan for this decision`);
+  }
+  scheduleHeldCountsReconcile();
+  return countHeldFrom(sender);
+}
+
+let _reconcileRun: Promise<'ok' | 'gave-up'> | null = null;
+const RECONCILE_ATTEMPTS = 5;
+
+/**
+ * Rebuild the count row from the notes themselves, OFF the receive path (on unlock, and after the row was found unusable). Read the row's blob, walk every thread and note once, seal what
+ * the notes say, and write it only if the row is still the blob read before the walk: a held note that landed meanwhile moved the row, so the walk is done again (bounded; 'gave-up'
+ * leaves the row as it was, and the next unlock tries again). One run at a time. Throws while locked.
+ */
+export function reconcileHeldCounts(): Promise<'ok' | 'gave-up'> {
+  if (_reconcileRun) return _reconcileRun;
+  const run = (async (): Promise<'ok' | 'gave-up'> => {
+    for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+      const { enc: token } = await readHeldCountsRow();
+      const counts = new Map<string, number>();
+      for (const t of await listThreadsIncludingHeld()) {
+        for (const [who, n] of countsFromNotes(await listNotesIncludingHeld(t.thread_id))) counts.set(who, (counts.get(who) ?? 0) + n);
+      }
+      const enc = await encryptJson(sealedShape({ state: 'ok', counts: counts as HeldCounts }));
+      if (await txCommitIfUnchanged([{ store: 'settings', key: HELD_COUNTS_KEY, enc: token }], [{ store: 'settings', value: { key: HELD_COUNTS_KEY, enc } satisfies SettingsRow }])) return 'ok';
+    }
+    return 'gave-up';
+  })();
+  _reconcileRun = run.finally(() => {
+    _reconcileRun = null;
+  });
+  return _reconcileRun;
+}
+
+function scheduleHeldCountsReconcile(): void {
+  reconcileHeldCounts().catch(() => {});   // best effort: a locked store, or a store that cannot be read, leaves the row as it was
 }
 
 export async function deleteThread(threadId: string): Promise<void> {

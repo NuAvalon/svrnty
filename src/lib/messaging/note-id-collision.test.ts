@@ -118,5 +118,8 @@ test('K7 self-note: a delivery whose sender fingerprint EQUALS the fingerprint o
 test('K6 tripwire: the PWA notes store IS keyed on note_id alone (the reason K1/K2 exist). If the schema ever becomes composite, revisit the guard in acceptInboundNote knowingly', () => {
   const src = readFileSync(new URL('./store.ts', import.meta.url), 'utf8');
   assert.match(src, /createObjectStore\('notes', \{ keyPath: 'note_id' \}\)/);
-  assert.match(src, /export async function putNote[\s\S]*?txPut\('notes', \{\s*note_id: note\.note_id/);
+  // The write moved into writeNote (it also keeps the held-count row in step, in the same transaction): the row is still {note_id: note.note_id, ...} and still a PUT that replaces by that key.
+  assert.match(src, /async function writeNote[\s\S]*?\{ store: 'notes', value: \{ note_id: note\.note_id/);
+  assert.match(src, /os\.put\(p\.value\)|tx\.objectStore\(p\.store\)\.put\(p\.value\)/, 'the commit is a put, so a note that reuses an id still replaces the row');
+  assert.match(src, /export async function putNote\(note: NoteRecord\): Promise<void> \{\s*await serializeNoteWrite\(\(\) => writeNote\(note\)\);/, 'putNote is that one write');
 });

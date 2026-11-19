@@ -5,6 +5,7 @@
 // Run: npx tsx --test src/lib/messaging/held-accept.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { generateKEMKeypair } from '../crypto/pq';
 import type { RatchetIdentity, RatchetPeer } from '../crypto/message-ratchet';
@@ -316,3 +317,52 @@ test('HC7b the held-prior rule itself, with a PLAIN body (no ratchet to fall bac
   assert.equal(again.created, 0);
   assert.deepEqual(again.reasons, []);
 });
+
+// ── The O(1) held count, at the accept: what a REDEPOSIT and a failed WRITE do (real ratchet, real signed wires) ──────────────────────────────────────────────────────────────────────────
+// The accept's half only. What the pipeline does with a 'ratchet-desync' is a separate, BOUNDED effect: the reason is HOLDABLE (sync/dead-letter.ts), so the consume layer keeps the envelope on the
+// relay and writes a METADATA-ONLY dead-letter row (envelope id, first-seen time, reason, a fixed cause token, never frame text), capped at KEEP_MAX_COUNT (50) held envelopes per mailbox, 7 days,
+// and ROW_MAX_PER_CONTACT (50) rows per sender. So a redeposit is not "no state change" system-wide; it is that bounded record and nothing else.
+test('HR1 a REDEPOSITED over-cap frame (the identical signed wire, delivered again) fails at open as a desync: no NOTE is stored and the session does not move again; one count per delivery', async () => {
+  const w = await world();
+  w.heldCounts.set(w.id.fingerprint, HOLD_CAP_PER_SENDER);
+  const wire = await w.wireFor('hr1', await w.frame('over the cap, then again'));
+  const first = await w.accept(wire, { frozen: true });
+  assert.equal(first.r, null);
+  assert.deepEqual(first.reasons, ['not-in-book'], 'the first delivery is the ordinary over-cap drop');
+  const afterFirst = JSON.stringify(w.myIO.rows.get(THEM) ?? null);
+  const again = await w.accept(wire, { frozen: true });
+  assert.equal(again.r, null);
+  assert.equal(again.threw, null, 'a redeposit is a verdict, not an error: nothing retries it');
+  assert.equal(again.created, 0, 'no creation, so no receipt');
+  assert.deepEqual(again.reasons, ['ratchet-desync'], 'the open fails because the first delivery already advanced the session (a one-use message key): the sessions disagree, so it is a desync, a HOLDABLE reason (see above)');
+  assert.equal(w.notes.size, 0, 'no note was stored');
+  assert.equal(w.calls.putNote + w.calls.putThread, 0);
+  assert.equal(JSON.stringify(w.myIO.rows.get(THEM) ?? null), afterFirst, 'and the session did not move again');
+  assert.equal(w.calls.countHeld.length, 2, 'the count is asked once per delivery (now a one-row read), before the open');
+});
+
+test('HW1 a note write that cannot commit THROWS before the session advances, and the same frame delivered again once the store works is stored: nothing lost, nothing half-written', async () => {
+  // The pipeline's half is pinned in consume-mailbox-door.test.ts C5b: a note seam whose accept() throws is retryable: no record, not acked, still on the relay.
+  const w = await world();
+  const wire = await w.wireFor('hw1', await w.frame('held while the store fights'));
+  const before = JSON.stringify(w.myIO.rows.get(THEM) ?? null);
+  w.flags.failPut = true;
+  const out = await w.accept(wire, { frozen: true });
+  assert.ok(out.threw, 'the accept throws');
+  assert.equal(w.notes.size, 0);
+  assert.equal(out.created, 0);
+  assert.deepEqual(out.reasons, [], 'not a drop: nothing was decided');
+  assert.equal(JSON.stringify(w.myIO.rows.get(THEM) ?? null), before, 'the session did NOT advance (a staged open commits only after the note and thread are stored), so the redelivered frame still opens');
+  w.flags.failPut = false;
+  const retry = await w.accept(wire, { frozen: true });
+  assert.equal(retry.r?.held, true, 'delivered again once the store works: stored held');
+  assert.equal(retry.created, 1);
+  assert.equal(w.notes.size, 1);
+});
+
+test('HW2 the store throws exactly this when its retries run out (so HW1 stands for the real failure): "note write kept losing the race: retry"', () => {
+  const store = readFileSync(new URL('./store.ts', import.meta.url), 'utf8');
+  assert.match(store, /throw new Error\('note write kept losing the race: retry'\)/);
+  assert.match(store, /const NOTE_WRITE_ATTEMPTS = 8;/);
+});
+

@@ -6,7 +6,9 @@
 // 'notice_seen:' (#731): when the user last dismissed an inbox notice. One ISO time per notice, nothing from any message.
 // 'adopt_floor:' (L-318a): per contact, the newest signed sent_at of a first frame the current session started from. A fingerprint and a time.
 // 'thread_alias:' (thread membership): per sender, the newest few (claimed thread id -> local thread id) pairs, so a sender who names a thread they are not in keeps ONE fresh thread. Local only.
-export const SETTINGS_ROW_PREFIXES = ['dead_letter:', 'reset_flag:', 'notice_seen:', 'adopt_floor:', 'thread_alias:'] as const;
+// 'held_counts:' (Freeze keep): the ONE row that says how many held notes each frozen sender has, so the per-arrival cap check does not decrypt the whole store (held-counts.ts). It is in this DB, not
+// the identity DB, because only here can it change in the SAME transaction as the note rows. Sealed with the notes key, padded to a fixed size; no backup carries this DB.
+export const SETTINGS_ROW_PREFIXES = ['dead_letter:', 'reset_flag:', 'notice_seen:', 'adopt_floor:', 'thread_alias:', 'held_counts:'] as const;
 
 const MAX_KEY_LENGTH = 200;
 // A plain charset: a key is built from validated parts, never from raw wire text.

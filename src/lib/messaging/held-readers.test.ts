@@ -40,10 +40,16 @@ test('S1 the include-held readers are used ONLY where they are meant to be: exac
   // store.ts: the definition + the replay guard (listInboundSentAtFrom) + the cap count (countHeldFrom) + deleteThread (it must SEE the held notes to leave them,
   // and to keep the thread row they hang on). Nothing else reads a held note by name.
   // When the hold view and the evidence export are built they add THEIR file here, in their own commit, with a reason.
-  assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 4 });
-  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 3, 'src/lib/messaging/transport.ts': 7 }); // transport = the accept path reading threads INCLUDING held ones, twice: (1) the claimed thread's participants (thread membership: a sender who is not in the thread they name never joins it), (2) finding the note's thread. 1 import + 2 per read in the injectable io field (name, type) + 2 in the ONE call (injected, default)
-  // countHeldFrom: defined in store.ts; transport.ts uses it ONLY as the cap check (import, the io seam's type, and the one call).
-  assert.deepEqual(occurrences('countHeldFrom'), { 'src/lib/messaging/store.ts': 1, 'src/lib/messaging/transport.ts': 5 });
+  assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 5 });   // +1: reconcileHeldCounts walks every note once, OFF the receive path, to rebuild the held-count row (held-counts.ts)
+  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 4, 'src/lib/messaging/transport.ts': 7 }); // transport = the accept path reading threads INCLUDING held ones, twice: (1) the claimed thread's participants (thread membership: a sender who is not in the thread they name never joins it), (2) finding the note's thread. 1 import + 2 per read in the injectable io field (name, type) + 2 in the ONE call (injected, default)
+  // countHeldFrom is the FULL SCAN. It is defined in store.ts and called there ONLY as the fallback of countHeldFromFast; transport.ts names it for its import and the io seam's type (tests swap the
+  // count), and held-counts.ts only in a comment. The scan is no longer on the receive path unless the count row cannot be used.
+  assert.deepEqual(occurrences('countHeldFrom'), { 'src/lib/messaging/held-counts.ts': 1, 'src/lib/messaging/store.ts': 2, 'src/lib/messaging/transport.ts': 4 });
+  // countHeldFromFast is the per-arrival cap check (one row read): defined in store.ts; transport.ts has its import and the ONE call.
+  assert.deepEqual(occurrences('countHeldFromFast'), { 'src/lib/messaging/store.ts': 1, 'src/lib/messaging/transport.ts': 2 });
+  const transport = text('src/lib/messaging/transport.ts');
+  assert.equal((transport.match(/\(args\.io\?\.countHeldFrom \?\? countHeldFromFast\)\(/g) || []).length, 1, 'the cap check defaults to the FAST count');
+  assert.doesNotMatch(transport, /\?\? countHeldFrom\)\(/, 'and never to the full scan');
 });
 
 test('S2 the DEFAULT readers drop held rows; the include-held readers keep them (both go through the one read function)', () => {
