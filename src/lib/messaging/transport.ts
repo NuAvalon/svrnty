@@ -6,8 +6,8 @@ import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
-import type { NoteThread, NoteWireV0, ParticipantKind } from './types';
-import type { ThreadAliasPort } from './thread-alias';
+import type { NoteWireV0, ParticipantKind } from './types';
+import { freshThreadIdFor, threadHasParticipant, type ThreadAliasPort } from './thread-alias';
 import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
 import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
@@ -273,12 +273,6 @@ export function tryParseNoteWire(obj: unknown): NoteWireV0 | null {
 /** Build the OpenPGP note decryptor for the unlocked owner. */
 export { noteOpenpgpDecryptor };
 
-/** Whether `fingerprint` is one of the thread's participants (canonical lowercase comparison: a fingerprint is hex, and case must never decide membership). */
-function hasParticipant(thread: NoteThread, fingerprint: string): boolean {
-  const fp = String(fingerprint).toLowerCase();
-  return (thread.participants ?? []).some((p) => String(p.fingerprint).toLowerCase() === fp);
-}
-
 /**
  * Admit-check: only persist inbound notes from fingerprints already in the book.
  * `isAdmitted` is injected so this module never imports the contacts store directly.
@@ -371,10 +365,10 @@ export async function acceptInboundNote(args: {
   let aliasToRemember = false;
   {
     const known = (await (args.io?.listThreadsIncludingHeld ?? args.io?.listThreads ?? listThreadsIncludingHeld)()).find((t) => t.thread_id === claimedThreadId);
-    if (known && !hasParticipant(known, args.wire.from_fingerprint)) {
+    if (known && !threadHasParticipant(known, args.wire.from_fingerprint)) {
       const mapped = args.threadAliases ? await args.threadAliases.resolve(args.wire.from_fingerprint, claimedThreadId) : null;
       // A redelivery of a note this sender already has stored under a fresh thread finds that thread again, even if the alias was lost.
-      threadId = mapped ?? (prior && prior.thread_id !== claimedThreadId ? prior.thread_id : newThreadId());
+      threadId = freshThreadIdFor({ mapped, priorThreadId: prior ? prior.thread_id : null, claimed: claimedThreadId, mint: newThreadId });
       aliasToRemember = !mapped;
     }
   }

@@ -31,6 +31,20 @@ export interface ThreadAliasPort {
   remember(senderFingerprint: string, claimedThreadId: string, localThreadId: string): Promise<void>;
 }
 
+/** Whether `fingerprint` is one of the thread's participants (lowercase comparison: a fingerprint is hex, and case must never decide membership). The ONE membership rule, shared by the browser accept path and the headless store. */
+export function threadHasParticipant(thread: { participants?: ReadonlyArray<{ fingerprint: unknown }> }, fingerprint: string): boolean {
+  const fp = String(fingerprint).toLowerCase();
+  return (thread.participants ?? []).some((p) => String(p.fingerprint).toLowerCase() === fp);
+}
+
+/**
+ * The local thread id for a note whose sender is NOT a participant of the thread they named (the ONE rule, shared): the alias if there is one; else, for a redelivery of a note
+ * already stored under a fresh thread, that thread (so a lost alias never splits a redelivery); else a fresh id. It is never the claimed id.
+ */
+export function freshThreadIdFor(a: { mapped: string | null; priorThreadId: string | null; claimed: string; mint: () => string }): string {
+  return a.mapped ?? (a.priorThreadId !== null && a.priorThreadId !== a.claimed ? a.priorThreadId : a.mint());
+}
+
 export function threadAliasKey(senderFp: unknown): string | null {
   const fp = normalizeResetFp(senderFp);
   return fp ? `${THREAD_ALIAS_PREFIX}${fp}` : null;

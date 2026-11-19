@@ -66,6 +66,7 @@ const filesNaming = (needle: RegExp): string[] =>
 
 test('A5 PIN: only the alias modules, the settings-key allowlist, the accept path and the live note seam name the alias; no backup, export, vault or sync module does', () => {
   assert.deepEqual(filesNaming(/thread[-_]alias|ThreadAlias|threadAlias/), [
+    'src/lib/headless/headless-store.ts', // the headless agent's own accept path: the same pure rule, its alias kept in the headless book (headless-thread-membership.test.ts)
     'src/lib/messaging/settings-row-keys.ts',
     'src/lib/messaging/thread-alias-store.ts',
     'src/lib/messaging/thread-alias.ts',
