@@ -24,6 +24,7 @@ import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
 import { createBeaconStore, createBeaconLatch, beaconRowPrefixes, beaconRowAad, type BeaconKV, type Sealer } from '../trust/beacon-ports';
 import { admitContact } from '../trust/admit-contact';
+import { dropRemoved, type RemovedDrop } from '../trust/readd-removed';
 import { relatchFromRecord, repairBlockedButUnsuppressed, relatchReport, RELATCH_ERROR, BlocksIncompleteError, type RepairOutcome, type RelatchReport } from '../trust/block-latch';
 import { isBeaconConfirmed, withConfirmed, createConfirmedPort, type BeaconConfirmed } from '../trust/beacon-confirmed';
 import { beaconPairId } from '../trust/beacon-pair-id';
@@ -812,6 +813,11 @@ export async function restoreCarriedSuppression(ownerFingerprint: string, carrie
 export async function recordRemovedContact(ownerFingerprint: string, durableId: string): Promise<void> {
   const refusal = removalRefusal(await recordRemoval(createRestorePorts(ownerFingerprint).updateRemoved, durableId));
   if (refusal !== null) throw new Error(refusal);
+}
+
+/** Take one id off the removed list. Nothing calls this yet: its one caller will be the owner's own private confirm on a contact's screen (see readd-removed.ts); never an import, a restore, a sync, the manual add form or addContact. */
+export function dropRemovedForOwner(ownerFingerprint: string, durableId: string): Promise<RemovedDrop> {
+  return dropRemoved(createRestorePorts(ownerFingerprint).updateRemoved, durableId.trim().toLowerCase());
 }
 
 // ── Block and Remove set the beacon latch; the suppression record and the latches are repaired at unlock and before every export ─────────────────────────────────
