@@ -9,7 +9,7 @@ import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { aliasThatFits, freshThreadIdFor, threadHasParticipant, type ThreadAliasPort } from './thread-alias';
 import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom, countHeldFromFast } from './store';
-import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
+import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld, heldStampsFor } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
@@ -295,7 +295,7 @@ export async function acceptInboundNote(args: {
   /** L-318a: told AFTER the note is stored and the session committed that this open STARTED the session (a first frame, or a replacement), with that frame's SIGNED sent_at, so the adopt floor can be raised. Best effort: a throw is swallowed and the floor simply stays where it was. */
   onSessionStarted?: (fromFingerprint: string, signedSentAt: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; listThreadsIncludingHeld?: typeof listThreadsIncludingHeld; getNote?: typeof getNote; countHeldFrom?: typeof countHeldFrom };
+  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; listThreadsIncludingHeld?: typeof listThreadsIncludingHeld; getNote?: typeof getNote; countHeldFrom?: typeof countHeldFrom; nowMs?: () => number };
   /**
    * #714 R1: told (once, at the END of the flow: note and thread stored, session committed) that THIS call CREATED the note row. Never told for a
    * redelivery of a stored note, a first-write-wins refusal, a frame whose key was already spent, or a drop. The receipt layer answers only this
@@ -451,7 +451,8 @@ export async function acceptInboundNote(args: {
     participant_kind: args.wire.participant_kind || args.peerKind || 'human',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
-    ...(held ? { held: true as const } : {}),
+    // The record is built from NAMED fields only (never a spread of the wire), and the hold's own stamps come from the OWNER'S clock and the stored prior row: a wire that carries held, held_at or expiry_seen_at sets none of them.
+    ...(held ? { held: true as const, ...heldStampsFor(prior, (args.io?.nowMs ?? Date.now)()) } : {}),
   };
   // Created = the write itself found no row. With the real store that is one readwrite transaction (putNoteReportingCreated), so a second tab
   // delivering the same blob cannot also report a creation. An injected plain putNote (tests) falls back to "no stored row was seen above".

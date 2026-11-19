@@ -87,3 +87,17 @@ export function stampedHeldNote<T extends Flagged & { held_at?: string; expiry_s
   if (action === 'clear-expiry') return rest;
   return note;
 }
+
+/**
+ * The two stamps a note gets as it is HELD, on the OWNER'S clock. The ONE place `held_at` is first written (acceptInboundNote's held branch calls this and nothing else does). A redelivery of a note this
+ * device already holds KEEPS the stamps it has (the age is when it was first held, so a sender cannot restart or stall it by sending the note again); anything else, including a held note from before
+ * the field existed, starts the clock now. The wire never reaches this: only the stored prior row and the owner's own clock do.
+ */
+export function heldStampsFor(prior: (Flagged & { held_at?: unknown; expiry_seen_at?: unknown }) | null | undefined, nowMs: number): { held_at: string; expiry_seen_at?: string } {
+  if (prior && isHeldNote(prior) && timeMs(prior.held_at) !== null) {
+    const stamps: { held_at: string; expiry_seen_at?: string } = { held_at: prior.held_at as string };
+    if (typeof prior.expiry_seen_at === 'string') stamps.expiry_seen_at = prior.expiry_seen_at;
+    return stamps;
+  }
+  return { held_at: new Date(nowMs).toISOString() };
+}

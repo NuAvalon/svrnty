@@ -9,12 +9,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { HOLD_AGE_LIMIT_DAYS, HOLD_EXPIRY_GRACE_DAYS, heldSweepAction, stampedHeldNote } from './held-note';
+import { HOLD_AGE_LIMIT_DAYS, HOLD_EXPIRY_GRACE_DAYS, heldStampsFor, heldSweepAction, stampedHeldNote } from './held-note';
 
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-06-01T12:00:00.000Z');
 const iso = (ms: number): string => new Date(ms).toISOString();
-const held = (extra: Record<string, unknown> = {}) => ({ held: true as const, note_id: 'n1', sent_at: '2026-05-01T00:00:00.000Z', body: 'evidence', retention: { expires_at: null }, ...extra });
+type Fixture = { held: true; note_id: string; sent_at: string; body: string; retention: { expires_at: string | null }; held_at?: string; expiry_seen_at?: string };
+// `extra` may carry values the real row never would (a number, junk, an object): that is the point of several tests, so the fixture is cast, not checked.
+const held = (extra: Record<string, unknown> = {}): Fixture => ({ held: true as const, note_id: 'n1', sent_at: '2026-05-01T00:00:00.000Z', body: 'evidence', retention: { expires_at: null }, ...extra }) as Fixture;
 const LIMIT = HOLD_AGE_LIMIT_DAYS * DAY;
 const GRACE = HOLD_EXPIRY_GRACE_DAYS * DAY;
 
@@ -88,10 +90,11 @@ test('HA8 nothing the SENDER controls matters: a backdated sent_at and an expire
 
 test('HA9 only a note that is held EXACTLY true is ever touched: an ordinary note (even one carrying look-alike stamps) and a look-alike held value are left alone', () => {
   const stamps = { held_at: iso(NOW - 400 * DAY), expiry_seen_at: iso(NOW - 90 * DAY) };
-  assert.equal(heldSweepAction({ note_id: 'o', ...stamps }, NOW), 'keep');
-  assert.equal(heldSweepAction({ held: 'true', ...stamps }, NOW), 'keep');
-  assert.equal(heldSweepAction({ held: 1, ...stamps }, NOW), 'keep');
-  assert.equal(heldSweepAction({ held: false, ...stamps }, NOW), 'keep');
+  const ordinary = { note_id: 'o', ...stamps };
+  const asString = { held: 'true', ...stamps };
+  const asNumber = { held: 1, ...stamps };
+  const asFalse = { held: false, ...stamps };
+  for (const n of [ordinary, asString, asNumber, asFalse]) assert.equal(heldSweepAction(n, NOW), 'keep', JSON.stringify(n));
 });
 
 test('HA10 stampedHeldNote: each stamping action changes exactly its own field, on a copy; keep and delete return the note as it is', () => {
@@ -109,6 +112,18 @@ test('HA10 stampedHeldNote: each stamping action changes exactly its own field, 
   for (const a of ['keep', 'delete'] as const) assert.deepEqual(stampedHeldNote(n, a, NOW), n);
   assert.equal(JSON.stringify(n), before, 'the input is never changed');
   for (const x of [s1, s2, s3]) { assert.equal(x.body, 'evidence'); assert.equal(x.held, true); assert.equal(x.sent_at, '2026-05-01T00:00:00.000Z'); }
+});
+
+test('HA12 heldStampsFor: a NEW held note starts its clock on the owner\'s clock; a redelivery KEEPS the stamps it has; a prior with no usable held_at starts fresh (and forgets a stale expiry stamp)', () => {
+  assert.deepEqual(heldStampsFor(undefined, NOW), { held_at: iso(NOW) });
+  assert.deepEqual(heldStampsFor(null, NOW), { held_at: iso(NOW) });
+  const prior = held({ held_at: iso(NOW - 20 * DAY), expiry_seen_at: iso(NOW - 3 * DAY) });
+  assert.deepEqual(heldStampsFor(prior, NOW), { held_at: iso(NOW - 20 * DAY), expiry_seen_at: iso(NOW - 3 * DAY) }, 'a resend does not restart the age or the grace');
+  assert.deepEqual(heldStampsFor(held({ held_at: iso(NOW - 20 * DAY) }), NOW), { held_at: iso(NOW - 20 * DAY) });
+  for (const bad of [{}, { held_at: 'junk' }, { held_at: '' }, { held_at: 5 }, { held_at: 'junk', expiry_seen_at: iso(NOW - 9 * DAY) }]) assert.deepEqual(heldStampsFor(held(bad), NOW), { held_at: iso(NOW) }, JSON.stringify(bad));
+  const notHeld = { note_id: 'o', held_at: iso(NOW - 20 * DAY) };
+  assert.deepEqual(heldStampsFor(notHeld, NOW), { held_at: iso(NOW) }, 'a prior that is not held exactly true is not a held note: fresh clock');
+  assert.deepEqual(heldStampsFor(held({ held_at: iso(NOW - 20 * DAY), expiry_seen_at: 7 }), NOW), { held_at: iso(NOW - 20 * DAY) }, 'a stamp that is not a string is not carried');
 });
 
 // ── the numbers are read in ONE place (Archie's ruling: one named constant each, never scattered) ─────────────────────────────────────────────────────────────────────────────────
