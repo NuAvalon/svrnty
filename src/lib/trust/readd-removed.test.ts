@@ -115,6 +115,38 @@ const scan = (cwd: string, roots: string[], needle: RegExp): string[] =>
   roots.flatMap((r) => (existsSync(join(cwd, r)) ? sourceFiles(join(cwd, r)) : []))
     .filter((f) => needle.test(codeOnly(readFileSync(f, 'utf8')))).map((f) => f.slice(cwd.length + 1)).sort();
 const filesWith = (needle: RegExp): string[] => scan(CWD, APP_ROOTS, needle);
+/** The text of each `<ContactActionCard ... />` opening element in `code`: it ends at the first `/>` that is not inside a `{ }` prop value. */
+function cardElements(code: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  for (;;) {
+    const start = code.indexOf('<ContactActionCard', from);
+    if (start < 0) return out;
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < code.length; i++) {
+      const c = code[i];
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+      else if (depth === 0 && c === '/' && code[i + 1] === '>') { end = i + 2; break; }
+    }
+    if (end < 0) return out;
+    out.push(code.slice(start, end));
+    from = end;
+  }
+}
+/** Whether a JSX element's text spreads props into it: a `{` at depth 0 that is not a prop value (`name={...}`). An object spread INSIDE a prop value is deeper and does not count. */
+function hasJsxSpread(el: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < el.length; i++) {
+    const c = el[i];
+    if (c === '{') {
+      if (depth === 0 && !/=\s*$/.test(el.slice(0, i))) return true;
+      depth++;
+    } else if (c === '}') depth--;
+  }
+  return false;
+}
 
 test('WRITER PIN: only the identity store and the two list modules touch the list writer, and only this module shrinks it', () => {
   assert.deepEqual(filesWith(/\bupdateRemoved\b/), ['src/lib/identity/client-store.ts', 'src/lib/trust/suppression-restore.ts'],
@@ -148,6 +180,23 @@ test('PRIVATE ONLY: the notice exists only behind an opt-in prop that the contac
   const galaxy = codeOnly(readFileSync(join(SRC, 'components', 'TrustMap.tsx'), 'utf8'));
   assert.doesNotMatch(galaxy, /removedBefore|RemovedBefore|removed-before|You removed this person/i, 'the Galaxy never passes, imports or spells the notice');
   assert.deepEqual(filesWith(/You removed this person before/), ['src/components/contacts/removed-before-copy.ts'], 'the sentence lives in the one copy module');
+  // Every mount of the card is known, and none spreads props into it (a spread could forward the opt-in prop through a parent). A new mount fails here until it is looked at.
+  assert.deepEqual(filesWith(/<ContactActionCard\b/), ['src/components/ContactManagement.tsx', 'src/components/TrustMap.tsx'], 'the card has exactly these two mounts');
+  for (const f of ['src/components/ContactManagement.tsx', 'src/components/TrustMap.tsx']) {
+    const spans = cardElements(codeOnly(readFileSync(join(CWD, f), 'utf8')));
+    assert.equal(spans.length, 1, `${f}: one card element`);
+    assert.equal(hasJsxSpread(spans[0]), false, `${f}: no spread into the card`);
+  }
+});
+
+test('NEG: the element scan SEES a JSX spread into the card (even when a prop value holds JSX with its own "/>"), and does NOT mistake an object spread inside a prop value for one', () => {
+  const planted = '<ContactActionCard a={1} actions={<><X /></>} {...rest} b="2" />\n<Other {...ok} />';
+  const els = cardElements(planted);
+  assert.equal(els.length, 1);
+  assert.equal(hasJsxSpread(els[0]), true);
+  assert.doesNotMatch(els[0], /ok/, 'the neighbouring element is not part of the card element');
+  const fine = '<ContactActionCard a={cur ? { ...cur, failed: false } : cur} actions={<><X /></>} b="2" />';
+  assert.equal(hasJsxSpread(cardElements(fine)[0]), false, 'an object spread inside a prop value is not a JSX spread');
 });
 
 test('MANUAL ADD PIN: the manual add handler never reaches the planner or the drop writer (a form without a bound key cannot be the removed person), and addContact itself never drops', () => {
