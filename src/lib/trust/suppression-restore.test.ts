@@ -687,6 +687,20 @@ test('OWNER a write that lands between the read and the commit is kept: the choi
   assert.deepEqual(okRec(w), { global: false, groups: [], persons: [X, Y] }, 'the newer Block on Y survived');
 });
 
+test('OWNER a record that turns ABSENT or UNREADABLE between the first read and the write is never created or overwritten: the write refuses (stay out leaves them private with no offer; show up leaves the offer)', async () => {
+  for (const gone of [{ state: 'absent' }, { state: 'unreadable' }] as const) {
+    for (const visible of [true, false]) {
+      const { ports, w } = makePorts({ supp: { state: 'ok', value: listed() }, pending: MARKER });
+      let calls = 0;
+      const real = ports.updateSuppression;
+      const racing: RestorePorts = { ...ports, updateSuppression: ((decide: Parameters<typeof real>[0]) => { calls += 1; if (calls === 2) w.supp = gone; return real(decide); }) as typeof real };
+      assert.equal(await setOwnerGlobalVisible(racing, visible), 'refused', `${gone.state} / visible=${visible}`);
+      assert.deepEqual(w.supp, gone, 'the record is exactly as the race left it: never created, never overwritten');
+      assert.deepEqual(w.pending, visible ? MARKER : { state: 'absent' }, visible ? 'show up refused before the marker was touched' : 'stay out had already cleared the marker: the private side');
+    }
+  }
+});
+
 // ── static pins ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const SRC = join(process.cwd(), 'src', 'lib', 'trust', 'suppression-restore.ts');
 
