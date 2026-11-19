@@ -84,6 +84,12 @@ test('H7 a sender named like an object property is just a sender: nothing reache
   assert.equal(read.counts.get('constructor'), 1);
   assert.equal(({} as Record<string, unknown>).polluted, undefined);
   assert.equal(Object.keys({}).length, 0);
+  // The lookup side: a row that lists nobody answers 0 for a sender named like a property (a plain-object lookup would answer the property), and the writer treats such a name as one sender.
+  const none = { state: 'ok', counts: map() } as const;
+  for (const who of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) assert.deepEqual(countFrom(none, who), { count: 0 }, who);
+  const next = applyChange(map(), null, '__proto__');
+  assert.equal(next.get('__proto__'), 1);
+  assert.equal(next.size, 1);
 });
 
 test('H8 countFrom: a usable row answers (0 for a sender it does not list); absent, dirty and unreadable are FALLBACK reasons, never a number', () => {

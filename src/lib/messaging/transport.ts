@@ -8,7 +8,7 @@ import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { aliasThatFits, freshThreadIdFor, threadHasParticipant, type ThreadAliasPort } from './thread-alias';
-import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
+import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom, countHeldFromFast } from './store';
 import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
@@ -353,7 +353,7 @@ export async function acceptInboundNote(args: {
       return null;
     }
   } else if (held) {
-    overCap = (await (args.io?.countHeldFrom ?? countHeldFrom)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER;
+    overCap = (await (args.io?.countHeldFrom ?? countHeldFromFast)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER;
   }
   // THREAD MEMBERSHIP. thread_id is chosen by the SENDER, so it can name a thread they are not in (another contact's, or a held one). A sender who is not a participant of the
   // thread they name is NEVER filed into it: the note goes to a fresh LOCAL thread, built exactly as if the claimed id were unknown, so the claimed thread is untouched (a held thread
