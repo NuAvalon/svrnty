@@ -10,7 +10,8 @@
 //    otherwise it runs `decide` again on the newer record. So a write that lands in between (a second tab, a Remove) is never overwritten by a stale result, and the unguarded
 //    read-then-replace form is not in the port at all. `decide` is therefore PURE: it can run more than once.
 //  - The record is written BEFORE the pending confirmation: if the second write fails the person is simply never asked and stays private.
-//  - confirmGlobalOff is the ONLY path that writes global:false after a restore, and it needs the pending marker this restore left.
+//  - Two paths write global:false after a restore, and no others: confirmGlobalOff (it needs the pending marker this restore left) and setOwnerGlobalVisible (the owner's own deliberate choice in
+//    the settings panel, any time). Neither touches the persons or groups the owner listed.
 //  - The removed list merges by union; over the cap it REFUSES; an unreadable stored list is never overwritten.
 import type { SuppressionRecord } from './suppression';
 import { carrySuppression, confirmGlobalOff, freshDeviceWrite, mergeByTightening, mergeRemoved, parseCarriedSuppression, type CarriedSuppression } from './suppression-carry';
@@ -208,4 +209,34 @@ export async function confirmPendingGlobalOff(ports: RestorePorts): Promise<Conf
   if (!changed) return 'record-unreadable';
   await ports.clearPending();
   return 'confirmed';
+}
+
+export type VisibilityOutcome = 'set' | 'refused';
+
+/**
+ * The owner's own choice, any time: "show up in trust maps" is global OFF, "stay out" is global ON. It changes ONLY the global flag: the persons and groups the owner blocked or listed stay exactly as
+ * they are, so a blocked person stays suppressed either way. A record that is ABSENT or UNREADABLE is never written: an absent one cannot be told from a lost one, and a fresh record with global off
+ * would loosen whoever the lost one listed. The call then REFUSES and changes nothing (the glass says so).
+ * The pending marker a restore may have left is cleared in BOTH directions, because it is a waiting offer to go visible and confirmPendingGlobalOff checks only that it exists, not what the person chose
+ * since. The ORDER differs so a failure always lands on the person's side:
+ *  - show up: the record is written FIRST, then the marker is cleared (a failure in between leaves an offer that matches the choice);
+ *  - stay out: the marker is cleared FIRST, then the record is written (a failure in between leaves the person private with no offer).
+ * The record is read once before anything is touched, so a refusal leaves the marker alone too; only a record that becomes unreadable in the instant between that read and the write can leave a cleared
+ * marker with the record unchanged, which is the private side.
+ */
+export async function setOwnerGlobalVisible(ports: RestorePorts, visible: boolean): Promise<VisibilityOutcome> {
+  const readable = await ports.updateSuppression<boolean>((held) => ({ result: held.state === 'ok' }));
+  if (!readable) return 'refused';
+  const writeGlobal = (): Promise<boolean> =>
+    ports.updateSuppression<boolean>((held) => {
+      if (held.state !== 'ok') return { result: false };
+      return held.value.global === !visible ? { result: true } : { write: { global: !visible, groups: [...held.value.groups], persons: [...held.value.persons] }, result: true };
+    });
+  if (visible) {
+    if (!(await writeGlobal())) return 'refused';
+    await ports.clearPending();
+    return 'set';
+  }
+  await ports.clearPending();
+  return (await writeGlobal()) ? 'set' : 'refused';
 }

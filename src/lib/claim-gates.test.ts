@@ -6,7 +6,7 @@
 // components/biometric/biometric-seam.test.ts ("seam is not live until Flint wires PRF").
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive, isLensDeliveryLive, isBeaconWireLive } from './claim-gates';
 
@@ -59,6 +59,23 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
 
   it('isPiece2MutualBlockLive is FALSE until emit/receive transport + §F3 churn-matrix land (spine mechanism built but inert — transitive block not yet live)', () => {
     assert.equal(isPiece2MutualBlockLive(), false);
+  });
+
+  it('LOCKSTEP: while isPiece2MutualBlockLive() is false, nothing outside affirm-sync.ts names the emitter runner, and the flag lists the G8 setting as a flip precondition (the screen that says "not live" reads this same flag)', () => {
+    const code = (t: string): string => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const n of readdirSync(dir)) {
+        const p = join(dir, n);
+        if (statSync(p).isDirectory()) { if (n !== 'node_modules' && n !== '.next') walk(p, out); continue; }
+        if (/\.(ts|tsx)$/.test(n) && !/\.test\.(ts|tsx)$/.test(n) && !/\.d\.ts$/.test(n)) out.push(p);
+      }
+      return out;
+    };
+    const namers = ['app', 'src'].flatMap((r) => walk(join(process.cwd(), r))).filter((f) => /\bstartAffirmSync\b/.test(code(readFileSync(f, 'utf8')))).map((f) => f.slice(process.cwd().length + 1));
+    if (!isPiece2MutualBlockLive()) assert.deepEqual(namers, ['src/lib/sync/affirm-sync.ts'], 'the emitter cannot be wired live without flipping the flag that changes the words');
+    const gates = readFileSync(join(process.cwd(), 'src', 'lib', 'claim-gates.ts'), 'utf8');
+    assert.ok(gates.includes('G8 (#872) merged: a restored person can become visible again'), 'the flip preconditions name the G8 setting');
+    assert.ok(gates.includes('registerPiece2GenesisInit() is called once from the app bootstrap, so a new identity starts with an explicit empty record'), 'and the genesis record');
   });
 
   it('TrustMap empty-state trust copy is the honest "coming" sentence ONLY: no mutual sentence, no gate import (G-6 lockstep, Flint lane:svrnty #136 / Hypatia #924)', () => {

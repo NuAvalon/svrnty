@@ -48,6 +48,7 @@ import { MailNotificationsSettingsPanel } from '@/components/notes/MailNotificat
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import { RelaySettings } from '@/components/settings/RelaySettings';
 import { DeliverySettings } from '@/components/settings/DeliverySettings';
+import { TrustMapSettings } from '@/components/settings/TrustMapSettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 import { contactUpdateSendMessage } from '@/components/contact-update-send-copy';
 
@@ -2136,6 +2137,7 @@ export function SoverentityFrontend({
             />
           )}
           <MailNotificationsSettingsPanel />
+          {identity?.identity?.fingerprint ? <TrustMapSettings ownerFingerprint={identity.identity.fingerprint} /> : null}
         </CardMorePanel>
 
         {identity?.identity?.fingerprint ? <DeliverySettings ownerFingerprint={identity.identity.fingerprint} /> : null}
