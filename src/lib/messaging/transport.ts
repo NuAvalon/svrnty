@@ -7,8 +7,8 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
-import { HOLD_CAP_PER_SENDER, isHeldNote } from './held-note';
+import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
+import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
@@ -294,7 +294,7 @@ export async function acceptInboundNote(args: {
   /** L-318a: told AFTER the note is stored and the session committed that this open STARTED the session (a first frame, or a replacement), with that frame's SIGNED sent_at, so the adopt floor can be raised. Best effort: a throw is swallowed and the floor simply stays where it was. */
   onSessionStarted?: (fromFingerprint: string, signedSentAt: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote; countHeldFrom?: typeof countHeldFrom };
+  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; listThreadsIncludingHeld?: typeof listThreadsIncludingHeld; getNote?: typeof getNote; countHeldFrom?: typeof countHeldFrom };
   /**
    * #714 R1: told (once, at the END of the flow: note and thread stored, session committed) that THIS call CREATED the note row. Never told for a
    * redelivery of a stored note, a first-write-wins refusal, a frame whose key was already spent, or a drop. The receipt layer answers only this
@@ -436,7 +436,9 @@ export async function acceptInboundNote(args: {
   else if (args.io?.putNote) { await args.io.putNote(record); created = !prior; }
   else created = await putNoteReportingCreated(record);
 
-  const threads = await (args.io?.listThreads ?? listThreads)();
+  // The thread is looked up INCLUDING held ones: the ordinary reader skips a thread that exists only because of held notes, so a second held note (or the
+  // first note after an unblock) would find "no thread", rebuild it and move its created_at.
+  const threads = await (args.io?.listThreadsIncludingHeld ?? args.io?.listThreads ?? listThreadsIncludingHeld)();   // production passes no io: the real include-held reader
   let thread = threads.find((t) => t.thread_id === record.thread_id);
   const threadExisted = !!thread;
   if (!thread) {
@@ -457,7 +459,9 @@ export async function acceptInboundNote(args: {
       ...(held ? { held: true as const } : {}),
     };
   } else {
-    thread = { ...thread, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
+    // An ADMITTED arrival on a thread that exists only because of held notes makes the row an ordinary thread again; created_at stays. Its held notes keep their own flag.
+    const base = !held && isHeldThread(thread) ? clearedHeld(thread) : thread;
+    thread = { ...base, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
   }
   // A held note on a thread that already exists writes NOTHING to it: a moved last_activity_at would show the owner's own screen that something arrived.
   if (!(held && threadExisted)) await (args.io?.putThread ?? putThread)(thread);

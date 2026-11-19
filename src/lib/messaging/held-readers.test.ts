@@ -41,7 +41,7 @@ test('S1 the include-held readers are used ONLY where they are meant to be: exac
   // and to keep the thread row they hang on). Nothing else reads a held note by name.
   // When the hold view and the evidence export are built they add THEIR file here, in their own commit, with a reason.
   assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 4 });
-  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 3 });
+  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 3, 'src/lib/messaging/transport.ts': 5 }); // transport = the accept path finding a note's thread INCLUDING held ones: 1 import + 2 in the injectable io field (name, type) + 2 in the ONE call (injected, default)
   // countHeldFrom: defined in store.ts; transport.ts uses it ONLY as the cap check (import, the io seam's type, and the one call).
   assert.deepEqual(occurrences('countHeldFrom'), { 'src/lib/messaging/store.ts': 1, 'src/lib/messaging/transport.ts': 5 });
 });
@@ -117,7 +117,7 @@ test('S7 the modules that import the messaging store (or its index) are exactly 
   ]);
 });
 
-test('S8 the held flag on a note or thread is written in exactly three places and never cleared: no path can turn a held row back into an ordinary one', () => {
+test('S8 the held flag on a note or thread is written in exactly three places and never cleared by an assignment: no path can turn a held NOTE back into an ordinary one (a THREAD row loses the flag only through clearedHeld: S9)', () => {
   // `held: true` on a RECORD is written by transport.ts (the note and the thread it creates) and by deleteThread in store.ts. Other files use the word for unrelated
   // things (a mailbox hold in consume-mailbox and the lens reader, the seam result in live-book-poll) and are deliberately not counted.
   const writes = (f: string) => (text(f).match(/\bheld: true as const\b|\bheld: true \}\)/g) || []).length;
@@ -133,4 +133,13 @@ test('S8 the held flag on a note or thread is written in exactly three places an
     return (f.startsWith('src/lib/messaging/') || f === 'src/lib/sync/live-book-poll.ts') && /\bheld\s*:\s*(false|undefined)\b/.test(t);
   });
   assert.deepEqual(clearers, []);
+});
+
+test('S9 a thread row loses its held flag in ONE place only: clearedHeld, called once from the accept path, on a thread and never on a note', () => {
+  const callers = SOURCES.filter((f) => f !== 'src/lib/messaging/held-note.ts' && /\bclearedHeld\(/.test(text(f)));
+  assert.deepEqual(callers, ['src/lib/messaging/transport.ts']);
+  const t = text('src/lib/messaging/transport.ts');
+  assert.equal((t.match(/\bclearedHeld\(/g) || []).length, 1);
+  assert.match(t, /clearedHeld\(thread\)/, 'its argument is the THREAD row');
+  assert.match(t, /!held && isHeldThread\(thread\)/, 'only for an ADMITTED arrival on a thread that is held');
 });

@@ -11,6 +11,15 @@ const heldOf = (x: Flagged): unknown => (x as { held?: unknown }).held;
 export const isHeldNote = (n: Flagged): boolean => heldOf(n) === true;
 export const isHeldThread = (t: Flagged): boolean => heldOf(t) === true;
 
+/**
+ * The thread row with its held key removed (a copy; the input is untouched). The ONE place a held flag is ever dropped, and only on a THREAD: an
+ * admitted arrival on a thread that exists only because of held notes makes the row an ordinary thread again. The notes in it keep their own
+ * flag and stay hidden, so nothing held is shown by this. Pinned to a single caller (held-readers.test.ts S9).
+ */
+export function clearedHeld<T extends Flagged>(t: T): T {
+  return Object.fromEntries(Object.entries(t).filter(([k]) => k !== 'held')) as T;
+}
+
 /** What every ordinary reader returns: the rows a person is meant to see. */
 export function visibleNotes<T extends Flagged>(notes: readonly T[]): T[] {
   return notes.filter((n) => !isHeldNote(n));

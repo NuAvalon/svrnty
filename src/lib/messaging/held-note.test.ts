@@ -3,7 +3,7 @@
 // Run: npx tsx --test src/lib/messaging/held-note.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isHeldNote, isHeldThread, visibleNotes, visibleThreads, noteExpired } from './held-note';
+import { isHeldNote, isHeldThread, visibleNotes, visibleThreads, noteExpired, clearedHeld } from './held-note';
 
 const NOW = Date.parse('2026-11-18T12:00:00Z');
 const note = (id: string, extra: Record<string, unknown> = {}) => ({ note_id: id, retention: { expires_at: null as string | null }, ...extra });
@@ -44,4 +44,14 @@ test('H5 the readers do not mutate their input', () => {
   const notes = Object.freeze([Object.freeze(note('1')), Object.freeze(note('2', { held: true }))]);
   assert.doesNotThrow(() => visibleNotes(notes));
   assert.equal(notes.length, 2);
+});
+
+test('H6 clearedHeld returns a copy of a thread row without its held key, and leaves the input and every other key alone', () => {
+  const t = Object.freeze(thread('t', { held: true, created_at: '2026-11-18T10:00:00Z', participants: [1] }));
+  const out = clearedHeld(t);
+  assert.equal(isHeldThread(out), false);
+  assert.equal('held' in out, false, 'the key itself is gone, not set to false');
+  assert.deepEqual(out, { thread_id: 't', created_at: '2026-11-18T10:00:00Z', participants: [1] });
+  assert.equal(isHeldThread(t), true, 'the input is untouched');
+  assert.deepEqual(clearedHeld(thread('u')), { thread_id: 'u' }, 'a row that was never held comes back as an equal copy');
 });

@@ -39,7 +39,10 @@ async function world() {
   const io = {
     putNote: async (n: NoteRecord) => { calls.putNote++; if (flags.failPut) throw new Error('store down'); notes.set(n.note_id, n); },
     putThread: async (t: NoteThread) => { calls.putThread++; threads.set(t.thread_id, t); },
-    listThreads: async () => [...threads.values()], getNote: async (nid: string) => notes.get(nid) ?? null,
+    // the REAL listThreads skips held threads; only the include-held reader returns them (the old mock returned everything from one reader, which hid F1)
+    listThreads: async () => [...threads.values()].filter((t) => t.held !== true),
+    listThreadsIncludingHeld: async () => [...threads.values()],
+    getNote: async (nid: string) => notes.get(nid) ?? null,
     countHeldFrom: async (fp: string) => { calls.countHeld.push(fp); if (countFlags.throws) throw new Error('count unreadable'); return heldCounts.get(fp) ?? 0; },
   };
   const wireFor = (note_id: string, body: string, thread_id = 'thr'): Promise<NoteWireV0> =>
@@ -102,6 +105,33 @@ test('H4 D5 a held note on an EXISTING thread writes NO thread row (a reorder wo
   assert.equal(out.r?.held, true);
   assert.equal(w.calls.putThread, 0, 'putThread is never called on the held path when the thread exists');
   assert.equal(JSON.stringify(w.threads.get('thr')), before, 'the thread row is byte-identical (last_activity_at did not move)');
+});
+
+test('H11 F1 a SECOND held note in the same held thread writes NO thread row: created_at and last_activity_at stay the first note\'s', async () => {
+  const w = await world();
+  const a = await w.accept(await w.wireFor('n11a', await w.frame('first held'), 'thr-h'), { frozen: true });
+  assert.equal(a.r?.held, true);
+  assert.equal(w.calls.putThread, 1);
+  const first = JSON.stringify(w.threads.get('thr-h'));
+  await new Promise((r) => setTimeout(r, 5));   // the second note must carry a LATER sent_at, or an overwrite could not be seen
+  const b = await w.accept(await w.wireFor('n11b', await w.frame('second held'), 'thr-h'), { frozen: true });
+  assert.equal(b.r?.held, true);
+  assert.equal(w.calls.putThread, 1, 'still ONE putThread in total: the accept path found the held thread');
+  assert.equal(JSON.stringify(w.threads.get('thr-h')), first, 'the held thread row is byte-identical');
+});
+
+test('H12 F1 after an UNBLOCK the next note on the SAME held thread makes the row an ordinary thread again: flag gone, created_at kept, the earlier note stays held', async () => {
+  const w = await world();
+  await w.accept(await w.wireFor('n12a', await w.frame('held while blocked'), 'thr-u'), { frozen: true });
+  const created = w.threads.get('thr-u')!.created_at;
+  await new Promise((r) => setTimeout(r, 5));
+  const out = await w.accept(await w.wireFor('n12b', await w.frame('after unblock'), 'thr-u'), { admitted: true });
+  assert.equal(out.r?.held, undefined, 'the new note is an ordinary note');
+  const t = w.threads.get('thr-u')!;
+  assert.equal('held' in t, false, 'the thread row is an ordinary thread again');
+  assert.equal(t.created_at, created, 'created_at is the first note\'s: kept');
+  assert.equal(w.notes.get('n12a')?.held, true, 'the note held while blocked stays held (each note keeps its own flag)');
+  assert.equal(w.notes.get('n12b')?.held, undefined);
 });
 
 test('H5 D5 a held note with NO thread yet writes ONE thread row, flagged held, so the store looks the same and the default reader can filter it', async () => {
