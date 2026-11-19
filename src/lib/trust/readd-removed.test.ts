@@ -9,7 +9,8 @@
 // Run: npx tsx --test src/lib/trust/readd-removed.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { planRemovedDrop, dropRemoved } from '@/lib/trust/readd-removed';
 import { makeUpdate, type SealedRead, type UpdateIO } from '@/lib/trust/suppression-restore';
@@ -80,29 +81,37 @@ test('ATOMIC: a write that lands between the read and the commit is kept: the dr
 });
 
 // ---- the pins: source scans (comments are not code) ----
-const SRC = join(process.cwd(), 'src');
+const CWD = process.cwd();
+const SRC = join(CWD, 'src');
+// Every top-level directory that holds APPLICATION TypeScript is scanned. app/ is outside src/, and it is where the second Remove / Block path hid until a browser found it.
+const APP_ROOTS = ['app', 'src'];
+// Test harnesses and tooling: classified on purpose. A NEW top-level directory with TypeScript fails the ROOTS test until it is classified here or scanned above.
+const NOT_APP_ROOTS = ['e2e', 'scripts'];
 const codeOnly = (t: string): string => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) { if (name !== 'node_modules') sourceFiles(p, out); continue; }
+    if (statSync(p).isDirectory()) { if (name !== 'node_modules' && name !== '.next') sourceFiles(p, out); continue; }
     if (/\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name) && !/\.d\.ts$/.test(name)) out.push(p);
   }
   return out;
 }
-const filesWith = (needle: RegExp): string[] =>
-  sourceFiles(SRC).filter((f) => needle.test(codeOnly(readFileSync(f, 'utf8')))).map((f) => f.slice(SRC.length + 1)).sort();
+/** The files (paths relative to `cwd`) under `roots` whose code (comments dropped) matches `needle`. */
+const scan = (cwd: string, roots: string[], needle: RegExp): string[] =>
+  roots.flatMap((r) => (existsSync(join(cwd, r)) ? sourceFiles(join(cwd, r)) : []))
+    .filter((f) => needle.test(codeOnly(readFileSync(f, 'utf8')))).map((f) => f.slice(cwd.length + 1)).sort();
+const filesWith = (needle: RegExp): string[] => scan(CWD, APP_ROOTS, needle);
 
 test('WRITER PIN: only the identity store and the two list modules touch the list writer, and only this module shrinks it', () => {
-  assert.deepEqual(filesWith(/\bupdateRemoved\b/), ['lib/identity/client-store.ts', 'lib/trust/suppression-restore.ts'],
+  assert.deepEqual(filesWith(/\bupdateRemoved\b/), ['src/lib/identity/client-store.ts', 'src/lib/trust/suppression-restore.ts'],
     'a new writer of the removed list must be a deliberate, reviewed change');
-  assert.deepEqual(filesWith(/\bplanRemovedDrop\b/), ['lib/trust/readd-removed.ts'], 'the plan is built only here');
-  assert.deepEqual(filesWith(/\bdropRemoved\(/), ['lib/identity/client-store.ts', 'lib/trust/readd-removed.ts'], 'the drop is CALLED only by the store');
+  assert.deepEqual(filesWith(/\bplanRemovedDrop\b/), ['src/lib/trust/readd-removed.ts'], 'the plan is built only here');
+  assert.deepEqual(filesWith(/\bdropRemoved\(/), ['src/lib/identity/client-store.ts', 'src/lib/trust/readd-removed.ts'], 'the drop is CALLED only by the store');
 });
 
 test('NOT WIRED: no screen, import, restore, sync or gate arrival reaches the drop (only the store holds it); this pin changes with the private contact screen, on purpose', () => {
-  assert.deepEqual(filesWith(/\bdropRemovedForOwner\b/), ['lib/identity/client-store.ts']);
-  assert.deepEqual(filesWith(/trust\/readd-removed['"]/), ['lib/identity/client-store.ts']);
+  assert.deepEqual(filesWith(/\bdropRemovedForOwner\b/), ['src/lib/identity/client-store.ts']);
+  assert.deepEqual(filesWith(/trust\/readd-removed['"]/), ['src/lib/identity/client-store.ts']);
 });
 
 test('MANUAL ADD PIN: the manual add handler never reaches the planner or the drop writer (a form without a bound key cannot be the removed person), and addContact itself never drops', () => {
@@ -116,4 +125,24 @@ test('MANUAL ADD PIN: the manual add handler never reaches the planner or the dr
   assert.ok(a0 > 0, 'addContact is found');
   const a1 = store.indexOf('\nexport ', a0 + 10);
   assert.doesNotMatch(store.slice(a0, a1), /planRemovedDrop|dropRemoved|dropRemovedForOwner/, 'addContact never drops');
+});
+
+test('ROOTS: the pins scan every top-level directory that holds application TypeScript (app/ and src/); a new one fails until it is classified', () => {
+  const tops = readdirSync(CWD)
+    .filter((n) => !['node_modules', '.next', '.git', 'pw-out'].includes(n) && statSync(join(CWD, n)).isDirectory() && sourceFiles(join(CWD, n)).length > 0)
+    .sort();
+  assert.deepEqual(tops.filter((t) => !NOT_APP_ROOTS.includes(t)), APP_ROOTS, 'a top-level directory with TypeScript is neither scanned nor classified as a harness');
+});
+
+test('NEG: the scan SEES a call to the drop planted under app/ (outside src/), so the pins above would go red; and a comment-only mention is not a call', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'readd-pin-'));
+  try {
+    mkdirSync(join(tmp, 'app')); mkdirSync(join(tmp, 'src'));
+    writeFileSync(join(tmp, 'app', 'page.tsx'), "export const f = () => dropRemovedForOwner('o', 'a'.repeat(64));\n");
+    writeFileSync(join(tmp, 'src', 'note.ts'), '// dropRemovedForOwner is mentioned in a comment only\nexport const n = 1;\n');
+    assert.deepEqual(scan(tmp, APP_ROOTS, /\bdropRemovedForOwner\b/), ['app/page.tsx']);
+    assert.deepEqual(scan(tmp, ['src'], /\bdropRemovedForOwner\b/), [], 'scanning only src/ would have missed it (the gap this closes)');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
