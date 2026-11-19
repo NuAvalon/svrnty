@@ -79,33 +79,6 @@ async function confirmAction(page: Page, kind: string) {
   await expect(confirm).toHaveCount(0);
 }
 
-// The same navigation e2e/blocked-card-menu-unblock.spec.ts uses: the card menu, and the Blocked view for a blocked contact.
-async function blockViaUI(page: Page, who: string) {
-  await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
-  await rowOf(page, who).first().click();
-  await (await openCardMenu(page)).getByRole('menuitem', { name: 'Block', exact: true }).click();
-  await confirmAction(page, 'block');
-  await expect(rowOf(page, who)).toHaveCount(0); // gone from the main book
-}
-
-async function unblockViaUI(page: Page, who: string) {
-  await page.getByRole('button', { name: 'Book options' }).click();
-  await page.getByRole('menuitem', { name: /view blocked contacts/i }).click();
-  const blockedRow = rowOf(page, who).first();
-  await expect(blockedRow).toBeVisible({ timeout: 15_000 });
-  // A row click TOGGLES its card, and the card we blocked from may still be open: pin the state (closed), then open it.
-  const bookCard = page.locator('.contacts-book-pane [data-testid="contact-action-card"]');
-  if (await bookCard.count()) {
-    await blockedRow.click();
-    await expect(bookCard).toHaveCount(0);
-  }
-  await blockedRow.click();
-  await (await openCardMenu(page)).getByRole('menuitem', { name: 'Unblock', exact: true }).click();
-  await confirmAction(page, 'unblock');
-  await page.getByRole('button', { name: 'Book options' }).click();
-  await page.getByRole('menuitem', { name: /hide blocked contacts/i }).click();
-}
-
 async function removeViaUI(page: Page, who: string) {
   await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
   await expect(rowOf(page, who).first()).toBeVisible({ timeout: 15_000 });
