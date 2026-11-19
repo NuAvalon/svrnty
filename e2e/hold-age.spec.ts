@@ -196,3 +196,38 @@ test('D7 the UNLOCK path runs it on the real clock: the count row is put right f
   for (let i = 0; i < 3; i++) expect(await get(page, `young-${i}`)).not.toBeNull();
   expect((await stampsOf(page, 'legacy'))?.held_at, 'a legacy row got its clock started, and was not deleted').toBeTruthy();
 });
+
+test('D8 two TABS: one sweeping expired held notes while the other writes new ones never loses a count (the per-tab queue does not coordinate tabs: the compare-and-swap does)', async ({ context }) => {
+  test.setTimeout(180_000);
+  const open = async () => {
+    const pg = await context.newPage();
+    await pg.goto('/');
+    await pg.addScriptTag({ content: bundle('e2e/helpers/freeze-store-harness.ts') });
+    return pg;
+  };
+  const p1 = await open();
+  expect(await p1.evaluate((o) => window.__fz.initReconciled(o), OWNER)).toBe('ok');
+  await putThread(p1, mkThread('S-held', true));
+  const p2 = await open();
+  await p2.evaluate((o) => window.__fz.init(o), OWNER);   // the same owner, so the same database and the same count row
+  const OLD = 80;
+  for (let i = 0; i < OLD; i++) await put(p1, heldNote(`old-${i}`, { held_at: iso(NOW - 60 * DAY), expiry_seen_at: iso(NOW - 20 * DAY) }));
+  expect(await held(p1, A)).toEqual({ count: OLD });
+  const burst = (pg: Page) => pg.evaluate(async (a) => {
+    const mk = (id: string) => ({ note_id: id, thread_id: 'S-held', direction: 'inbound', from_fingerprint: a.fp, to_fingerprints: [], sent_at: '2026-01-02T00:00:00.000Z', body: id, participant_kind: 'human', retention: { expires_at: null }, wire_type: 'svrnty-note-v0', held: true, held_at: new Date(a.now).toISOString() });
+    const results: Array<'ok' | string> = [];
+    for (let i = 0; i < 40; i++) {
+      try { await window.__fz.putNote(mk(`new-${i}`) as never); results.push('ok'); } catch (e) { results.push(String(e)); }
+    }
+    return results;
+  }, { fp: A, now: NOW });
+  const [swept, wrote] = await Promise.all([sweep(p1, NOW), burst(p2)]);
+  const written = wrote.filter((r) => r === 'ok').length;
+  // a sweep step that cannot commit is SKIPPED (it is tried again at the next unlock), never half done; a write that cannot commit throws and is retried. Either way the row must say what the scan says.
+  expect(swept.deleted + swept.skipped, 'every old note was either deleted or skipped').toBe(OLD);
+  await expectRowEqualsScan(p1, [A], 'two tabs, a sweep and a burst of writes');
+  expect(await scan(p1, A)).toBe(written + (OLD - swept.deleted));
+  expect(swept.deleted, 'and the sweep really did delete').toBeGreaterThan(0);
+  expect(written, 'and nearly all the writes landed').toBeGreaterThanOrEqual(30);
+});
+
