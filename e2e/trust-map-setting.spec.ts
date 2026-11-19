@@ -75,7 +75,8 @@ const NOT_LIVE = "Showing up in other people's trust maps isn't live yet. Your c
 const STATE_ON = "You're set to show up in the trust maps of the people you're connected to.";
 const STATE_OFF = "You're set to stay out of other people's trust maps.";
 const CONFIRM = "Set yourself to show up in the trust maps of the people you're connected to?";
-const UNREADABLE = "Your trust-map setting couldn't be read on this device, so it can't be changed here. Nothing was changed.";
+const ABSENT = "This device has no trust-map setting saved, so it can't be changed here.";
+const UNREADABLE = "Your trust-map setting couldn't be read on this device, so it can't be changed here.";
 
 /** Identity tab -> Actions -> Lenses & vault: the panel that holds the setting. */
 async function openSetting(p: Page) {
@@ -157,24 +158,53 @@ test('#872 setting: a restored person sees the stored choice and the not-live li
   expect((await p.locator('body').innerText()).toLowerCase()).not.toContain('stay out of other people');
 });
 
-// MEASUREMENT, not an expectation about the product's intent: what does a FRESH identity (never restored) see? The record is only ever written by a restore or a Block, so a brand-new identity may have none.
-test('#872 setting: a fresh identity (never restored) - record the state the panel shows', async ({ page }, testInfo) => {
+// A FRESH identity (never restored) has no suppression record yet: nothing writes one at creation. The panel says so in its own words (not "couldn't be read": nothing failed), offers no switch, and creates nothing.
+test('#872 setting: a fresh identity (no record saved) sees the ABSENT sentence, no switch, and nothing is created', async ({ page }) => {
   test.setTimeout(240_000);
   await mint(page, 'Fresh Fay');
   const owner = (await page.evaluate(() => window.__sup.owner())) ?? '';
-  const st = await page.evaluate((o) => window.__sup.read(o), owner);
+  const before = await page.evaluate((o) => window.__sup.read(o), owner);
+  expect(before.record, 'a fresh identity has no record').toBeNull();
   const section = await openSetting(page);
-  const state = await section.getAttribute('data-state');
-  const lines = await section.innerText();
-  console.log('FRESH', JSON.stringify({ record: st.record, pending: (st.pending as { state: string }).state, panelState: state }));
-  console.log('FRESH_PANEL_TEXT', JSON.stringify(lines));
-  expect(['visible', 'hidden', 'unreadable']).toContain(state);
-  if (st.record === null) {
-    expect(state, 'no readable record: no switch, the unreadable line, nothing written').toBe('unreadable');
-    await expect(page.getByTestId('trust-map-unreadable')).toHaveText(UNREADABLE);
-    await expect(page.getByTestId('trust-map-switch')).toHaveCount(0);
-    await expect(page.getByTestId('trust-map-not-live')).toHaveText(NOT_LIVE);
-    expect((await page.evaluate((o) => window.__sup.read(o), owner)).record, 'and nothing was created').toBeNull();
-  }
-  void testInfo;
+  await expect(section).toHaveAttribute('data-state', 'absent');
+  await expect(page.getByTestId('trust-map-absent')).toHaveText(ABSENT);
+  await expect(page.getByTestId('trust-map-unreadable')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-switch')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-not-live')).toHaveText(NOT_LIVE);
+  expect((await section.innerText()).toLowerCase()).not.toContain("couldn't be read");
+  const after = await page.evaluate((o) => window.__sup.read(o), owner);
+  expect(after.record, 'and nothing was created').toBeNull();
+});
+
+// A record that is saved but cannot be opened is a different state with a different sentence, and it is NEVER overwritten: the raw stored row is byte-equal before and after the panel is opened.
+test('#872 setting: a saved record that cannot be read sees the UNREADABLE sentence, no switch, and the stored row is untouched', async ({ page }) => {
+  test.setTimeout(240_000);
+  await mint(page, 'Broken Bea');
+  const owner = (await page.evaluate(() => window.__sup.owner())) ?? '';
+  await page.evaluate(([o, x]) => window.__sup.seed(o, { global: true, groups: ['family'], persons: [x] }), [owner, P1] as const);
+  // Corrupt the sealed row in place (valid shape, garbage ciphertext): it opens as nothing the store can understand.
+  const rowKey = `suppression:${owner}`;
+  const corrupt = (k: string) => page.evaluate(async (key) => {
+    const db: IDBDatabase = await new Promise((res, rej) => { const r = indexedDB.open('svrnty'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    await new Promise<void>((res, rej) => { const tx = db.transaction('settings', 'readwrite'); tx.objectStore('settings').put({ key, value: { iv: 'AAAAAAAAAAAAAAAA', ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAAA' } }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    db.close();
+  }, k);
+  const rawRow = (k: string) => page.evaluate(async (key) => {
+    const db: IDBDatabase = await new Promise((res, rej) => { const r = indexedDB.open('svrnty'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const v = await new Promise<unknown>((res, rej) => { const rq = db.transaction('settings').objectStore('settings').get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+    db.close();
+    return JSON.stringify(v);
+  }, k);
+  await corrupt(rowKey);
+  const before = await rawRow(rowKey);
+  expect(before).toContain('AAAAAAAAAAAAAAAA');
+  expect((await page.evaluate((o) => window.__sup.read(o), owner)).record, 'the record no longer reads').toBeNull();
+
+  const section = await openSetting(page);
+  await expect(section).toHaveAttribute('data-state', 'unreadable');
+  await expect(page.getByTestId('trust-map-unreadable')).toHaveText(UNREADABLE);
+  await expect(page.getByTestId('trust-map-absent')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-switch')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-not-live')).toHaveText(NOT_LIVE);
+  expect(await rawRow(rowKey), 'the stored row is byte-equal: never overwritten').toBe(before);
 });

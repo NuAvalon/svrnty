@@ -4,7 +4,8 @@
  * "Show up in trust maps": the owner's own choice, any time (including after a restore). Glass only: what it may write is setOwnerGlobalVisibleForOwner, which changes ONLY the global flag (the
  * people the owner blocked or listed stay suppressed either way) and refuses a record that is absent or unreadable. It lives inside the Lenses & vault panel and nowhere else: the Identity face, the
  * share dialog, the Galaxy and the ceremony are shown to other people, and "You're set to stay out of other people's trust maps" must not be readable there.
- * Three states: the stored choice (a switch; turning "show up" on asks first, turning it off does not), or unreadable (no switch: a write would be a guess). The not-live line shows in all of them
+ * Four states: the stored choice (a switch; turning "show up" on asks first, turning it off does not), absent (nothing saved on this device) or unreadable (a record that cannot be opened): no switch for
+ * either, because a write would be a guess, and each has its own sentence (absent is NOT a fault). The not-live line shows in all of them
  * while isPiece2MutualBlockLive() is false (one source, so the screen cannot say "not live" while the emitter runs, or the reverse).
  */
 
@@ -13,6 +14,7 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { readOwnerGlobalVisibility, setOwnerGlobalVisibleForOwner } from '@/lib/identity/client-store';
 import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
 import {
+  TRUST_MAP_ABSENT,
   TRUST_MAP_CONFIRM,
   TRUST_MAP_CONFIRM_NO,
   TRUST_MAP_CONFIRM_YES,
@@ -24,7 +26,7 @@ import {
   TRUST_MAP_WRITE_FAILED,
 } from './trust-map-copy';
 
-type Stored = 'visible' | 'hidden' | 'unreadable';
+type Stored = 'visible' | 'hidden' | 'absent' | 'unreadable';
 
 const btn = (active: boolean): React.CSSProperties => ({
   flex: 1,
@@ -81,7 +83,9 @@ export function TrustMapSettings({ ownerFingerprint }: { ownerFingerprint: strin
     >
       <h3 style={{ margin: '0 0 6px', fontSize: 13, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: E.accent }}>{TRUST_MAP_LABEL}</h3>
 
-      {stored === 'unreadable' ? (
+      {stored === 'absent' ? (
+        <p data-testid="trust-map-absent" style={{ margin: '8px 0', fontSize: 13, lineHeight: 1.45, color: E.muted }}>{TRUST_MAP_ABSENT}</p>
+      ) : stored === 'unreadable' ? (
         <p data-testid="trust-map-unreadable" style={{ margin: '8px 0', fontSize: 13, lineHeight: 1.45, color: E.muted }}>{TRUST_MAP_UNREADABLE}</p>
       ) : (
         <>

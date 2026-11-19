@@ -1,5 +1,5 @@
 // Run: npx tsx --test src/components/settings/trust-map-setting.test.ts
-// The "Show up in trust maps" setting: its words are the copy owner's byte for byte (ledger rows 323 and 325), it exists only inside the Lenses & vault panel, the writer has one caller, turning "show up" ON
+// The "Show up in trust maps" setting: its words are the copy owner's byte for byte (ledger rows 323 and 326), it exists only inside the Lenses & vault panel, the writer has one caller, turning "show up" ON
 // asks first, and the not-live line reads the one flag that also gates the emitter. Source scans over app/ and src/ (comments are not code).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,7 +36,8 @@ test('TM1 every sentence is the copy owner\'s bytes (length + sha256 prefix) and
     ['323d Show up', copy.TRUST_MAP_CONFIRM_YES, 7, 'b43e47255851dc59'],
     ['323d Cancel', copy.TRUST_MAP_CONFIRM_NO, 6, '19766ed6ccb2f4a3'],
     ['323f write failed', copy.TRUST_MAP_WRITE_FAILED, 56, '44a6df8051a158c0'],
-    ['325a unreadable', copy.TRUST_MAP_UNREADABLE, 105, 'a384498251da0ddd'],
+    ['326a absent', copy.TRUST_MAP_ABSENT, 72, '93757b238368db05'],
+    ['326b unreadable', copy.TRUST_MAP_UNREADABLE, 84, 'd82c4d582595ebe2'],
   ];
   for (const [name, text, len, sha] of rows) {
     assert.equal(text.length, len, `${name}: length`);
@@ -96,6 +97,19 @@ test('TM7 the not-live line reads the ONE flag (isPiece2MutualBlockLive) and not
   assert.equal([...panel.matchAll(/isPiece2MutualBlockLive\(\)/g)].length, 1);
   assert.match(panel, /\{!isPiece2MutualBlockLive\(\) \? \(\s*<p data-testid="trust-map-not-live"[^>]*>\{TRUST_MAP_NOT_LIVE\}<\/p>\s*\) : null\}/, 'it renders iff the flag is false, in every state (outside the unreadable/choice branches)');
   assert.doesNotMatch(panel, /process\.env|localStorage|sessionStorage|NEXT_PUBLIC/, 'no second source');
+});
+
+test('TM9 absent and unreadable are TOLD APART all the way: the reader returns four states, the panel picks its sentence by state, neither shows a switch, and 325a (which said "couldn\'t be read" about a fine device) is gone', () => {
+  const store = codeOnly(read('src/lib/identity/client-store.ts'));
+  const a = store.indexOf('export async function readOwnerGlobalVisibility(');
+  const body = store.slice(a, store.indexOf('\n}\n', a));
+  assert.match(body, /Promise<'visible' \| 'hidden' \| 'absent' \| 'unreadable'>/, 'four states');
+  assert.match(body, /if \(r\.state === 'absent'\) return 'absent';\s*if \(r\.state === 'unreadable'\) return 'unreadable';/, 'absent and unreadable are separate returns');
+  const panel = codeOnly(read(PANEL));
+  assert.match(panel, /stored === 'absent' \? \(\s*<p data-testid="trust-map-absent"[^>]*>\{TRUST_MAP_ABSENT\}<\/p>\s*\) : stored === 'unreadable' \? \(\s*<p data-testid="trust-map-unreadable"[^>]*>\{TRUST_MAP_UNREADABLE\}<\/p>\s*\) : \(/, 'each state shows its own sentence, and only the choice branch below has a switch');
+  assert.equal([...panel.matchAll(/data-testid="trust-map-switch"/g)].length, 1, 'one switch, in the choice branch');
+  assert.ok(panel.indexOf('data-testid="trust-map-switch"') > panel.indexOf('data-testid="trust-map-unreadable"'), 'after the absent and unreadable branches');
+  assert.doesNotMatch(codeOnly(read('src/components/settings/trust-map-copy.ts')), /Nothing was changed/, 'the void sentence is not in the copy module (a comment saying why it is void is not the sentence)');
 });
 
 test('TM8 the stored state is shown, never the requested one: every write ends with a re-read', () => {

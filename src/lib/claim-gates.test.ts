@@ -75,6 +75,7 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     if (!isPiece2MutualBlockLive()) assert.deepEqual(namers, ['src/lib/sync/affirm-sync.ts'], 'the emitter cannot be wired live without flipping the flag that changes the words');
     const gates = readFileSync(join(process.cwd(), 'src', 'lib', 'claim-gates.ts'), 'utf8');
     assert.ok(gates.includes('G8 (#872) merged: a restored person can become visible again'), 'the flip preconditions name the G8 setting');
+    assert.ok(gates.includes('registerPiece2GenesisInit() is called once from the app bootstrap, so a new identity starts with an explicit empty record'), 'and the genesis record');
   });
 
   it('TrustMap empty-state trust copy is the honest "coming" sentence ONLY: no mutual sentence, no gate import (G-6 lockstep, Flint lane:svrnty #136 / Hypatia #924)', () => {

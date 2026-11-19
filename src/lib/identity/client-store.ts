@@ -885,10 +885,12 @@ export const confirmGlobalOffAfterRestore = (ownerFingerprint: string): Promise<
 /** The owner's own choice from the settings panel, any time: show up (global OFF) or stay out (global ON). Only the global flag changes; see setOwnerGlobalVisible. Its one caller is the trust-map setting in the Lenses & vault panel. */
 export const setOwnerGlobalVisibleForOwner = (ownerFingerprint: string, visible: boolean): Promise<VisibilityOutcome> => setOwnerGlobalVisible(createRestorePorts(ownerFingerprint), visible);
 
-/** What the settings panel shows: the stored choice, or 'unreadable' for a record that is ABSENT or cannot be read (no switch is offered then: a write would be a guess, and the writer refuses it). */
-export async function readOwnerGlobalVisibility(ownerFingerprint: string): Promise<'visible' | 'hidden' | 'unreadable'> {
+/** What the settings panel shows: the stored choice, or 'absent' (no record saved on this device) or 'unreadable' (a record that cannot be opened or understood), told apart because the words differ. Neither offers a switch: a write would be a guess, and the writer refuses both. */
+export async function readOwnerGlobalVisibility(ownerFingerprint: string): Promise<'visible' | 'hidden' | 'absent' | 'unreadable'> {
   const r = await readSealed<SuppressionRecord>(ownerFingerprint, suppressionSettingKey(ownerFingerprint), SUPPRESSION_RECORD_ID, (x) => (isSuppressionRecord(x) ? x : null));
-  return r.state === 'ok' ? (r.value.global ? 'hidden' : 'visible') : 'unreadable';
+  if (r.state === 'absent') return 'absent';
+  if (r.state === 'unreadable') return 'unreadable';
+  return r.value.global ? 'hidden' : 'visible';
 }
 
 // ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
