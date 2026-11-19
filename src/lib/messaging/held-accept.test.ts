@@ -98,7 +98,7 @@ test('H3 an ADMITTED contact never asks the frozen question, and its record has 
 
 test('H4 D5 a held note on an EXISTING thread writes NO thread row (a reorder would be a tell)', async () => {
   const w = await world();
-  const t0: NoteThread = { thread_id: 'thr', kind: 'direct', participants: [], created_at: '2026-01-01T00:00:00.000Z', last_activity_at: '2026-01-01T00:00:00.000Z', retention: { expires_at: null } } as never;
+  const t0: NoteThread = { thread_id: 'thr', kind: 'direct', participants: [{ fingerprint: w.id.fingerprint, kind: 'human', display_name: 'frozen sender' }] /* the sender is IN the thread, as in every real one (an empty list would make them a non-participant) */, created_at: '2026-01-01T00:00:00.000Z', last_activity_at: '2026-01-01T00:00:00.000Z', retention: { expires_at: null } } as never;
   w.threads.set('thr', t0);
   const before = JSON.stringify(w.threads.get('thr'));
   const out = await w.accept(await w.wireFor('n4', await w.frame('held on an existing thread')), { frozen: true });

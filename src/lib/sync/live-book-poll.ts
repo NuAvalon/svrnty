@@ -69,6 +69,7 @@ import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-res
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { ConsumeSummary, JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
+import { threadAliasPort } from '@/lib/messaging/thread-alias-store';
 import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { receiptKeyFromHex, verifyReceiptTag } from '@/lib/crypto/receipt-mac';
@@ -248,6 +249,8 @@ export function buildNoteSeam(
           dropCause = c;
         },
         onRewriteRefused: noteRewriteRefused,
+        // A sender who names a thread they are not in gets a fresh local thread, remembered here so their next notes join it (thread-alias.ts).
+        threadAliases: threadAliasPort,
         wire,
         isAdmitted: async (fp) => admitContact(await bookRow(fp)),
         isFrozen: async (fp) => isFrozenContact(await bookRow(fp)),
