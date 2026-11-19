@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
+import { OldBackupReminder } from '@/components/export/OldBackupReminder';
+import { OLD_BACKUP_PRE_RESTORE_HINT } from '@/components/export/old-backup-copy';
+import { markerForRestore } from '@/lib/identity/restored-from-old-backup';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { openWithPassword, LEGACY_PASSWORD_METHOD_NOTICE } from '@/lib/crypto/password-envelope';
@@ -62,6 +65,12 @@ interface SoverentityFrontendProps {
    */
   importNote?: string | null;
   onImportNoteChange?: (note: string | null) => void;
+  /**
+   * "Not now" on the older-backup notice, held by the PAGE for the same reason as importNote: the Identity tab is mounted again on a tab switch, and a dismissal has to last the
+   * session, not the mount. It is never written to the marker, so the notice returns on the next load until a new backup has been made.
+   */
+  oldBackupNoticeDismissed?: boolean;
+  onOldBackupNoticeDismiss?: () => void;
   /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
   appLockPrefs?: AppLockPrefs;
   onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
@@ -272,6 +281,8 @@ export function SoverentityFrontend({
   onVaultRestore,
   importNote,
   onImportNoteChange,
+  oldBackupNoticeDismissed,
+  onOldBackupNoticeDismiss,
   appLockPrefs,
   onAppLockPrefsChange,
   onLockNow,
@@ -311,8 +322,15 @@ export function SoverentityFrontend({
     setLocalImportNote(note);
     onImportNoteChange?.(note);
   };
-  /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
-  const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
+  // The older-backup notice (OldBackupReminder reads the sealed marker and decides). Not now lives in the page when there is one; a mount without a page keeps its own.
+  const [localOldBackupDismissed, setLocalOldBackupDismissed] = useState(false);
+  const oldBackupDismissed = onOldBackupNoticeDismiss ? (oldBackupNoticeDismissed ?? false) : localOldBackupDismissed;
+  const dismissOldBackupNotice = () => {
+    setLocalOldBackupDismissed(true);
+    onOldBackupNoticeDismiss?.();
+  };
+  /** Bumped when a new backup has been written, so the notice looks at the marker again. */
+  const [backupWrittenTick, setBackupWrittenTick] = useState(0);
   /** After successful seed-only restore — unmissable contacts-honesty interstitial (no CTA). */
   const [seedRestoreInterstitial, setSeedRestoreInterstitial] = useState<{
     identity: any;
@@ -928,13 +946,22 @@ export function SoverentityFrontend({
         const skippedNote = formatVaultRestoreReport(restored.contacts);
         if (skippedNote) setPlaintextImportNote(skippedNote);
 
+        // An older-format file: leave the owner's reminder to make a new backup (a sealed marker; restored-from-old-backup.ts has the rules, including "only when the restore stored a
+        // recovery vault"). The restore above has stored that vault and opened the session key, so the write can seal. It is written BEFORE the identity is set, because setting the identity mounts the Identity tab, whose notice reads the marker once on mount;
+        // that tab, not this screen, shows it (this screen is gone by then). A failed write costs only the reminder; the restore stands.
+        const marker = markerForRestore(vaultHeader?.version, contents.recovery, new Date());
+        if (marker) {
+          try {
+            const { writeRestoredFromOldBackup } = await import('@/lib/identity/client-store');
+            await writeRestoredFromOldBackup(restored.fingerprint, marker);
+          } catch (markerErr) {
+            console.warn('Could not leave the make-a-new-backup reminder:', markerErr);
+          }
+        }
+
         setIdentity(contents.identity);
         onIdentityUpdate?.(contents.identity);
         onVaultRestore?.(contents);
-        // Migration nudge (DO-SECOND): v3 users should re-export before a loss event.
-        if (vaultHeader?.version === 3) {
-          setShowV3MigrationNudge(true);
-        }
       }
     } catch (err) {
       if (isRestoreDomainRefusal(err)) {
@@ -1681,11 +1708,8 @@ export function SoverentityFrontend({
               )}
               {isV3Vault && (
                 <div style={{ ...s.hint, marginTop: 16, textAlign: 'center' }}>
-                  <p style={{ margin: '0 0 6px' }}>
-                    This backup was created before passphrase-free recovery. It can be restored only with your passphrase.
-                  </p>
-                  <p style={{ margin: 0 }}>
-                    Re-export your identity to enable recovery-code restore if you lose your passphrase.
+                  <p data-testid="old-backup-pre-restore-hint" style={{ margin: 0 }}>
+                    {OLD_BACKUP_PRE_RESTORE_HINT}
                   </p>
                 </div>
               )}
@@ -2065,44 +2089,15 @@ export function SoverentityFrontend({
           sendFn={handleContactMethodSend}
         />
 
-        {showV3MigrationNudge && (
-          <div
-            role="status"
-            style={{
-              background: 'rgba(249, 168, 37, 0.08)',
-              border: '1px solid rgba(249, 168, 37, 0.28)',
-              borderRadius: 12,
-              padding: '10px 12px',
-              marginTop: 10,
-              maxWidth: 440,
-              width: '100%',
-            }}
-          >
-            <p style={{ margin: '0 0 6px', color: SE.accent, fontSize: 12, fontWeight: 600, lineHeight: 1.4 }}>
-              Update your backup to enable passphrase-free recovery
-            </p>
-            <p style={{ margin: '0 0 8px', color: SE.muted, fontSize: 11, lineHeight: 1.45 }}>
-              This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowV3MigrationNudge(false)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: SE.dim,
-                fontFamily: SE.fontSans,
-                fontSize: 12,
-                cursor: 'pointer',
-                textDecoration: 'underline',
-                textUnderlineOffset: 2,
-                padding: 0,
-              }}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
+        {existingIdentity && identity?.identity?.fingerprint ? (
+          <OldBackupReminder
+            fingerprint={identity.identity.fingerprint}
+            dismissed={oldBackupDismissed}
+            onDismiss={dismissOldBackupNotice}
+            onMakeBackup={() => setShowVaultExportDialog(true)}
+            reloadKey={backupWrittenTick}
+          />
+        ) : null}
 
         <CardMorePanel
           open={vaultOpen}
@@ -2282,6 +2277,7 @@ export function SoverentityFrontend({
           onDownloaded={() => {
             setBackupFlash(true);
             setTimeout(() => setBackupFlash(false), 2000);
+            setBackupWrittenTick((n) => n + 1);
           }}
           onSessionLocked={() => {
             window.location.reload();

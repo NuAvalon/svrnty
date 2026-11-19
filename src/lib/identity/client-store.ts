@@ -20,6 +20,7 @@ import type { CarriedSuppression } from '../trust/suppression-carry';
 import { confirmPendingGlobalOff, makeUpdate, parsePendingGlobalOff, parseRemovedList, recordRemoval, removalRefusal, restoreSuppression, setOwnerGlobalVisible, suppressionCarryStatus, suppressionToCarry, type CarryStatus, type ConfirmOutcome, type PendingGlobalOff, type VisibilityOutcome, type RestorePorts, type RestoreReport, type SealedRead, type Update } from '../trust/suppression-restore';
 import { parseDeliveryDefault, restrictOnly, type DeliveryDefault, type DeliveryDefaultRead, type DeliveryDefaultValue } from '../trust/delivery-receipt-setting';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
+import { parseRestoredFromOldBackup, type RestoredFromOldBackup } from './restored-from-old-backup';
 import { isBeaconSeeds, type BeaconSeeds } from './beacon-seeds';
 import { isBeaconKeyRecord, newBeaconKeyRecord, type BeaconKeyRecord } from './beacon-key-record';
 import { createBeaconStore, createBeaconLatch, beaconRowPrefixes, beaconRowAad, type BeaconKV, type Sealer } from '../trust/beacon-ports';
@@ -675,6 +676,10 @@ const SUPPRESSION_PENDING_RECORD_ID = 'piece2:suppression-pending'; // reserved 
 function suppressionPendingSettingKey(ownerFingerprint: string): string {
   return `suppression_pending:${ownerFingerprint}`;
 }
+const RESTORED_FROM_OLD_BACKUP_RECORD_ID = 'owner:restored-from-old-backup'; // reserved AAD id
+function restoredFromOldBackupSettingKey(ownerFingerprint: string): string {
+  return `restored_from_old_backup:${ownerFingerprint}`;
+}
 
 export type SealedRow = { key: string; value: { iv: string; ciphertext: string; enc_version?: number } };
 
@@ -757,6 +762,22 @@ async function writePendingGlobalOff(ownerFingerprint: string, marker: PendingGl
 
 async function clearPendingGlobalOff(ownerFingerprint: string): Promise<void> {
   await txDelete('settings', suppressionPendingSettingKey(ownerFingerprint));
+}
+
+// ── The "restored from an older backup" marker (restored-from-old-backup.ts has the rules) ─────────────────────────────────────────────────────────
+// ONE sealed owner row. Written by the restore of an older-format file and by nothing else; cleared by the finished export of the new backup and by nothing else.
+// exportAll and the vault payload never carry it.
+export const readRestoredFromOldBackup = (ownerFingerprint: string): Promise<SealedRead<RestoredFromOldBackup>> =>
+  readSealed(ownerFingerprint, restoredFromOldBackupSettingKey(ownerFingerprint), RESTORED_FROM_OLD_BACKUP_RECORD_ID, parseRestoredFromOldBackup);
+
+export async function writeRestoredFromOldBackup(ownerFingerprint: string, marker: RestoredFromOldBackup): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the restored-from-older-backup marker unencrypted (fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, RESTORED_FROM_OLD_BACKUP_RECORD_ID, ownerFingerprint, marker);
+  await txPut('settings', { key: restoredFromOldBackupSettingKey(ownerFingerprint), value: payload });
+}
+
+export async function clearRestoredFromOldBackup(ownerFingerprint: string): Promise<void> {
+  await txDelete('settings', restoredFromOldBackupSettingKey(ownerFingerprint));
 }
 
 /**
@@ -1300,6 +1321,8 @@ export async function importBeaconKeyRecord(ownerFingerprint: string, candidate:
  *  - 'removed-contacts': TIGHTENING. The durable ids of contacts the owner removed, the only thing a restore can rebuild a Remove latch from (a latch row holds a one-way pair id and a kind).
  *    It travels in the passphrase-authenticated vault only, and only Removes recorded after it existed are in it.
  *  - 'suppression-pending': not a stop. Left by a restore when the backup said global off and this device had no record; losing it means the person is never asked and stays private.
+ *  - 'restored-from-old-backup': not a stop. A reminder left by the restore of an older-format file; losing it means the owner is not reminded to make a new backup (the restore screen already warned).
+ *    It is never in a backup file: a restore of the new backup must not come back with the reminder set.
  */
 export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: string; settingKey: (ownerFingerprint: string) => string }> = [
   { name: 'suppression', recordId: SUPPRESSION_RECORD_ID, settingKey: suppressionSettingKey },
@@ -1311,6 +1334,7 @@ export const OWNER_SEALED_SETTINGS: ReadonlyArray<{ name: string; recordId: stri
   { name: 'beacon-confirmed', recordId: BEACON_CONFIRMED_RECORD_ID, settingKey: beaconConfirmedSettingKey },
   { name: 'removed-contacts', recordId: REMOVED_RECORD_ID, settingKey: removedSettingKey },
   { name: 'suppression-pending', recordId: SUPPRESSION_PENDING_RECORD_ID, settingKey: suppressionPendingSettingKey },
+  { name: 'restored-from-old-backup', recordId: RESTORED_FROM_OLD_BACKUP_RECORD_ID, settingKey: restoredFromOldBackupSettingKey },
 ];
 
 export async function listIdentities(): Promise<IdentityRecord[]> {

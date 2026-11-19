@@ -42,7 +42,7 @@ test('S2 the list has no duplicate name, id or key, and its ids are the reserved
   assert.equal(new Set(listed.map((l) => l.name)).size, listed.length, 'names are unique');
   assert.equal(new Set(listed.map((l) => l.recordId)).size, listed.length, 'record ids are unique');
   assert.equal(new Set(listed.map((l) => l.settingKey)).size, listed.length, 'setting keys are unique');
-  assert.deepEqual(listed.map((l) => l.name), ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed', 'removed-contacts', 'suppression-pending']);
+  assert.deepEqual(listed.map((l) => l.name), ['suppression', 'held-affirms', 'delivery-default', 'lens-book', 'beacon-seeds', 'beacon-key', 'beacon-confirmed', 'removed-contacts', 'suppression-pending', 'restored-from-old-backup']);
   for (const l of listed) assert.match(store, new RegExp(`const ${l.recordId} = '[a-z0-9]+:[a-z-]+';`), `${l.recordId} is a reserved id constant`);
 });
 

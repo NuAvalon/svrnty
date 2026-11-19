@@ -79,6 +79,8 @@ export default function Home() {
   const [identity, setIdentity] = useState<any>(null);
   // The report note a backup import/restore leaves for the owner. Held here because the gate and the Identity tab each mount their own SoverentityFrontend.
   const [importNote, setImportNote] = useState<string | null>(null);
+  // "Not now" on the older-backup notice. Held here for the same reason: the Identity tab is mounted again on every tab switch, and a dismissal lasts the unlocked session.
+  const [oldBackupNoticeDismissed, setOldBackupNoticeDismissed] = useState(false);
   // The note names contacts of ONE identity's unlocked session. It must not survive that session: when the identity becomes null (every lock path, manual or
   // automatic, and every switch, which goes through the locked screen) or changes to another, it is dropped here, before the next identity's tab mounts.
   const noteIdentityFp: string | null = identity?.identity?.fingerprint ?? null;
@@ -88,6 +90,8 @@ export default function Home() {
     previousNoteIdentityFp.current = noteIdentityFp;
     if (previous !== null && previous !== noteIdentityFp) setImportNote(null);
   }, [noteIdentityFp]);
+  // The same moments end a dismissal: a lock (the identity becomes null) or a switch starts a new unlocked session, and the notice may show again.
+  useEffect(() => { setOldBackupNoticeDismissed(false); }, [noteIdentityFp]);
   const [contacts, setContacts] = useState<TrustEdge[]>([]);
   const [lockedIdentity, setLockedIdentity] = useState<{ name: string; fingerprint: string } | null>(null);
   const [passphrase, setPassphrase] = useState('');
@@ -758,6 +762,8 @@ export default function Home() {
                 onIdentityUpdate={handleIdentityUpdate}
                 importNote={importNote}
                 onImportNoteChange={setImportNote}
+                oldBackupNoticeDismissed={oldBackupNoticeDismissed}
+                onOldBackupNoticeDismiss={() => setOldBackupNoticeDismissed(true)}
                 appLockPrefs={canLock ? appLockPrefs : undefined}
                 onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
                 onLockNow={canLock ? handleLockNow : undefined}

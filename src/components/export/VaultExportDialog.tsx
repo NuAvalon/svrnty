@@ -170,6 +170,12 @@ export function VaultExportDialog({
       );
       const packed = await packVault(contents, password);
       downloadVault(packed);
+      // A new sealed vault backup has just been written, so the "restored from an older backup" reminder is done. This is the ONE place that clears it (restored-from-old-backup.ts):
+      // not a button, not the plaintext or legacy export paths. Before onDownloaded, so the screen that looks again finds it gone. A failed clear leaves the reminder, which is shown again.
+      try {
+        const { clearRestoredFromOldBackup } = await import('@/lib/identity/client-store');
+        await clearRestoredFromOldBackup(fingerprint);
+      } catch { /* the backup is made; a reminder that stays is shown again, never lost */ }
       setStep('done');
       onDownloaded?.();
     } catch (err) {
