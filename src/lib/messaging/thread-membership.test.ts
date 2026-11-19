@@ -53,8 +53,8 @@ async function world() {
     resolve: async (s, c) => { if (flags.throwOnResolve) throw new Error('notes store locked'); return flags.forget ? null : (table.get(`${s.toLowerCase()}|${c}`) ?? null); },
     remember: async (s, c, l) => { calls.aliasRemember++; if (!flags.forget) table.set(`${s.toLowerCase()}|${c}`, l); },
   };
-  const wireFor = (note_id: string, body: string, thread_id: string): Promise<NoteWireV0> =>
-    signNoteWire({ type: NOTE_WIRE_TYPE, note_id, thread_id, from_fingerprint: id.fingerprint, sent_at: new Date().toISOString(), body, participant_kind: 'human' },
+  const wireFor = (note_id: string, body: string, thread_id: string, sent_at: string = new Date().toISOString()): Promise<NoteWireV0> =>
+    signNoteWire({ type: NOTE_WIRE_TYPE, note_id, thread_id, from_fingerprint: id.fingerprint, sent_at, body, participant_kind: 'human' },
       id.public_key, sender.secret_material.classicalPrivateKey, sender.secret_material.classicalKpass, id.pq_kem_public_key, id.pq_sig_public_key);
   const frame = async (text: string) => (await sealDirectNote(ME, text, them, peerOf(me), theirIO.io))!;
   const accept = async (wire: NoteWireV0, o: { frozen?: boolean; withAliases?: boolean } = {}) => {
@@ -171,16 +171,32 @@ test('T6 NO ORACLE: what the sender can observe is the same for a KNOWN thread i
   assert.deepEqual(shape(a), shape(b));
 });
 
-test('T7 a REDELIVERY of the same non-participant note is idempotent: one note, one thread, no refused-rewrite', async () => {
+// A real redelivery that REACHES the first-write-wins check: the same note (same id, body and signed time) arriving again as a FRESH ratchet frame (a duplicate through a second relay).
+// (Delivering the very same frame twice never gets that far: its key is spent, so the stored note is returned first.)
+test('T7 a REDELIVERY of the same non-participant note (a fresh frame, same id/body/time) is idempotent: one note, one thread, no refused-rewrite', async () => {
   const w = await world();
   w.seedThread('T7', [OTHER]);
-  const wire = await w.wireFor('n7', await w.frame('once'), 'T7');
-  const first = await w.accept(wire);
+  const SENT = '2026-02-02T10:00:00.000Z';
+  const first = await w.accept(await w.wireFor('n7', await w.frame('once'), 'T7', SENT));
   assert.ok(first.r);
-  const again = await w.accept(wire);
+  const again = await w.accept(await w.wireFor('n7', await w.frame('once'), 'T7', SENT));
   assert.equal(again.rewriteRefused, 0, 'not mistaken for a rewrite');
+  assert.equal(again.r!.thread_id, first.r!.thread_id, 'it finds the same fresh thread');
   assert.equal(w.notes.size, 1);
   assert.equal([...w.threads.keys()].filter((k) => k !== 'T7').length, 1);
+});
+
+test('T7b the same redelivery with the ALIAS LOST still finds the note\'s own fresh thread (no second thread, no refused-rewrite)', async () => {
+  const w = await world();
+  w.seedThread('T7b', [OTHER]);
+  w.flags.forget = true; // the alias is never found (evicted, or its write failed)
+  const SENT = '2026-02-02T11:00:00.000Z';
+  const first = await w.accept(await w.wireFor('n7b', await w.frame('once'), 'T7b', SENT));
+  assert.ok(first.r);
+  const again = await w.accept(await w.wireFor('n7b', await w.frame('once'), 'T7b', SENT));
+  assert.equal(again.rewriteRefused, 0);
+  assert.equal(again.r!.thread_id, first.r!.thread_id);
+  assert.equal([...w.threads.keys()].filter((k) => k !== 'T7b').length, 1);
 });
 
 test('T8 a locked alias store THROWS (the note waits for a retry); it never falls back to joining the original', async () => {
