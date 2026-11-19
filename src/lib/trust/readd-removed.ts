@@ -22,6 +22,16 @@ export function planRemovedDrop(held: SealedRead<string[]>, durableId: string): 
   return { kind: 'write', list: held.value.filter((id) => id !== durableId) };
 }
 
+/**
+ * Whether the owner's private contact screen shows "You removed this person before" for this contact: the contact is in the book (the caller only asks about a contact it holds) and
+ * its id is on the removed list. Read only. An absent list is "no"; an UNREADABLE list is also "no" (the screen says nothing it cannot back, and the drop would refuse anyway). The list holds only canonical ids
+ * (parseRemovedList), so a contact with no canonical fingerprint can never match.
+ */
+export function wasRemovedBefore(held: SealedRead<string[]>, durableId: string | null | undefined): boolean {
+  if (!durableId || held.state !== 'ok') return false;
+  return held.value.includes(durableId.trim().toLowerCase());
+}
+
 /** Drop one id atomically (decided on the list the port read, and decided again if another write landed first). */
 export function dropRemoved(update: Update<string[]>, durableId: string): Promise<RemovedDrop> {
   return update<RemovedDrop>((held) => {

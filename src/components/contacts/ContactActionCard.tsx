@@ -12,6 +12,7 @@ import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { CardActionMenu, cardVerbBtnStyle } from '@/components/ui/CardActionMenu';
 import { VivreBurn } from '@/components/VivreBurn';
 import { paintInboundDistress } from '@/components/vivre-paint-gate';
+import { RemovedBeforeNotice, type RemovedBeforeNoticeProps } from './RemovedBeforeNotice';
 
 export function ContactActionCard({
   testId = 'contact-action-card',
@@ -36,6 +37,7 @@ export function ContactActionCard({
   more,
   edit,
   banner,
+  removedBeforeNotice,
 }: {
   testId?: string;
   name: string;
@@ -59,6 +61,8 @@ export function ContactActionCard({
   more?: ReactNode;
   edit?: ReactNode;
   banner?: ReactNode;
+  /** OPT-IN, owner's private view only: "You removed this person before". Only the contact book passes it; the Galaxy (shown to people in person) never does, so the words cannot render there. */
+  removedBeforeNotice?: RemovedBeforeNoticeProps;
 }) {
   const showMore = expanded || !!edit;
   const showDistress = paintInboundDistress(distress);
@@ -101,6 +105,7 @@ export function ContactActionCard({
         </div>
       ) : null}
       {banner}
+      {removedBeforeNotice ? <RemovedBeforeNotice {...removedBeforeNotice} /> : null}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         {fingerprint ? (
           <span className="contact-hex" aria-hidden="true">

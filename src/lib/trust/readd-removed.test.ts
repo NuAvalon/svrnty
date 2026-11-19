@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planRemovedDrop, dropRemoved } from '@/lib/trust/readd-removed';
+import { planRemovedDrop, dropRemoved, wasRemovedBefore } from '@/lib/trust/readd-removed';
 import { makeUpdate, type SealedRead, type UpdateIO } from '@/lib/trust/suppression-restore';
 
 const A = 'a'.repeat(64);
@@ -40,6 +40,20 @@ test('PLAN: an absent list and an id that is not on the list are no-ops', () => 
   assert.deepEqual(planRemovedDrop({ state: 'absent' }, A), { kind: 'noop' });
   assert.deepEqual(planRemovedDrop({ state: 'ok', value: [B, C] }, A), { kind: 'noop' });
   assert.deepEqual(planRemovedDrop({ state: 'ok', value: [] }, A), { kind: 'noop' });
+});
+
+test('READER: the notice shows only for a canonical id that is ON a readable list (any case, spaces trimmed); absent, unreadable, a stranger and a keyless contact are all no', () => {
+  const list: SealedRead<string[]> = { state: 'ok', value: [A, C] };
+  assert.equal(wasRemovedBefore(list, A), true);
+  assert.equal(wasRemovedBefore(list, ` ${A.toUpperCase()} `), true);
+  assert.equal(wasRemovedBefore(list, B), false);
+  assert.equal(wasRemovedBefore({ state: 'ok', value: [] }, A), false);
+  assert.equal(wasRemovedBefore({ state: 'absent' }, A), false);
+  assert.equal(wasRemovedBefore({ state: 'unreadable' }, A), false);
+  assert.equal(wasRemovedBefore(list, ''), false);
+  assert.equal(wasRemovedBefore(list, null), false);
+  assert.equal(wasRemovedBefore(list, undefined), false);
+  assert.equal(wasRemovedBefore(list, 'not-a-fingerprint'), false);
 });
 
 test('PLAN: an UNREADABLE list refuses (fails closed): nothing is dropped on a list that cannot be read', () => {
@@ -109,9 +123,31 @@ test('WRITER PIN: only the identity store and the two list modules touch the lis
   assert.deepEqual(filesWith(/\bdropRemoved\(/), ['src/lib/identity/client-store.ts', 'src/lib/trust/readd-removed.ts'], 'the drop is CALLED only by the store');
 });
 
-test('NOT WIRED: no screen, import, restore, sync or gate arrival reaches the drop (only the store holds it); this pin changes with the private contact screen, on purpose', () => {
-  assert.deepEqual(filesWith(/\bdropRemovedForOwner\b/), ['src/lib/identity/client-store.ts']);
-  assert.deepEqual(filesWith(/trust\/readd-removed['"]/), ['src/lib/identity/client-store.ts']);
+test('ONE CALLER: the drop is reached from the owner\'s contact book alone, from ONE call inside the Keep handler, and that handler is reached only from the notice\'s onKeep (no import, restore, sync, gate arrival, exchange or the Galaxy)', () => {
+  assert.deepEqual(filesWith(/\bdropRemovedForOwner\b/), ['src/components/ContactManagement.tsx', 'src/lib/identity/client-store.ts']);
+  assert.deepEqual(filesWith(/trust\/readd-removed['"]/), ['src/components/ContactManagement.tsx', 'src/lib/identity/client-store.ts']);
+  const cm = codeOnly(readFileSync(join(SRC, 'components', 'ContactManagement.tsx'), 'utf8'));
+  assert.equal((cm.match(/\bdropRemovedForOwner\(/g) ?? []).length, 1, 'exactly one call');
+  const a = cm.indexOf('const keepRemovedPerson = async');
+  const b = cm.indexOf('\n  };', a);
+  assert.ok(a > 0 && b > a, 'the Keep handler is found');
+  assert.match(cm.slice(a, b), /\bdropRemovedForOwner\(/, 'the one call is inside the Keep handler');
+  const uses = cm.match(/\bkeepRemovedPerson\b/g) ?? [];
+  assert.equal(uses.length, 2, 'the handler is defined once and used once');
+  assert.match(cm, /onKeep: \(\) => \{ void keepRemovedPerson\(\); \}/, 'and the one use is the notice\'s onKeep');
+});
+
+test('PRIVATE ONLY: the notice exists only behind an opt-in prop that the contact book alone passes; the Galaxy (shown to people in person) never passes it, so its words cannot render there', () => {
+  assert.deepEqual(filesWith(/\bremovedBeforeNotice\b/), ['src/components/ContactManagement.tsx', 'src/components/contacts/ContactActionCard.tsx']);
+  assert.deepEqual(filesWith(/\bRemovedBeforeNotice\b/), ['src/components/contacts/ContactActionCard.tsx', 'src/components/contacts/RemovedBeforeNotice.tsx']);
+  assert.deepEqual(filesWith(/removed-before-copy/), ['src/components/contacts/RemovedBeforeNotice.tsx']);
+  assert.deepEqual(filesWith(/\bwasRemovedBefore\b/), ['src/components/ContactManagement.tsx', 'src/lib/trust/readd-removed.ts']);
+  const card = codeOnly(readFileSync(join(SRC, 'components', 'contacts', 'ContactActionCard.tsx'), 'utf8'));
+  assert.match(card, /removedBeforeNotice\?: RemovedBeforeNoticeProps;/, 'the prop is optional: a card without it renders no notice');
+  assert.match(card, /\{removedBeforeNotice \? <RemovedBeforeNotice \{\.\.\.removedBeforeNotice\} \/> : null\}/, 'and renders it only when given');
+  const galaxy = codeOnly(readFileSync(join(SRC, 'components', 'TrustMap.tsx'), 'utf8'));
+  assert.doesNotMatch(galaxy, /removedBefore|RemovedBefore|removed-before|You removed this person/i, 'the Galaxy never passes, imports or spells the notice');
+  assert.deepEqual(filesWith(/You removed this person before/), ['src/components/contacts/removed-before-copy.ts'], 'the sentence lives in the one copy module');
 });
 
 test('MANUAL ADD PIN: the manual add handler never reaches the planner or the drop writer (a form without a bound key cannot be the removed person), and addContact itself never drops', () => {

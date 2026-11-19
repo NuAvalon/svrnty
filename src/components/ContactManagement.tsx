@@ -55,8 +55,10 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact,
   getContact, getContactByFingerprint, loadKey, readBeaconKeyRecord,
+  readRemovedList, dropRemovedForOwner,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { wasRemovedBefore } from '@/lib/trust/readd-removed';
 import { publicKeyOf as beaconPublicKeyOf } from '@/lib/identity/beacon-key-record';
 import { ownBeaconFrom, knownBeaconOf, decideBeaconIntake } from '@/lib/trust/beacon-contact-key';
 import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
@@ -306,6 +308,34 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     if (!selectedContact || selectionMode) return;
     bookCardRef.current?.scrollIntoView({ behavior: 'auto', block: 'nearest' });
   }, [selectedContact?.id, selectionMode]);
+
+  // "You removed this person before" (task 912, owner's private contact book only; the Galaxy never gets it). Shown while the person is in the book AND on the removed list. Keep is the ONE caller
+  // of the drop; Remove them again is the normal Remove. The state names the contact it belongs to, so an answer that lands after the selection moved is never applied to another card.
+  const [removedBefore, setRemovedBefore] = useState<{ contactId: string; failed: boolean; busy: boolean } | null>(null);
+  useEffect(() => {
+    setRemovedBefore(null);
+    const contactId = selectedContact?.id;
+    const peer = selectedContact?.fingerprint;
+    if (!fingerprint || !contactId || !peer || selectionMode) return;
+    let cancelled = false;
+    void readRemovedList(fingerprint)
+      .then((held) => { if (!cancelled && wasRemovedBefore(held, peer)) setRemovedBefore({ contactId, failed: false, busy: false }); })
+      .catch(() => { /* an unreadable list shows nothing: the screen says only what it can back */ });
+    return () => { cancelled = true; };
+  }, [fingerprint, selectedContact?.id, selectedContact?.fingerprint, selectionMode]);
+  const keepRemovedPerson = async () => {
+    const contactId = selectedContact?.id;
+    const peer = selectedContact?.fingerprint;
+    if (!fingerprint || !contactId || !peer) return;
+    const settle = (next: { contactId: string; failed: boolean; busy: boolean } | null) => setRemovedBefore((cur) => (cur && cur.contactId === contactId ? next : cur));
+    settle({ contactId, failed: false, busy: true });
+    try {
+      const r = await dropRemovedForOwner(fingerprint, peer);
+      settle(r.kind === 'refuse' ? { contactId, failed: true, busy: false } : null);
+    } catch {
+      settle({ contactId, failed: true, busy: false });
+    }
+  };
 
   // Live-beat: a peer's edit → the return-channel caller applies it IN Alice's page → emits reason:'live-apply'.
   // We re-project the book IN-PLACE (no reload / no navigation — the honest hinge) and mark the ignited rows
@@ -1817,6 +1847,13 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               actionsOpen={bookActionsOpen}
               onActionsOpenChange={setBookActionsOpen}
               actionsSide="up"
+              removedBeforeNotice={removedBefore && removedBefore.contactId === focused.id ? {
+                failed: removedBefore.failed,
+                busy: removedBefore.busy,
+                onKeep: () => { void keepRemovedPerson(); },
+                onRemoveAgain: () => setConfirmKind('remove'),
+                onNotNow: () => setRemovedBefore((cur) => (cur ? { ...cur, failed: false } : cur)),
+              } : undefined}
               actions={(
                 <>
                   {!svrn ? (
