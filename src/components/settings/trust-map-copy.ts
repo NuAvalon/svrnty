@@ -3,7 +3,7 @@
 //   - While nobody is sent anything yet (isPiece2MutualBlockLive() is false) every line says what is SAVED and that it is not live. Nothing here claims that anyone is currently hidden or shown, and nothing
 //     mentions blocked people or a delay: those come back with the switch that makes the setting live, re-verified then.
 //   - Turning "show up" ON asks first; turning it OFF does not.
-// Run: npx tsx --test src/components/settings/trust-map-copy.test.ts
+// Run: npx tsx --test src/components/settings/trust-map-setting.test.ts   (the hashes and lengths of these strings are pinned there)
 
 /** Row 323a (21 chars, sha256 prefix 6f0d114e6f1f20eb): the switch's label. */
 export const TRUST_MAP_LABEL = 'Show up in trust maps';
