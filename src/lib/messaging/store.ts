@@ -3,7 +3,7 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
-import { isHeldNote, noteExpired, visibleThreads } from './held-note';
+import { heldSweepAction, isHeldNote, noteExpired, stampedHeldNote, visibleThreads, type HeldSweepAction } from './held-note';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
@@ -155,12 +155,13 @@ async function txPutIfUnchanged(store: string, key: string, expected: EncryptedB
 async function txCommitIfUnchanged(
   expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }>,
   puts: Array<{ store: string; value: unknown }>,
+  deletes: Array<{ store: 'notes'; key: string }> = [],
 ): Promise<boolean> {
   if (expects.length === 0) throw new Error('txCommitIfUnchanged needs at least one row to compare');
   for (const e of expects) if (e.store === 'settings' && !isAllowedSettingsRowKey(e.key)) throw new Error('settings row key not allowed');
   for (const p of puts) if (p.store === 'settings' && !isAllowedSettingsRowKey((p.value as { key?: unknown }).key)) throw new Error('settings row key not allowed');
   const db = await openDb();
-  const stores = [...new Set([...expects.map((e) => e.store), ...puts.map((p) => p.store)])];
+  const stores = [...new Set([...expects.map((e) => e.store), ...puts.map((p) => p.store), ...deletes.map((d) => d.store)])];
   return new Promise((resolve, reject) => {
     const tx = db.transaction(stores, 'readwrite');
     let wrote = false;
@@ -175,6 +176,7 @@ async function txCommitIfUnchanged(
         // No await anywhere here: the last read answers, and the writes go out in the same callback, inside the same transaction.
         if (--pending === 0 && allSame) {
           for (const p of puts) tx.objectStore(p.store).put(p.value);
+          for (const d of deletes) tx.objectStore(d.store).delete(d.key);
           wrote = true;
         }
       };
@@ -265,7 +267,7 @@ export async function initNotesStore(passphrase: string, ownerFingerprint: strin
   _notesSalt = salt;
   _notesOwner = ownerFingerprint;
   // Off the receive path: put the held-count row right from the notes (it also CREATES the row for everyone, so its presence says nothing about who is frozen).
-  if (opts?.reconcile !== false) scheduleHeldCountsReconcile();
+  if (opts?.reconcile !== false) scheduleHeldMaintenance();
 }
 
 export function isNotesStoreUnlocked(): boolean {
@@ -576,6 +578,87 @@ export function reconcileHeldCounts(): Promise<'ok' | 'gave-up'> {
 
 function scheduleHeldCountsReconcile(): void {
   reconcileHeldCounts().catch(() => {});   // best effort: a locked store, or a store that cannot be read, leaves the row as it was
+}
+
+export type HeldAgeLimits = { limitDays?: number; graceDays?: number };
+export type HeldAgeStepResult = HeldSweepAction | 'gone' | 'unreadable' | 'lost-race';
+export type HeldAgeSweep = { deleted: number; stamped: number; cleared: number; kept: number; skipped: number };
+
+/**
+ * ONE held note, one step of the age sweep (held-note.ts: heldSweepAction decides, on the OWNER'S clock). The row is read HERE, inside the retry loop, so the decision is always made on the latest copy.
+ * A stamp rewrites the note row only (its sender and held-ness do not change, so the count does not), compare-and-swap against the blob that was read. A DELETE is the counted twin of writeNote: the note
+ * row goes and the count row drops by one in the SAME compare-and-swap (and a count row that cannot be adjusted is written DIRTY, so the next arrival counts by the scan and a rebuild is scheduled): a held
+ * row is NEVER removed by a bare delete, which would leave the count high and refuse a person's evidence early. A row that cannot be decrypted is skipped: unknown age means keep.
+ */
+async function heldAgeStep(noteId: string, nowMs: number, limits?: HeldAgeLimits): Promise<HeldAgeStepResult> {
+  for (let attempt = 0; attempt < NOTE_WRITE_ATTEMPTS; attempt++) {
+    const priorRow = await txGet<NoteRow>('notes', noteId);
+    if (!priorRow) return 'gone';
+    let note: NoteRecord;
+    try {
+      note = await decryptJson<NoteRecord>(priorRow.enc);
+    } catch {
+      return 'unreadable';
+    }
+    const action = heldSweepAction(note, nowMs, limits?.limitDays, limits?.graceDays);
+    if (action === 'keep') return 'keep';
+    const expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }> = [{ store: 'notes', key: noteId, enc: priorRow.enc }];
+    let committed: boolean;
+    let wroteDirty = false;
+    if (action === 'delete') {
+      const counter = await readHeldCountsRow();
+      expects.push({ store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc });
+      const usable = counter.read !== 'absent' && counter.read !== null && counter.read.state === 'ok' ? counter.read.counts : null;
+      const next: HeldCountsRead = usable ? { state: 'ok', counts: applyChange(usable, heldInboundSender(note), null) } : { state: 'dirty' };
+      wroteDirty = usable === null;
+      const countRow = { key: HELD_COUNTS_KEY, enc: await encryptJson(sealedShape(next)) } satisfies SettingsRow;
+      committed = await txCommitIfUnchanged(expects, [{ store: 'settings', value: countRow }], [{ store: 'notes', key: noteId }]);
+    } else {
+      const enc = await encryptJson(stampedHeldNote(note, action, nowMs));
+      committed = await txCommitIfUnchanged(expects, [{ store: 'notes', value: { note_id: note.note_id, thread_id: note.thread_id, enc } satisfies NoteRow }]);
+    }
+    if (committed) {
+      if (wroteDirty) scheduleHeldCountsReconcile();
+      return action;
+    }
+    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 4 * (attempt + 1))));   // another tab (or a write) moved a row: back off a little, then decide again on the new copy
+  }
+  return 'lost-race';
+}
+
+let _sweepRun: Promise<HeldAgeSweep> | null = null;
+
+/**
+ * Apply the hold's age limit to every held note, on the owner's clock, OFF the receive path (at unlock, after the count row is put right). One run at a time. Each note goes through the same per-tab
+ * write queue as every other note write. `nowMs` and `limits` exist for tests; production passes neither (so the limit is the one named number in held-note.ts). Throws while locked.
+ */
+export function sweepHeldAge(nowMs: number = Date.now(), limits?: HeldAgeLimits): Promise<HeldAgeSweep> {
+  if (_sweepRun) return _sweepRun;
+  const run = (async (): Promise<HeldAgeSweep> => {
+    requireUnlocked();
+    const out: HeldAgeSweep = { deleted: 0, stamped: 0, cleared: 0, kept: 0, skipped: 0 };
+    for (const t of await listThreadsIncludingHeld()) {
+      for (const n of await listNotesIncludingHeld(t.thread_id)) {
+        if (!isHeldNote(n)) continue;
+        const r = await serializeNoteWrite(() => heldAgeStep(n.note_id, nowMs, limits));
+        if (r === 'delete') out.deleted++;
+        else if (r === 'stamp-held-at' || r === 'stamp-expiry') out.stamped++;
+        else if (r === 'clear-expiry') out.cleared++;
+        else if (r === 'keep') out.kept++;
+        else out.skipped++;
+      }
+    }
+    return out;
+  })();
+  _sweepRun = run.finally(() => {
+    _sweepRun = null;
+  });
+  return _sweepRun;
+}
+
+// At unlock, off the receive path: put the count row right FIRST, then apply the age limit (the counted deletes then adjust a row that is right). Best effort: a locked store, or one that cannot be read, leaves everything as it was.
+function scheduleHeldMaintenance(): void {
+  reconcileHeldCounts().catch(() => {}).then(() => sweepHeldAge()).catch(() => {});
 }
 
 export async function deleteThread(threadId: string): Promise<void> {
