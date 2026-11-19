@@ -12,7 +12,7 @@ const code = (rel: string): string => read(rel).replace(/\/\*[\s\S]*?\*\//g, '')
 
 test('OB1 the four strings are the copy owner\'s bytes (length + sha256 prefix) and plain ASCII', () => {
   const rows: Array<[string, string, number, string]> = [
-    ['329a pre-restore hint', copy.OLD_BACKUP_PRE_RESTORE_HINT, 175, '697091a9f466eb77'],
+    ['330a pre-restore hint', copy.OLD_BACKUP_PRE_RESTORE_HINT, 203, 'e2fb136fe5095b6d'],
     ['329b notice', copy.OLD_BACKUP_NOTICE, 169, 'de59608988bc7d47'],
     ['329b button make', copy.OLD_BACKUP_MAKE_NEW, 17, 'd98cf9e9ac8384b2'],
     ['329b button not now', copy.OLD_BACKUP_NOT_NOW, 7, 'a0e63d7c7125d29a'],
