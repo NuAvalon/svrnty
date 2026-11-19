@@ -6,7 +6,7 @@
 //   - the vault export is the ONE place it is attached, and the dialog packs it into the sealed vault,
 //   - every change to the record goes through the atomic update (no read-then-replace in the restore block),
 //   - a Remove must be recorded BEFORE its latch: recordRemovedContact has no caller yet, so this fails the day someone wires one without moving the pin,
-//   - no screen imports the confirmation until the copy is cleared.
+//   - the removed-list reader has ONE screen caller (the contact book's private notice); no screen imports the confirmation or the pending reader until the copy is cleared.
 // Run: npx tsx --test src/lib/identity/suppression-carry-wiring.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -110,8 +110,16 @@ test('W7 TRIPWIRE (rewritten now that a Remove caller exists, as it instructed):
   assert.deepEqual(reachingTheLatch, [], 'no file calls removeAtTap yet (the local latch is written through blockLatchPortsFor)');
 });
 
-test('W8 no screen imports the confirmation or the readers yet (the copy is not cleared for screens until the build is green)', () => {
-  for (const name of ['confirmGlobalOffAfterRestore', 'readPendingGlobalOff', 'readRemovedList']) {
+test('W8 TRIPWIRE (rewritten on purpose for the contact book\'s private notice, as W7 was): the removed-list reader\'s one screen caller is that notice; the confirmation and the pending reader have none yet', () => {
+  assert.deepEqual(callersOf('readRemovedList'), ['src/components/ContactManagement.tsx'], 'the one screen caller is the contact book (the owner\'s private "You removed this person before" notice), never an import, a restore, a sync or the Galaxy');
+  const book = codeOnly(readFileSync(new URL('../../components/ContactManagement.tsx', import.meta.url), 'utf8'));
+  assert.equal([...book.matchAll(/\breadRemovedList\(/g)].length, 1, 'exactly one call in the contact book');
+  const a = book.indexOf('const [removedBefore, setRemovedBefore]');
+  const b = book.indexOf('const keepRemovedPerson = async');
+  const at = book.indexOf('readRemovedList(');
+  assert.ok(a >= 0 && b > a && at > a && at < b, 'and it is the notice effect\'s read (after the notice state, before the Keep handler)');
+  // The two readers of the restore-time "off" still have NO screen. The first screen for that confirmation rewrites these two names on purpose, as this line was rewritten for the notice; never loosen it to "any".
+  for (const name of ['confirmGlobalOffAfterRestore', 'readPendingGlobalOff']) {
     assert.deepEqual(callersOf(name), [], `${name} has no caller outside the store`);
   }
 });
