@@ -148,3 +148,27 @@ test('HM8 PIN: the alias field of the headless book is named by the store alone 
     .filter((f) => /\bthread_aliases\b/.test(codeOnly(readFileSync(f, 'utf8')))).map((f) => f.slice(CWD.length + 1)).sort();
   assert.deepEqual(named, ['src/lib/headless/headless-store.ts']);
 });
+
+test('HM9 TWO SENDERS: two different non-members naming the same thread get two different fresh threads, each listing only its own sender (the alias is keyed by the sender)', () => {
+  const B = 'ef'.repeat(32);
+  const s = new HeadlessStore();
+  s.putThread(thread('thr_victim', [OTHER]));
+  const before = JSON.stringify(s.listThreads().find((t) => t.thread_id === 'thr_victim'));
+  assert.equal(accept(s, note('a1', 'thr_victim')), 'created');
+  assert.equal(accept(s, note('b1', 'thr_victim', { from_fingerprint: B })), 'created');
+  const tA = s.listNotes().find((n) => n.note_id === 'a1')!.thread_id;
+  const tB = s.listNotes().find((n) => n.note_id === 'b1')!.thread_id;
+  assert.notEqual(tA, 'thr_victim');
+  assert.notEqual(tB, 'thr_victim');
+  assert.notEqual(tA, tB, "B's note is not filed into A's fresh thread");
+  const fps = (id: string) => s.listThreads().find((t) => t.thread_id === id)!.participants.map((p) => p.fingerprint);
+  assert.deepEqual(fps(tA), [SENDER], "A's thread lists only A");
+  assert.deepEqual(fps(tB), [B], "B's thread lists only B");
+  // each sender's later note under the same claimed id stays in their OWN fresh thread
+  assert.equal(accept(s, note('a2', 'thr_victim')), 'created');
+  assert.equal(accept(s, note('b2', 'thr_victim', { from_fingerprint: B })), 'created');
+  assert.equal(s.listNotes().find((n) => n.note_id === 'a2')!.thread_id, tA);
+  assert.equal(s.listNotes().find((n) => n.note_id === 'b2')!.thread_id, tB);
+  assert.equal(JSON.stringify(s.listThreads().find((t) => t.thread_id === 'thr_victim')), before, 'the claimed thread is still untouched');
+  assert.deepEqual(others(s, ['thr_victim', tA, tB]), [], 'no other thread appeared');
+});
