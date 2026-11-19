@@ -167,6 +167,8 @@ export interface AcceptedNote {
   note_id: string;
   thread_id: string;
   from_fingerprint: string;
+  /** Present (and true) when the sender was FROZEN (in the book and blocked) and the note was staged HELD: kept as evidence, shown nowhere. */
+  held?: true;
 }
 
 /** Emitted after a note is persisted so the inbox repaints live (separate from the contact-book beat). */
@@ -1028,6 +1030,9 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
           if (accepted.dropped === 'not-in-book' && (await isBlockedInBook(deps.store, accepted.fp))) return { kind: 'terminal', cls: { benign: 'note-blocked-sender' } };
           return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp, cause: accepted.cause } };
         }
+        // Freeze keep: the accept above staged this note HELD (its sender is frozen). Its relay copy is consumed with no record, and nothing that a note
+        // arrived is counted or repainted (a screen that is never told cannot show it). Exactly true: a look-alike value is an ordinary note.
+        if (accepted && 'held' in accepted && accepted.held === true) return { kind: 'terminal', cls: { benign: 'note-frozen-stored' } };
         // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).
         return accepted
           ? { kind: 'note', event: { note_id: accepted.note_id, thread_id: accepted.thread_id, from_fingerprint: accepted.from_fingerprint } }

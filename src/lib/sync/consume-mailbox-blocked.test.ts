@@ -385,3 +385,64 @@ test('NOTE C2: refused at the commit because the sender was REMOVED (not blocked
   assert.equal(s.lost['not-in-book'], 1);
   assert.deepEqual(acks, [['e1']]);
 });
+
+// ── Freeze keep: a note stored HELD (the sender is frozen: in the book and blocked) is consumed as a benign terminal ──
+// Acked, no dead-letter row, not counted as a message, no inbox repaint: the owner's screen must show nothing that a note arrived.
+const holdingNotes = (from: string, held: unknown = true): NoteResponseSeam => ({
+  verify: async (blob) => (blob === 'NOTE' ? noteWire(from) : null),
+  accept: async (w) => ({ note_id: w.note_id, thread_id: w.thread_id, from_fingerprint: w.from_fingerprint, held } as never),
+});
+
+test('HOLD-1 a HELD note is acked, writes no dead-letter row, is not counted as a note, and causes no inbox repaint', async () => {
+  const a = recordingSink();
+  const acks: string[][] = [];
+  const repaints: unknown[] = [];
+  const s = await consumeInboundContactUpdates(deps({
+    note: holdingNotes(bob.fingerprint), deadLetter: a.sink, store: noteStore(async () => null), emitNote: (e) => repaints.push(e),
+    fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], acks).fetchImpl,
+  }));
+  assert.deepEqual(acks, [['e1']], 'consumed: the relay copy is acked (the note is already staged)');
+  assert.equal(a.rows.length, 0, 'no dead-letter row');
+  assert.equal(s.deadLettered, 0);
+  assert.equal(s.notes, 0, 'not counted as a received note');
+  assert.deepEqual(repaints, [], 'no inbox repaint: a screen that is never told cannot show it');
+  assert.equal(s.lost['not-in-book'], undefined, 'not counted as a lost message');
+});
+
+test('HOLD-2 CONTROL: an ORDINARY accepted note (no held key) is still counted and repainted, so the held branch did not swallow ordinary notes', async () => {
+  const repaints: unknown[] = [];
+  const s = await consumeInboundContactUpdates(deps({
+    note: acceptingNotes(bob.fingerprint), store: noteStore(async () => null), emitNote: (e) => repaints.push(e),
+    fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], []).fetchImpl,
+  }));
+  assert.equal(s.notes, 1);
+  assert.equal(repaints.length, 1);
+});
+
+test('HOLD-3 only EXACTLY true is held: a truthy look-alike is an ordinary note (it must not silently vanish from the screen)', async () => {
+  for (const look of ['yes', 1, {}, 'true']) {
+    const repaints: unknown[] = [];
+    const s = await consumeInboundContactUpdates(deps({
+      note: holdingNotes(bob.fingerprint, look), store: noteStore(async () => null), emitNote: (e) => repaints.push(e),
+      fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], []).fetchImpl,
+    }));
+    assert.equal(s.notes, 1, String(look));
+    assert.equal(repaints.length, 1, String(look));
+  }
+});
+
+test('HOLD-4 a held note does not disturb the batch: the notes around it are applied normally and everything is acked', async () => {
+  const repaints: Array<{ note_id: string }> = [];
+  const note: NoteResponseSeam = {
+    verify: async (blob) => (blob.startsWith('NOTE') ? { ...noteWire(bob.fingerprint), note_id: blob } : null),
+    accept: async (w) => ({ note_id: w.note_id, thread_id: w.thread_id, from_fingerprint: w.from_fingerprint, ...(w.note_id === 'NOTE-held' ? { held: true } : {}) } as never),
+  };
+  const acks: string[][] = [];
+  const s = await consumeInboundContactUpdates(deps({
+    note, store: noteStore(async () => null), emitNote: (e) => repaints.push(e as { note_id: string }),
+    fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE-a' }, { envelope_id: 'e2', blob: 'NOTE-held' }, { envelope_id: 'e3', blob: 'NOTE-b' }], acks).fetchImpl,
+  }));
+  assert.equal(s.notes, 2);
+  assert.deepEqual(repaints.map((r) => r.note_id).sort(), ['NOTE-a', 'NOTE-b']);
+  assert.deepEqual(acks.flat().sort(), ['e1', 'e2', 'e3']);
+});

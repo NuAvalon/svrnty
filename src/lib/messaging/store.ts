@@ -3,6 +3,7 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
+import { isHeldNote, noteExpired, visibleThreads } from './held-note';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
@@ -263,7 +264,16 @@ export async function putThread(thread: NoteThread): Promise<void> {
   await txPut('threads', { thread_id: thread.thread_id, enc } satisfies ThreadRow);
 }
 
+/** The ONLY thread reader that returns held threads (a thread that exists because of held notes). Its callers are pinned by a test; every other reader gets listThreads. */
+export async function listThreadsIncludingHeld(): Promise<NoteThread[]> {
+  return readThreads();
+}
+
 export async function listThreads(): Promise<NoteThread[]> {
+  return visibleThreads(await readThreads());
+}
+
+async function readThreads(): Promise<NoteThread[]> {
   const rows = await txGetAll<ThreadRow>('threads');
   const out: NoteThread[] = [];
   for (const row of rows) {
@@ -361,7 +371,16 @@ export async function getNote(noteId: string): Promise<NoteRecord | null> {
   }
 }
 
+/** The ONLY note reader that returns held notes. Its callers are pinned by a test; every other reader gets listNotesForThread. */
+export async function listNotesIncludingHeld(threadId: string): Promise<NoteRecord[]> {
+  return readNotesForThread(threadId, true);
+}
+
 export async function listNotesForThread(threadId: string): Promise<NoteRecord[]> {
+  return readNotesForThread(threadId, false);
+}
+
+async function readNotesForThread(threadId: string, includeHeld: boolean): Promise<NoteRecord[]> {
   const db = await openDb();
   const rows: NoteRow[] = await new Promise((resolve, reject) => {
     const tx = db.transaction('notes', 'readonly');
@@ -375,10 +394,11 @@ export async function listNotesForThread(threadId: string): Promise<NoteRecord[]
   for (const row of rows) {
     try {
       const note = await decryptJson<NoteRecord>(row.enc);
-      if (note.retention.expires_at && new Date(note.retention.expires_at).getTime() < now) {
+      if (noteExpired(note, now)) {   // a HELD note never expires on the sender's retention (the sender chooses it)
         await txDelete('notes', note.note_id);
         continue;
       }
+      if (!includeHeld && isHeldNote(note)) continue;
       out.push(note);
     } catch {
       // skip
@@ -395,18 +415,36 @@ export async function listNotesForThread(threadId: string): Promise<NoteRecord[]
 export async function listInboundSentAtFrom(peerFingerprint: string): Promise<string[]> {
   const want = peerFingerprint.toLowerCase();
   const out: string[] = [];
-  for (const t of await listThreads()) {
-    for (const n of await listNotesForThread(t.thread_id)) {
+  for (const t of await listThreadsIncludingHeld()) {   // the replay guard must see HELD notes too, or a replayed old first frame could replace the session
+    for (const n of await listNotesIncludingHeld(t.thread_id)) {
       if (n.direction === 'inbound' && n.from_fingerprint.toLowerCase() === want) out.push(n.sent_at);
     }
   }
   return out;
 }
 
+/** How many notes from this sender are HELD right now (the per-sender cap check). The fingerprint compare ignores case, like the replay guard. */
+export async function countHeldFrom(peerFingerprint: string): Promise<number> {
+  const want = peerFingerprint.toLowerCase();
+  let count = 0;
+  for (const t of await listThreadsIncludingHeld()) {
+    for (const n of await listNotesIncludingHeld(t.thread_id)) {
+      if (isHeldNote(n) && n.direction === 'inbound' && n.from_fingerprint.toLowerCase() === want) count++;
+    }
+  }
+  return count;
+}
+
 export async function deleteThread(threadId: string): Promise<void> {
-  const notes = await listNotesForThread(threadId);
-  for (const n of notes) await txDelete('notes', n.note_id);
-  await txDelete('threads', threadId);
+  // A delete is about what the owner can SEE. Held notes are evidence (kept until the owner removes them from the hold view), so every held note stays, and so
+  // does the thread row they hang on: the include-held readers find held notes by walking threads, so a deleted row would strand them where the cap count, the
+  // replay guard and the hold view could never reach them. The kept row is flagged held, which hides it from every default reader like any held thread.
+  const notes = await listNotesIncludingHeld(threadId);
+  for (const n of notes) if (!isHeldNote(n)) await txDelete('notes', n.note_id);
+  if (notes.some((n) => isHeldNote(n))) {
+    const row = await txGet<ThreadRow>('threads', threadId);
+    if (row) await putThread({ ...(await decryptJson<NoteThread>(row.enc)), held: true });
+  } else await txDelete('threads', threadId);
 }
 
 // ── Encrypted rows in the existing 'settings' store (#720 dead-letter records) ───────────────────────────────────────────────────

@@ -18,11 +18,22 @@ const body = (name: string) => {
   return SRC.slice(start, ends.length ? Math.min(...ends) : undefined);
 };
 
-test('listThreads heals each pinned thread and sorts on the bounded value', () => {
-  const b = body('listThreads');
-  assert.match(b, /healPinnedThread\(/, 'listThreads calls healPinnedThread');
+// Freeze keep split listThreads in two: readThreads does the read, the heal and the sort (what this fence has always pinned); listThreads returns it
+// with held threads filtered out; listThreadsIncludingHeld returns it unfiltered. So the heal/sort pins now read readThreads, and two new pins keep
+// both public readers going through it (a reader that skipped the heal, or one that forgot the filter, fails here).
+test('readThreads heals each pinned thread and sorts on the bounded value', () => {
+  const b = body('readThreads');
+  assert.match(b, /healPinnedThread\(/, 'readThreads calls healPinnedThread');
   assert.match(b, /activityMs\(/, 'the sort uses the bounded numeric key, not the raw stored text');
   assert.doesNotMatch(b, /localeCompare/, 'no string comparison of timestamps is left in the sort');
+});
+
+test('listThreads is readThreads with held threads filtered out; listThreadsIncludingHeld is readThreads unfiltered', () => {
+  const l = body('listThreads');
+  assert.match(l, /visibleThreads\(await readThreads\(\)\)/, 'the default reader filters held threads out of the healed, sorted list');
+  const h = body('listThreadsIncludingHeld');
+  assert.match(h, /return readThreads\(\);/, 'the include-held reader is the same read, unfiltered');
+  assert.doesNotMatch(h, /visibleThreads/, 'and it does not filter');
 });
 
 test('healPinnedThread re-reads the row, reads the notes, lowers via healedLastActivity and writes once', () => {

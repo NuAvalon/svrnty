@@ -33,6 +33,9 @@ export interface NoteThread {
   created_at: string;
   last_activity_at: string;
   retention: RetentionPolicy;
+  /** Present (and true) ONLY on a thread that exists because of held notes: a contact was frozen when they arrived. Default readers skip it. It lives
+   *  inside the sealed payload; no plaintext column, index or key name carries it. */
+  held?: true;
 }
 
 export type NoteDirection = 'outbound' | 'inbound';
@@ -63,6 +66,9 @@ export interface NoteRecord {
    *  note (set on EXACTLY ONE line — the receipt consume seam, after verifyReceiptTag→true; NEVER from a
    *  bare ack, a relay flag, or any unverified signal). Drives the 'delivered' status (notes-status.ts). */
   delivered?: boolean;
+  /** INBOUND only: present (and true) when the sender was FROZEN (in the book and blocked) as this note arrived, so it is kept as evidence and hidden from every
+   *  default reader. Inside the sealed payload only: no plaintext column, index or key name carries it, and an ordinary note has no such key at all. */
+  held?: true;
 }
 
 /**

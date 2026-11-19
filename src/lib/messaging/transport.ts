@@ -7,7 +7,8 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
+import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
+import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { nextLastActivity } from './thread-activity';
@@ -278,6 +279,9 @@ export { noteOpenpgpDecryptor };
 export async function acceptInboundNote(args: {
   wire: NoteWireV0;
   isAdmitted: (fingerprint: string) => Promise<boolean>;
+  /** Freeze keep: asked ONLY when isAdmitted said no. True = the sender is FROZEN (in the book and blocked): the note is authenticated, opened and stored
+   *  HELD (kept as evidence, hidden from every default reader) instead of dropped. Absent or false = today's drop, unchanged. */
+  isFrozen?: (fingerprint: string) => Promise<boolean>;
   peerDisplayName?: string;
   peerKind?: ParticipantKind;
   /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. May return the plaintext (already committed, legacy)
@@ -290,7 +294,7 @@ export async function acceptInboundNote(args: {
   /** L-318a: told AFTER the note is stored and the session committed that this open STARTED the session (a first frame, or a replacement), with that frame's SIGNED sent_at, so the adopt floor can be raised. Best effort: a throw is swallowed and the floor simply stays where it was. */
   onSessionStarted?: (fromFingerprint: string, signedSentAt: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
+  io?: { putNote?: typeof putNote; putNoteChecked?: typeof putNoteReportingCreated; putThread?: typeof putThread; listThreads?: typeof listThreads; listThreadsIncludingHeld?: typeof listThreadsIncludingHeld; getNote?: typeof getNote; countHeldFrom?: typeof countHeldFrom };
   /**
    * #714 R1: told (once, at the END of the flow: note and thread stored, session committed) that THIS call CREATED the note row. Never told for a
    * redelivery of a stored note, a first-write-wins refusal, a frame whose key was already spent, or a drop. The receipt layer answers only this
@@ -316,9 +320,14 @@ export async function acceptInboundNote(args: {
     args.onDrop?.('unverified');
     return null; // unsigned / forged sender — structural drop
   }
+  let held = false;
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
-    args.onDrop?.('not-in-book');
-    return null; // spam / stranger — structural drop
+    if (args.isFrozen && (await args.isFrozen(args.wire.from_fingerprint))) {
+      held = true; // frozen: keep it, below, through the SAME open and store steps (the per-sender cap is applied after the collision check)
+    } else {
+      args.onDrop?.('not-in-book');
+      return null; // spam / stranger — structural drop
+    }
   }
   // note_id is chosen by the SENDER, and the notes store is keyed on note_id ALONE (store.ts: keyPath 'note_id', putNote is a put), so a note that
   // reuses an id would silently REPLACE the stored row: our own outbound copy of a note we sent this contact (they hold that id: we sent it to
@@ -326,9 +335,35 @@ export async function acceptInboundNote(args: {
   // direction and from_fingerprint) is the idempotent case and proceeds. A store error here throws (retryable), exactly like putNote below.
   const prior = await (args.io?.getNote ?? getNote)(args.wire.note_id);
   if (prior && (prior.direction !== 'inbound' || prior.from_fingerprint !== args.wire.from_fingerprint)) return null;
+  // Freeze keep, redelivery and cap. A note this sender already has stored as an ORDINARY row (from before they were frozen) is never rewritten as held: it is
+  // dropped as it is today, with nothing touched. A redelivery of a note already HELD is idempotent and never capped (a completed delivery is not a loss).
+  // Otherwise a NEW held note over HOLD_CAP_PER_SENDER is not kept: authenticated and opened like any note (session continuity is not content: without the
+  // advance an unfreeze would leave the session behind), nothing stored, no creation reported (so no receipt), and the same relay-visible drop a stranger gets.
+  // A count that cannot be read THROWS (retryable): never "no cap".
+  let overCap = false;
+  if (held && prior) {
+    if (!isHeldNote(prior)) {
+      args.onDrop?.('not-in-book');
+      return null;
+    }
+  } else if (held) {
+    overCap = (await (args.io?.countHeldFrom ?? countHeldFrom)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER;
+  }
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
   let viaRatchet = false;
+  // What a note that opened and was committed tells its observers (best effort: the note is stored and the session committed, so a throw changes nothing).
+  const afterCommit = async (): Promise<void> => {
+    if (staged?.replaced) {
+      try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
+    }
+    if (staged?.startedSession) {
+      try { await args.onSessionStarted?.(args.wire.from_fingerprint, args.wire.sent_at); } catch { /* best effort: the note is stored and the session committed; the floor stays where it was */ }
+    }
+    if (viaRatchet) {
+      try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
+    }
+  };
   if (isTripleRatchetBody(body)) {
     // v5.3 (Flint #2052): UNKNOWN IS LOCAL. Only a failure the ratchet path positively typed as the frame's fault ('verdict') is
     // 'ratchet-unopenable'. No ratchet opener at all, a plain null (a cause nobody identified) and a typed 'local' failure are all
@@ -365,6 +400,12 @@ export async function acceptInboundNote(args: {
   // R5: a StagedOpen holds the per-peer session lock. It is freed by commit() below, or HERE on any other exit (putNote/putThread
   // throwing included), so a failed store write can never leave a peer's session locked.
   try {
+  if (overCap) {
+    if (staged) await staged.commit();
+    await afterCommit();
+    args.onDrop?.('not-in-book');
+    return null;
+  }
   // FIRST WRITE WINS (Archie #2653, Flint #2650): the same sender may REDELIVER a stored note (identical content: proceed, putNote is idempotent), but may
   // not REWRITE it. A different body, thread or time under a stored note_id is refused and the stored row is left exactly as it was. The frame was
   // legitimately consumed (its key is spent), so its ratchet advance is still committed: only its CONTENT is refused. Without that, the receiver's
@@ -386,6 +427,7 @@ export async function acceptInboundNote(args: {
     participant_kind: args.wire.participant_kind || args.peerKind || 'human',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    ...(held ? { held: true as const } : {}),
   };
   // Created = the write itself found no row. With the real store that is one readwrite transaction (putNoteReportingCreated), so a second tab
   // delivering the same blob cannot also report a creation. An injected plain putNote (tests) falls back to "no stored row was seen above".
@@ -394,8 +436,11 @@ export async function acceptInboundNote(args: {
   else if (args.io?.putNote) { await args.io.putNote(record); created = !prior; }
   else created = await putNoteReportingCreated(record);
 
-  const threads = await (args.io?.listThreads ?? listThreads)();
+  // The thread is looked up INCLUDING held ones: the ordinary reader skips a thread that exists only because of held notes, so a second held note (or the
+  // first note after an unblock) would find "no thread", rebuild it and move its created_at.
+  const threads = await (args.io?.listThreadsIncludingHeld ?? args.io?.listThreads ?? listThreadsIncludingHeld)();   // production passes no io: the real include-held reader
   let thread = threads.find((t) => t.thread_id === record.thread_id);
+  const threadExisted = !!thread;
   if (!thread) {
     thread = {
       thread_id: record.thread_id,
@@ -411,24 +456,20 @@ export async function acceptInboundNote(args: {
       created_at: sent_at,
       last_activity_at: nextLastActivity(undefined, sent_at, Date.now()),
       retention: { expires_at: null },
+      ...(held ? { held: true as const } : {}),
     };
   } else {
-    thread = { ...thread, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
+    // An ADMITTED arrival on a thread that exists only because of held notes makes the row an ordinary thread again; created_at stays. Its held notes keep their own flag.
+    const base = !held && isHeldThread(thread) ? clearedHeld(thread) : thread;
+    thread = { ...base, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
   }
-  await (args.io?.putThread ?? putThread)(thread);
+  // A held note on a thread that already exists writes NOTHING to it: a moved last_activity_at would show the owner's own screen that something arrived.
+  if (!(held && threadExisted)) await (args.io?.putThread ?? putThread)(thread);
   // R4: ONLY NOW is the ratchet advance persisted: the note and its thread are durably stored. A failure anywhere above leaves the
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
   if (staged) await staged.commit();
-  if (staged?.replaced) {
-    try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
-  }
-  if (staged?.startedSession) {
-    try { await args.onSessionStarted?.(args.wire.from_fingerprint, args.wire.sent_at); } catch { /* best effort: the note is stored and the session committed; the floor stays where it was */ }
-  }
-  if (viaRatchet) {
-    try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
-  }
+  await afterCommit();
   if (created) { try { args.onCreated?.(); } catch { /* a receipt hook must never fail a stored note */ } }
   return record;
   } finally {
