@@ -1,11 +1,11 @@
 // src/lib/trust/readd-removed.test.ts
-// Gate: taking one person off the removed list is atomic, fails closed, touches only that id, and is reachable from NOWHERE yet. Every port is a fake; the list store is the real
+// Gate: taking one person off the removed list is atomic, fails closed, touches only that id, and is reached from ONE place (the owner's private Keep button). Every port is a fake; the list store is the real
 // compare-and-swap loop (makeUpdate) over an in-memory row.
 //   · PLAN: an absent list or an id that is not on it is a no-op; an unreadable list REFUSES; only that one id leaves; the others keep their order.
 //   · ATOMIC: a write that lands between the read and the commit is never overwritten (the drop is decided again on the newer list).
 //   · WRITER PIN: nothing but this module shrinks the list, and the drop is called only by the identity store.
-//   · NOT WIRED: no screen reaches it. The manual add form in particular can never be the removed person (it has no way to create a contact with a bound key), so its handler must
-//     never reach the planner or the drop writer; the day the owner's private contact screen is wired, that change updates this pin on purpose.
+//   · ONE CALLER (and PRIVATE ONLY, below): only the contact book's Keep handler reaches it, never an import, restore, sync, gate arrival, exchange or the Galaxy. The manual add form in particular can never be the removed person (it has no way to create a contact with a bound key), so its handler must
+//     never reach the planner or the drop writer.
 // Run: npx tsx --test src/lib/trust/readd-removed.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

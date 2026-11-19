@@ -4,8 +4,8 @@
 // say "you once removed this person" about someone the owner now trusts.
 //
 // The rules:
-//  - Nothing calls this yet. Its one caller will be the owner's own, private confirm on a contact's screen, after that contact is unblocked (the record changes first, then the drop). It is
-//    NEVER part of adding a contact (a file import, a restore, a gate arrival and the manual add form all add contacts), and the manual add form cannot be the removed person at all: it
+//  - Its one caller is the owner's own, private "Keep them" button on a re-added contact's card in the contact book (ContactManagement.keepRemovedPerson; the Galaxy never shows that card's
+//    notice). The contact was already stored normally and is not blocked, so the drop is the only write. It is NEVER part of adding a contact (a file import, a restore, a gate arrival and the manual add form all add contacts), and the manual add form cannot be the removed person at all: it
 //    can only create a contact without a bound key, and a contact without a bound key has no fingerprint, so it never matches an id on this list.
 //  - One compare-and-swap, the same as the append: a write that lands in between is never overwritten. An unreadable list is never overwritten: the drop refuses.
 //  - Only a canonical id can be on the list, so any other id is a no-op (a legacy contact is never blocked by this).

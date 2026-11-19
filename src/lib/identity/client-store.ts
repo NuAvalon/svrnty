@@ -815,7 +815,7 @@ export async function recordRemovedContact(ownerFingerprint: string, durableId: 
   if (refusal !== null) throw new Error(refusal);
 }
 
-/** Take one id off the removed list. Nothing calls this yet: its one caller will be the owner's own private confirm on a contact's screen (see readd-removed.ts); never an import, a restore, a sync, the manual add form or addContact. */
+/** Take one id off the removed list. Its one caller is the owner's own private "Keep them" button in the contact book (ContactManagement.keepRemovedPerson; see readd-removed.ts); never an import, a restore, a sync, the manual add form or addContact. */
 export function dropRemovedForOwner(ownerFingerprint: string, durableId: string): Promise<RemovedDrop> {
   return dropRemoved(createRestorePorts(ownerFingerprint).updateRemoved, durableId.trim().toLowerCase());
 }
