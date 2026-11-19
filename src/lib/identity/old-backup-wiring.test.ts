@@ -66,6 +66,7 @@ test('OW6 Not now is the PAGE\'s session flag: it never touches the stored marke
   assert.match(page, /const \[oldBackupNoticeDismissed, setOldBackupNoticeDismissed\] = useState\(false\);/);
   assert.match(page, /useEffect\(\(\) => \{ setOldBackupNoticeDismissed\(false\); \}, \[noteIdentityFp\]\);/);
   assert.equal((page.match(/onOldBackupNoticeDismiss=\{/g) ?? []).length, 1, 'passed to one mount: the Identity tab, not the gate');
+  assert.match(page, /oldBackupNoticeDismissed=\{oldBackupNoticeDismissed\}\s*onOldBackupNoticeDismiss=\{\(\) => setOldBackupNoticeDismissed\(true\)\}/, 'Not now sets the flag to true, and the flag is what the tab is given');
   const tab = page.indexOf('<TabsContent value="identity">');
   assert.ok(page.indexOf('onOldBackupNoticeDismiss={') > tab, 'and that mount is inside the identity tab');
 });
@@ -74,4 +75,15 @@ test('OW7 a finished export makes the notice look again: onDownloaded bumps the 
   const s = strip(read('src/components/SoverentityFrontend.tsx'));
   assert.match(s, /onDownloaded=\{\(\) => \{[\s\S]{0,200}setBackupWrittenTick\(\(n\) => n \+ 1\);/);
   assert.match(s, /reloadKey=\{backupWrittenTick\}/);
+});
+
+test('OW8 the reminder is given exactly its five props from the tab\'s own state: the dismissal, the way to dismiss, the dialog opener, the tick, and the owner\'s fingerprint', () => {
+  const s = strip(read('src/components/SoverentityFrontend.tsx'));
+  const i = s.indexOf('<OldBackupReminder');
+  const mount = s.slice(i, s.indexOf('/>', i)).replace(/\s+/g, ' ');
+  assert.equal(
+    mount,
+    '<OldBackupReminder fingerprint={identity.identity.fingerprint} dismissed={oldBackupDismissed} onDismiss={dismissOldBackupNotice} onMakeBackup={() => setShowVaultExportDialog(true)} reloadKey={backupWrittenTick} ',
+  );
+  assert.match(s, /const oldBackupDismissed = onOldBackupNoticeDismiss \? \(oldBackupNoticeDismissed \?\? false\) : localOldBackupDismissed;/);
 });
