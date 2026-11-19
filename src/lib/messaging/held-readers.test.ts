@@ -41,7 +41,7 @@ test('S1 the include-held readers are used ONLY where they are meant to be: exac
   // and to keep the thread row they hang on). Nothing else reads a held note by name.
   // When the hold view and the evidence export are built they add THEIR file here, in their own commit, with a reason.
   assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 4 });
-  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 3, 'src/lib/messaging/transport.ts': 5 }); // transport = the accept path finding a note's thread INCLUDING held ones: 1 import + 2 in the injectable io field (name, type) + 2 in the ONE call (injected, default)
+  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 3, 'src/lib/messaging/transport.ts': 7 }); // transport = the accept path reading threads INCLUDING held ones, twice: (1) the claimed thread's participants (thread membership: a sender who is not in the thread they name never joins it), (2) finding the note's thread. 1 import + 2 per read in the injectable io field (name, type) + 2 in the ONE call (injected, default)
   // countHeldFrom: defined in store.ts; transport.ts uses it ONLY as the cap check (import, the io seam's type, and the one call).
   assert.deepEqual(occurrences('countHeldFrom'), { 'src/lib/messaging/store.ts': 1, 'src/lib/messaging/transport.ts': 5 });
 });
@@ -112,6 +112,7 @@ test('S7 the modules that import the messaging store (or its index) are exactly 
     'src/lib/messaging/index.ts',
     'src/lib/messaging/ratchet-test-io.ts',
     'src/lib/messaging/reset-flag-store.ts',
+    'src/lib/messaging/thread-alias-store.ts', // thread membership: the local (sender, claimed thread id) -> fresh thread id alias, one sealed row per sender; never exported
     'src/lib/messaging/transport.ts',
     'src/lib/sync/live-book-poll.ts',
   ]);

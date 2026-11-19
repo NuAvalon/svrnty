@@ -5,7 +5,8 @@
 
 // 'notice_seen:' (#731): when the user last dismissed an inbox notice. One ISO time per notice, nothing from any message.
 // 'adopt_floor:' (L-318a): per contact, the newest signed sent_at of a first frame the current session started from. A fingerprint and a time.
-export const SETTINGS_ROW_PREFIXES = ['dead_letter:', 'reset_flag:', 'notice_seen:', 'adopt_floor:'] as const;
+// 'thread_alias:' (thread membership): per sender, the newest few (claimed thread id -> local thread id) pairs, so a sender who names a thread they are not in keeps ONE fresh thread. Local only.
+export const SETTINGS_ROW_PREFIXES = ['dead_letter:', 'reset_flag:', 'notice_seen:', 'adopt_floor:', 'thread_alias:'] as const;
 
 const MAX_KEY_LENGTH = 200;
 // A plain charset: a key is built from validated parts, never from raw wire text.

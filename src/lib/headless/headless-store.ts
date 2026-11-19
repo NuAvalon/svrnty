@@ -21,6 +21,8 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore, ChunkTxn, ListingScope } from '@/lib/sync/consume-mailbox';
 import type { NoteRecord, NoteThread } from '@/lib/messaging/types';
+import { aliasFor, aliasThatFits, freshThreadIdFor, parseThreadAliasRow, threadHasParticipant, withAlias, type ThreadAliasRow } from '@/lib/messaging/thread-alias';
+import { normalizeResetFp } from '@/lib/messaging/reset-flag';
 
 /** A stored contact in the headless book — the fields the consume seams + admit + mutual-apply touch. */
 export interface HeadlessContact {
@@ -50,6 +52,9 @@ interface HeadlessData {
   applied_envelopes?: AppliedEnvelope[];
   // #714 R2a: the book's Delivery-receipt default. Absent = On (an agent's default; the spec keeps agent-to-agent receipts on).
   delivery_receipts_default?: 'on' | 'off';
+  // Thread membership: per sender, the newest few (claimed thread id -> local thread id) pairs, so a sender who names a thread they are not in keeps ONE fresh thread (thread-alias.ts: the
+  // same rule and bound as the browser's). Local only: written with the rest of the book under the writer lock, never part of any other output. Absent in an older file; a row that does not parse is dropped (no alias = a split, never a join).
+  thread_aliases?: ThreadAliasRow[];
 }
 
 interface AppliedEnvelope {
@@ -138,6 +143,11 @@ function sealBackup(previousText: string, key: Uint8Array): string {
  * the snapshot from the last load or mutation. The consume core (consume-mailbox.ts) drives this ONLY through asContactStore() + the
  * note/affirm seams (headless-client.ts), so the shape stays swappable.
  */
+/** A fresh local thread id for a sender who named a thread they are not in (random, never the claimed id). */
+function freshLocalThreadId(): string {
+  return `thr_${globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+}
+
 export class HeadlessStore {
   private data: HeadlessData = { contacts: [], notes: [], threads: [] };
   private readonly path: string | null;
@@ -179,6 +189,7 @@ export class HeadlessStore {
       threads: book?.threads ?? [],
       ...(Array.isArray(book?.applied_envelopes) ? { applied_envelopes: book.applied_envelopes } : {}),
       ...(book?.delivery_receipts_default === 'on' || book?.delivery_receipts_default === 'off' ? { delivery_receipts_default: book.delivery_receipts_default } : {}),
+      ...(Array.isArray(book?.thread_aliases) ? { thread_aliases: book.thread_aliases.map((r) => parseThreadAliasRow(r)).filter((r): r is ThreadAliasRow => r !== null) } : {}),
     };
   }
 
@@ -425,13 +436,35 @@ export class HeadlessStore {
       const i = this.data.notes.findIndex((x) =>
         x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
       const prev = i === -1 ? undefined : this.data.notes[i];
-      if (prev && n.direction === 'inbound' && (prev.body !== n.body || prev.thread_id !== n.thread_id || prev.sent_at !== n.sent_at)) return 'kept';
-      if (i === -1) this.data.notes.push(n);
-      else this.data.notes[i] = n;
-      const t = threadFor(this.data.threads.find((x) => x.thread_id === n.thread_id));
+      // THREAD MEMBERSHIP (same rule as the browser accept path, thread-alias.ts): thread_id is chosen by the SENDER, so a sender
+      // could name another contact's thread. A sender who is not a participant of the thread they name never joins it: the note goes to a fresh local thread (the alias keeps one conversation in one),
+      // the claimed thread is untouched. The membership test runs first; an absent, evicted or unreadable alias only costs a split. Everything is computed from this.data and the arguments, because
+      // a chunk re-applies this op onto a fresh read (a fresh id minted on the first pass is simply minted again).
+      const claimed = n.thread_id;
+      const claimedThread = this.data.threads.find((x) => x.thread_id === claimed);
+      let threadId = claimed;
+      let remember = false;
+      const senderFp = normalizeResetFp(n.from_fingerprint);
+      if (claimedThread && !threadHasParticipant(claimedThread, n.from_fingerprint)) {
+        const mapped = senderFp ? aliasThatFits(aliasFor((this.data.thread_aliases ?? []).find((r) => r.fp === senderFp) ?? null, claimed), this.data.threads, n.from_fingerprint) : null;
+        threadId = freshThreadIdFor({ mapped, priorThreadId: prev ? prev.thread_id : null, claimed, mint: freshLocalThreadId });
+        remember = !mapped;
+      }
+      if (prev && n.direction === 'inbound' && (prev.body !== n.body || prev.thread_id !== threadId || prev.sent_at !== n.sent_at)) return 'kept';
+      const note = threadId === n.thread_id ? n : { ...n, thread_id: threadId };
+      if (i === -1) this.data.notes.push(note);
+      else this.data.notes[i] = note;
+      const built = threadFor(this.data.threads.find((x) => x.thread_id === threadId));
+      const t = built.thread_id === threadId ? built : { ...built, thread_id: threadId };
       const j = this.data.threads.findIndex((x) => x.thread_id === t.thread_id);
       if (j === -1) this.data.threads.push(t);
       else this.data.threads[j] = t;
+      if (remember && senderFp) {
+        const rows = this.data.thread_aliases ?? [];
+        const k = rows.findIndex((r) => r.fp === senderFp);
+        const next = withAlias(k === -1 ? null : rows[k], senderFp, claimed, threadId);
+        if (next) this.data.thread_aliases = k === -1 ? [...rows, next] : rows.map((r, idx) => (idx === k ? next : r));
+      }
       return i === -1 ? 'created' : 'stored';
     });
     return r === false ? 'not-admitted' : r;

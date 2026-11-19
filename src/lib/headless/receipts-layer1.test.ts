@@ -459,7 +459,7 @@ test('N8b (#714) HeadlessStore.acceptInboundNote tells a CREATED row from a re-s
     bs.upsertContact(asContact(A));
     const at = '2026-10-31T20:00:00.000Z';
     const note = (body: string) => ({ note_id: 'x1', thread_id: 't1', direction: 'inbound', from_fingerprint: A.fp, to_fingerprints: [], sent_at: at, body, participant_kind: 'human', retention: { expires_at: null }, wire_type: 'x' }) as never;
-    const threadFor = (e: unknown) => (e ?? { thread_id: 't1', kind: 'direct', participants: [], created_at: at, last_activity_at: at, retention: { expires_at: null } }) as never;
+    const threadFor = (e: unknown) => (e ?? { thread_id: 't1', kind: 'direct', participants: [{ fingerprint: A.fp, kind: 'human', display_name: A.fp.slice(0, 8) }], created_at: at, last_activity_at: at, retention: { expires_at: null } }) as never;
     const { admitContact } = await import('@/lib/trust/admit-contact');
     assert.equal(bs.acceptInboundNote(note('hi'), threadFor, admitContact as never), 'created');
     assert.equal(bs.acceptInboundNote(note('hi'), threadFor, admitContact as never), 'stored', 'byte-identical redelivery: the row existed');

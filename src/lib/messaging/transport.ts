@@ -7,6 +7,7 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
+import { aliasThatFits, freshThreadIdFor, threadHasParticipant, type ThreadAliasPort } from './thread-alias';
 import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
 import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
@@ -312,6 +313,11 @@ export async function acceptInboundNote(args: {
    * kept as it was, the stored note is returned (like a redelivery: acked, no loss record), and the frame's ratchet advance is still committed.
    */
   onRewriteRefused?: () => void;
+  /**
+   * THREAD MEMBERSHIP: the local alias that keeps ONE conversation in ONE thread when a sender names a thread they are not a participant of (thread-alias.ts). Optional: without it
+   * such a sender's every note still gets its own fresh thread, and never joins the claimed one. Both calls throw while the store is locked (the accept then retries).
+   */
+  threadAliases?: ThreadAliasPort;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -348,6 +354,24 @@ export async function acceptInboundNote(args: {
     }
   } else if (held) {
     overCap = (await (args.io?.countHeldFrom ?? countHeldFrom)(args.wire.from_fingerprint)) >= HOLD_CAP_PER_SENDER;
+  }
+  // THREAD MEMBERSHIP. thread_id is chosen by the SENDER, so it can name a thread they are not in (another contact's, or a held one). A sender who is not a participant of the
+  // thread they name is NEVER filed into it: the note goes to a fresh LOCAL thread, built exactly as if the claimed id were unknown, so the claimed thread is untouched (a held thread
+  // stays held and un-surfaced, last_activity_at does not move) and the ack and receipt the sender gets do not tell a known id from an unknown one (the owner's later reply, under the fresh id, does: a stated bound). Later notes from
+  // the same sender under the same claimed id join that fresh thread through the alias. The membership test runs FIRST: a real participant always joins their own thread and the
+  // alias is never consulted for them. An evicted or missing alias only costs a split (another fresh thread), never a join. A store that cannot be read THROWS (retryable).
+  const claimedThreadId = args.wire.thread_id;
+  let threadId = claimedThreadId;
+  let aliasToRemember = false;
+  {
+    const listed = await (args.io?.listThreadsIncludingHeld ?? args.io?.listThreads ?? listThreadsIncludingHeld)();
+    const known = listed.find((t) => t.thread_id === claimedThreadId);
+    if (known && !threadHasParticipant(known, args.wire.from_fingerprint)) {
+      const mapped = aliasThatFits(args.threadAliases ? await args.threadAliases.resolve(args.wire.from_fingerprint, claimedThreadId) : null, listed, args.wire.from_fingerprint);
+      // A redelivery of a note this sender already has stored under a fresh thread finds that thread again, even if the alias was lost.
+      threadId = freshThreadIdFor({ mapped, priorThreadId: prior ? prior.thread_id : null, claimed: claimedThreadId, mint: newThreadId });
+      aliasToRemember = !mapped;
+    }
   }
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
@@ -410,7 +434,7 @@ export async function acceptInboundNote(args: {
   // not REWRITE it. A different body, thread or time under a stored note_id is refused and the stored row is left exactly as it was. The frame was
   // legitimately consumed (its key is spent), so its ratchet advance is still committed: only its CONTENT is refused. Without that, the receiver's
   // session would sit one step behind what the sender believes. The lock is released by the finally below on every exit.
-  if (prior && (prior.body !== body || prior.thread_id !== args.wire.thread_id || (!!args.wire.sent_at && prior.sent_at !== args.wire.sent_at))) {
+  if (prior && (prior.body !== body || prior.thread_id !== threadId || (!!args.wire.sent_at && prior.sent_at !== args.wire.sent_at))) {
     if (staged) await staged.commit();
     args.onRewriteRefused?.();
     return prior;
@@ -418,7 +442,7 @@ export async function acceptInboundNote(args: {
   const sent_at = args.wire.sent_at || new Date().toISOString();
   const record: NoteRecord = {
     note_id: args.wire.note_id,
-    thread_id: args.wire.thread_id,
+    thread_id: threadId,
     direction: 'inbound',
     from_fingerprint: args.wire.from_fingerprint,
     to_fingerprints: [], // self
@@ -465,6 +489,10 @@ export async function acceptInboundNote(args: {
   }
   // A held note on a thread that already exists writes NOTHING to it: a moved last_activity_at would show the owner's own screen that something arrived.
   if (!(held && threadExisted)) await (args.io?.putThread ?? putThread)(thread);
+  // Remember the alias only now that the note and its fresh thread are stored. Best effort: a failed write costs one more split later, never a join (and the note is already stored).
+  if (aliasToRemember && args.threadAliases) {
+    try { await args.threadAliases.remember(args.wire.from_fingerprint, claimedThreadId, threadId); } catch { /* the next note from this sender makes another fresh thread */ }
+  }
   // R4: ONLY NOW is the ratchet advance persisted: the note and its thread are durably stored. A failure anywhere above leaves the
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
