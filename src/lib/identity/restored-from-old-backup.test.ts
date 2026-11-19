@@ -76,3 +76,11 @@ test('P6 the marker NEVER travels: neither exportAll nor the vault payload names
   assert.ok(pack.length > 200, 'the payload block was found');
   assert.doesNotMatch(pack, /RestoredFromOldBackup|restored_from_old_backup|restoredFromOldBackup/, 'the vault payload does not carry it');
 });
+
+test('P7 the READ goes through the strict reader under the reserved id: a row that is not exactly the marker is unreadable, never taken for one', () => {
+  const store = src('./client-store.ts');
+  assert.match(
+    store,
+    /export const readRestoredFromOldBackup = \(ownerFingerprint: string\): Promise<SealedRead<RestoredFromOldBackup>> =>\s*readSealed\(ownerFingerprint, restoredFromOldBackupSettingKey\(ownerFingerprint\), RESTORED_FROM_OLD_BACKUP_RECORD_ID, parseRestoredFromOldBackup\);/,
+  );
+});

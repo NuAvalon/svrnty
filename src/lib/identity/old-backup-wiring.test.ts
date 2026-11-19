@@ -87,3 +87,11 @@ test('OW8 the reminder is given exactly its five props from the tab\'s own state
   );
   assert.match(s, /const oldBackupDismissed = onOldBackupNoticeDismiss \? \(oldBackupNoticeDismissed \?\? false\) : localOldBackupDismissed;/);
 });
+
+test('OW9 the reminder asks the pure rule before it renders anything, and looks at the marker again whenever the fingerprint or the tick changes', () => {
+  const r = strip(read('src/components/export/OldBackupReminder.tsx'));
+  assert.match(r, /if \(!shouldShowRestoredNudge\(read, dismissed\)\) return null;\s*return <OldBackupNotice /, 'nothing renders unless the rule says so');
+  assert.match(r, /\.then\(\(m\) => m\.readRestoredFromOldBackup\(fingerprint\)\)/, 'it reads the marker for the tab\'s own fingerprint');
+  assert.match(r, /\}, \[fingerprint, reloadKey\]\);/, 'and again when either changes');
+  assert.match(r, /\.catch\(\(\) => \{ if \(!cancelled\) setRead\(\{ state: 'unreadable' \}\); \}\);/, 'a failed look is unreadable (shows nothing), never absent-and-fine');
+});
