@@ -59,6 +59,8 @@ test('HA5 a clock that went BACK: a note no longer past the limit has its expiry
   assert.equal(heldSweepAction(held({ held_at: iso(NOW + DAY) }), NOW), 'keep', 'a held_at in the future stays');
   assert.equal(heldSweepAction(held({ held_at: iso(NOW + DAY), expiry_seen_at: iso(NOW - 8 * DAY) }), NOW), 'clear-expiry', 'a future held_at is not past the limit, so a stamp is cleared');
   assert.equal(heldSweepAction(held({ held_at: iso(NOW - 40 * DAY), expiry_seen_at: iso(NOW + DAY) }), NOW), 'keep', 'a stamp in the future stays: nothing is deleted');
+  // a mark MORE than a grace ahead of the clock is the case that tells "the mark is in the future" from "the mark is far away": a rule that looked at the distance alone would delete here
+  for (const ahead of [GRACE - 1, GRACE, GRACE + 1, 30 * DAY]) assert.equal(heldSweepAction(held({ held_at: iso(NOW - 40 * DAY), expiry_seen_at: iso(NOW + ahead) }), NOW), 'keep', `a mark ${ahead} ms ahead of the clock never deletes`);
   assert.equal(heldSweepAction(held({ held_at: iso(NOW - 40 * DAY), expiry_seen_at: 'garbage' }), NOW), 'stamp-expiry', 'an unreadable stamp is made again, never trusted');
 });
 

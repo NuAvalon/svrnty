@@ -18,7 +18,6 @@ test.use({ bypassCSP: true });
  */
 const OWNER = 'owner-hold-age-e2e';
 const A = 'ab'.repeat(32);
-const B = 'cd'.repeat(32);
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-06-01T12:00:00.000Z');
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -119,15 +118,18 @@ test('D3 a held_at in the FUTURE stays, a mark in the future never deletes, and 
   await put(page, heldNote('f1', { held_at: iso(NOW + 30 * DAY) }));
   await put(page, heldNote('f2', { held_at: iso(NOW - 40 * DAY), expiry_seen_at: iso(NOW + DAY) }));
   await put(page, heldNote('f3', { held_at: iso(NOW - 40 * DAY), expiry_seen_at: 'garbage' }));
+  await put(page, heldNote('f4', { held_at: iso(NOW - 40 * DAY), expiry_seen_at: iso(NOW + 30 * DAY) }));   // a mark far MORE than a grace ahead: only "it is in the future" keeps it, not its distance
   // swept at NOW: f1's held_at is 30 days ahead, and f2's mark (NOW + 1 day) is still ahead of the clock, so neither can delete anything; f3's mark is junk, so it is made again from the owner's clock
   expect(await sweep(page, NOW)).toMatchObject({ deleted: 0 });
   expect(await get(page, 'f1')).not.toBeNull();
   expect(await get(page, 'f2')).not.toBeNull();
   expect((await stampsOf(page, 'f2'))?.expiry_seen_at, 'a mark in the future is left as it is').toBe(iso(NOW + DAY));
+  expect(await stampsOf(page, 'f4'), 'a mark 30 days ahead is left as it is, and the note is kept').toEqual({ held_at: iso(NOW - 40 * DAY), expiry_seen_at: iso(NOW + 30 * DAY) });
   expect((await stampsOf(page, 'f3'))?.expiry_seen_at, 'the garbage mark was replaced by a real one').toBe(iso(NOW));
   // and once the clock passes that future mark by a full grace, f2 is deleted like any other (control: the guard is the future mark, nothing else)
   expect((await sweep(page, NOW + DAY + 7 * DAY)).deleted).toBeGreaterThanOrEqual(1);
   expect(await get(page, 'f2')).toBeNull();
+  expect(await get(page, 'f4'), 'and the far-future mark still holds its note').not.toBeNull();
   await expectRowEqualsScan(page, [A], 'after');
 });
 
