@@ -38,6 +38,21 @@ export function threadHasParticipant(thread: { participants?: ReadonlyArray<{ fi
 }
 
 /**
+ * The alias, if it is safe to USE (the ONE re-check, shared by both accept paths): the alias is a convenience, never an authority. A mapped thread that exists and does not list the sender
+ * (a keying bug, a tampered row, or an alias that points back at the claimed thread) is no alias: the note gets a fresh thread and the row is overwritten, so any alias fault costs a split,
+ * never a join. A mapped thread that no longer exists is fine: it is rebuilt listing the sender.
+ */
+export function aliasThatFits(
+  mapped: string | null,
+  threads: ReadonlyArray<{ thread_id: string; participants?: ReadonlyArray<{ fingerprint: unknown }> }>,
+  senderFingerprint: string,
+): string | null {
+  if (mapped === null) return null;
+  const t = threads.find((x) => x.thread_id === mapped);
+  return !t || threadHasParticipant(t, senderFingerprint) ? mapped : null;
+}
+
+/**
  * The local thread id for a note whose sender is NOT a participant of the thread they named (the ONE rule, shared): the alias if there is one; else, for a redelivery of a note
  * already stored under a fresh thread, that thread (so a lost alias never splits a redelivery); else a fresh id. It is never the claimed id.
  */

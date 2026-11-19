@@ -7,7 +7,7 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { freshThreadIdFor, threadHasParticipant, type ThreadAliasPort } from './thread-alias';
+import { aliasThatFits, freshThreadIdFor, threadHasParticipant, type ThreadAliasPort } from './thread-alias';
 import { newNoteId, putNote, putNoteReportingCreated, putThread, listThreads, listThreadsIncludingHeld, newThreadId, newReceiptNonce, getNote, countHeldFrom } from './store';
 import { HOLD_CAP_PER_SENDER, isHeldNote, isHeldThread, clearedHeld } from './held-note';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
@@ -357,16 +357,17 @@ export async function acceptInboundNote(args: {
   }
   // THREAD MEMBERSHIP. thread_id is chosen by the SENDER, so it can name a thread they are not in (another contact's, or a held one). A sender who is not a participant of the
   // thread they name is NEVER filed into it: the note goes to a fresh LOCAL thread, built exactly as if the claimed id were unknown, so the claimed thread is untouched (a held thread
-  // stays held and un-surfaced, last_activity_at does not move) and nothing the sender can observe tells a known id from an unknown one (no "that id exists" oracle). Later notes from
+  // stays held and un-surfaced, last_activity_at does not move) and the ack and receipt the sender gets do not tell a known id from an unknown one (the owner's later reply, under the fresh id, does: a stated bound). Later notes from
   // the same sender under the same claimed id join that fresh thread through the alias. The membership test runs FIRST: a real participant always joins their own thread and the
   // alias is never consulted for them. An evicted or missing alias only costs a split (another fresh thread), never a join. A store that cannot be read THROWS (retryable).
   const claimedThreadId = args.wire.thread_id;
   let threadId = claimedThreadId;
   let aliasToRemember = false;
   {
-    const known = (await (args.io?.listThreadsIncludingHeld ?? args.io?.listThreads ?? listThreadsIncludingHeld)()).find((t) => t.thread_id === claimedThreadId);
+    const listed = await (args.io?.listThreadsIncludingHeld ?? args.io?.listThreads ?? listThreadsIncludingHeld)();
+    const known = listed.find((t) => t.thread_id === claimedThreadId);
     if (known && !threadHasParticipant(known, args.wire.from_fingerprint)) {
-      const mapped = args.threadAliases ? await args.threadAliases.resolve(args.wire.from_fingerprint, claimedThreadId) : null;
+      const mapped = aliasThatFits(args.threadAliases ? await args.threadAliases.resolve(args.wire.from_fingerprint, claimedThreadId) : null, listed, args.wire.from_fingerprint);
       // A redelivery of a note this sender already has stored under a fresh thread finds that thread again, even if the alias was lost.
       threadId = freshThreadIdFor({ mapped, priorThreadId: prior ? prior.thread_id : null, claimed: claimedThreadId, mint: newThreadId });
       aliasToRemember = !mapped;

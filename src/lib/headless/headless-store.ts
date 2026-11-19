@@ -21,7 +21,7 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore, ChunkTxn, ListingScope } from '@/lib/sync/consume-mailbox';
 import type { NoteRecord, NoteThread } from '@/lib/messaging/types';
-import { aliasFor, freshThreadIdFor, parseThreadAliasRow, threadHasParticipant, withAlias, type ThreadAliasRow } from '@/lib/messaging/thread-alias';
+import { aliasFor, aliasThatFits, freshThreadIdFor, parseThreadAliasRow, threadHasParticipant, withAlias, type ThreadAliasRow } from '@/lib/messaging/thread-alias';
 import { normalizeResetFp } from '@/lib/messaging/reset-flag';
 
 /** A stored contact in the headless book — the fields the consume seams + admit + mutual-apply touch. */
@@ -436,7 +436,7 @@ export class HeadlessStore {
       const i = this.data.notes.findIndex((x) =>
         x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
       const prev = i === -1 ? undefined : this.data.notes[i];
-      // THREAD MEMBERSHIP (same rule as the browser accept path, thread-alias.ts): thread_id is chosen by the SENDER, and a headless agent's own ids are guessable (thr_<owner6>_<peer6>), so a sender
+      // THREAD MEMBERSHIP (same rule as the browser accept path, thread-alias.ts): thread_id is chosen by the SENDER, so a sender
       // could name another contact's thread. A sender who is not a participant of the thread they name never joins it: the note goes to a fresh local thread (the alias keeps one conversation in one),
       // the claimed thread is untouched. The membership test runs first; an absent, evicted or unreadable alias only costs a split. Everything is computed from this.data and the arguments, because
       // a chunk re-applies this op onto a fresh read (a fresh id minted on the first pass is simply minted again).
@@ -446,7 +446,7 @@ export class HeadlessStore {
       let remember = false;
       const senderFp = normalizeResetFp(n.from_fingerprint);
       if (claimedThread && !threadHasParticipant(claimedThread, n.from_fingerprint)) {
-        const mapped = senderFp ? aliasFor((this.data.thread_aliases ?? []).find((r) => r.fp === senderFp) ?? null, claimed) : null;
+        const mapped = senderFp ? aliasThatFits(aliasFor((this.data.thread_aliases ?? []).find((r) => r.fp === senderFp) ?? null, claimed), this.data.threads, n.from_fingerprint) : null;
         threadId = freshThreadIdFor({ mapped, priorThreadId: prev ? prev.thread_id : null, claimed, mint: freshLocalThreadId });
         remember = !mapped;
       }

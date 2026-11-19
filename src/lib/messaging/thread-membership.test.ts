@@ -162,7 +162,7 @@ test('T5 after the alias is EVICTED the next note makes another fresh thread, an
   assert.equal(JSON.stringify(w.threads.get('T5')), before, 'degraded to a split, never a join');
 });
 
-test('T6 NO ORACLE: what the sender can observe is the same for a KNOWN thread id and an UNKNOWN one (stored, created once, nothing dropped, no refused rewrite)', async () => {
+test('T6 the sender-visible result is the same for a KNOWN thread id and an UNKNOWN one (stored, created once, nothing dropped, no refused rewrite); a later reply by the owner is the stated bound', async () => {
   const known = await world(); known.seedThread('K', [OTHER]);
   const unknown = await world();
   const a = await known.accept(await known.wireFor('o1', await known.frame('x'), 'K'));
@@ -226,4 +226,24 @@ test('T10 PIN: the alias rows live under their own allowed settings prefix (a de
   assert.equal(isAllowedSettingsRowKey('thread_alias:'), false);
   const seam = readFileSync(new URL('../sync/live-book-poll.ts', import.meta.url), 'utf8');
   assert.match(seam, /threadAliases/, 'the live seam wires the alias port');
+});
+
+test('T11 the alias is re-checked at use: a mapped thread that exists and does NOT list the sender is never joined, and a mapping back at the CLAIMED thread is not used either; a fresh thread is made and the row is overwritten', async () => {
+  for (const target of ['T11-by', 'T11']) {
+    const w = await world();
+    w.seedThread('T11', [OTHER]);
+    w.seedThread('T11-by', [OTHER]);
+    const key = `${w.id.fingerprint.toLowerCase()}|T11`;
+    w.table.set(key, target); // a wrong row: a keying bug, or a tampered store
+    const existing = () => JSON.stringify([w.threads.get('T11'), w.threads.get('T11-by')]);
+    const before = existing();
+    const a = await w.accept(await w.wireFor('n11a', await w.frame('one'), 'T11'));
+    assert.ok(a.r, target);
+    assert.ok(a.r!.thread_id !== 'T11' && a.r!.thread_id !== 'T11-by', `never joins ${target}`);
+    assert.equal(existing(), before, 'both existing threads are untouched');
+    assert.deepEqual(w.threads.get(a.r!.thread_id)!.participants.map((p) => p.fingerprint), [w.id.fingerprint]);
+    assert.equal(w.table.get(key), a.r!.thread_id, 'the wrong alias is overwritten with the fresh thread');
+    const b = await w.accept(await w.wireFor('n11b', await w.frame('two'), 'T11'));
+    assert.equal(b.r!.thread_id, a.r!.thread_id, 'the next note joins the fresh thread');
+  }
 });

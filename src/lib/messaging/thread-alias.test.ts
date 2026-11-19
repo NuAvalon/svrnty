@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { MAX_CLAIMED_ID_LENGTH, MAX_THREAD_ALIASES, THREAD_ALIAS_PREFIX, aliasFor, parseThreadAliasRow, threadAliasKey, withAlias, type ThreadAliasRow } from './thread-alias';
+import { MAX_CLAIMED_ID_LENGTH, MAX_THREAD_ALIASES, THREAD_ALIAS_PREFIX, aliasFor, aliasThatFits, parseThreadAliasRow, threadAliasKey, withAlias, type ThreadAliasRow } from './thread-alias';
 
 const FP = 'ab'.repeat(32);
 const FP2 = 'cd'.repeat(32);
@@ -74,4 +74,13 @@ test('A5 PIN: only the alias modules, the settings-key allowlist, the accept pat
     'src/lib/sync/live-book-poll.ts',
   ]);
   assert.deepEqual(filesNaming(/thread-alias-store/), ['src/lib/sync/live-book-poll.ts'], 'the store port is imported by the live seam alone');
+});
+
+test('A6 aliasThatFits: an alias is used only if its thread is absent or lists the sender; a thread that exists without the sender (or the claimed thread itself) is no alias', () => {
+  const t = (thread_id: string, fps: string[]) => ({ thread_id, participants: fps.map((fingerprint) => ({ fingerprint })) });
+  const threads = [t('victim', [FP2]), t('mine', [FP.toUpperCase()])];
+  assert.equal(aliasThatFits(null, threads, FP), null);
+  assert.equal(aliasThatFits('gone', threads, FP), 'gone', 'a thread that no longer exists is rebuilt listing the sender');
+  assert.equal(aliasThatFits('mine', threads, FP), 'mine', 'a thread that lists the sender (any case) is used');
+  assert.equal(aliasThatFits('victim', threads, FP), null, 'a thread that exists without the sender is not used: a split, never a join');
 });

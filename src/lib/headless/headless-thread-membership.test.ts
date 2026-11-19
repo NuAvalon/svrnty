@@ -1,5 +1,5 @@
 // src/lib/headless/headless-thread-membership.test.ts: the headless accept path (HeadlessStore.acceptInboundNote) files a note only into a thread its sender is a participant of.
-// A headless agent's own thread ids are GUESSABLE (thr_<owner6>_<peer6>: hex prefixes of public fingerprints), so an admitted peer needs no leaked id to name another contact's thread. The rule,
+// thread_id is chosen by the SENDER, so an admitted peer can name another contact's thread. The rule,
 // the alias and the bound are the browser path's (thread-alias.ts); here they live in the store's single locked write. A sender who is not in the thread they name gets a fresh local thread,
 // the claimed thread is untouched, and the alias keeps one conversation in one. A missing, evicted or malformed alias costs a split, never a join. The agent runner's routing
 // (routeInbound / loomNotice / openTaskChannel) reads only the sender's contact record and the note body, never a thread: what a joined note could change is what the agent sees in its own store.json.
@@ -171,4 +171,23 @@ test('HM9 TWO SENDERS: two different non-members naming the same thread get two 
   assert.equal(s.listNotes().find((n) => n.note_id === 'b2')!.thread_id, tB);
   assert.equal(JSON.stringify(s.listThreads().find((t) => t.thread_id === 'thr_victim')), before, 'the claimed thread is still untouched');
   assert.deepEqual(others(s, ['thr_victim', tA, tB]), [], 'no other thread appeared');
+});
+
+test('HM10 the alias is re-checked at use: a book whose alias row points at a thread that does NOT list the sender (or back at the claimed thread) never joins it; the note gets a fresh thread and the row is overwritten', () => {
+  for (const target of ['thr_by', 'thr_victim']) {
+    const f = fileStore();
+    try {
+      writeFileSync(f.path, JSON.stringify({ contacts: [], notes: [], threads: [thread('thr_victim', [OTHER]), thread('thr_by', [OTHER])], thread_aliases: [{ fp: SENDER, entries: [{ c: 'thr_victim', l: target }] }] }));
+      const s = f.open();
+      const existing = () => JSON.stringify(s.listThreads().filter((t) => t.thread_id === 'thr_victim' || t.thread_id === 'thr_by'));
+      const before = existing();
+      assert.equal(accept(s, note('h1', 'thr_victim')), 'created', target);
+      const t1 = s.listNotes().find((n) => n.note_id === 'h1')!.thread_id;
+      assert.ok(t1 !== 'thr_victim' && t1 !== 'thr_by', `never joins ${target}`);
+      assert.equal(existing(), before, 'both existing threads are untouched');
+      assert.deepEqual(s.listThreads().find((t) => t.thread_id === t1)!.participants.map((p) => p.fingerprint), [SENDER]);
+      assert.equal(accept(s, note('h2', 'thr_victim')), 'created');
+      assert.equal(s.listNotes().find((n) => n.note_id === 'h2')!.thread_id, t1, 'the overwritten alias joins the fresh thread');
+    } finally { f.cleanup(); }
+  }
 });
