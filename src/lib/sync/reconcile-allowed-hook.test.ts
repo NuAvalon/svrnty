@@ -245,3 +245,11 @@ test('ARH7 BURST (Flint): 10 hook calls in one tick make ONE GET, and each call 
   assert.equal(relay.count('DELETE'), 10, 'every owed row revoked once');
   for (const o of out) assert.deepEqual(o, { action: 'delete', ok: true });
 });
+
+test('ARH8 the peer\'s outcome is found whatever the case of its fingerprint: an upper-case fingerprint in the book, listed in lower case, is revoked and reported as deleted', async () => {
+  common();
+  const relay = relayFetch({ list: [senderFp] });
+  const res = await reconcileAllowedOnConsentChange({ ownerFp, senderFp: senderFp.toUpperCase(), allowedRevoke: book(), consent: BLOCKED, gate: () => true, loadKeyImpl: loadKeyOk, fetchImpl: relay.fetchImpl });
+  assert.deepEqual(res, { action: 'delete', ok: true });
+  assert.equal(relay.count('DELETE'), 1);
+});

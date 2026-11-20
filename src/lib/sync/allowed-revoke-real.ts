@@ -1,12 +1,14 @@
 // src/lib/sync/allowed-revoke-real.ts — #959: the REAL book for allowed-revoke.ts: the consents the owner's contacts hold NOW. Kept apart from allowed-revoke.ts (pure, injectable) the way
 // beacon-key-intake-real.ts is kept apart from its composer: only this file touches storage.
-import { getAllContacts } from '@/lib/identity/client-store';
+import { getAllContacts, getContactBookIntegrity } from '@/lib/identity/client-store';
 import { consentFromRecord } from '@/lib/contacts/share-settings-patch';
 import { allowedRowShouldExist, type PeerConsent } from './allowed-sync';
 import type { AllowedRevokeDeps } from './allowed-revoke';
 
 export function realAllowedRevokeDeps(): AllowedRevokeDeps {
   return {
+    // the book is whole unless the last unlock's manifest check flagged it corrupt; a failure to read the flag throws, which the drain reads as damaged
+    bookComplete: async (ownerFp) => (await getContactBookIntegrity(ownerFp)) === 'ok',
     consents: async (ownerFp) => {
       const book = new Map<string, PeerConsent>();
       for (const c of await getAllContacts(ownerFp)) {

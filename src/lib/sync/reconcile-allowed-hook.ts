@@ -102,9 +102,9 @@ export async function reconcileAllowedOnConsentChange(
     }
     // a consent that allows no row: whether THIS peer has one is the relay's to say
     const d = await requestDrain(ownerFp, io, deps, own);
-    const o = d.outcomes.get(senderFp);
+    const o = d.outcomes.get(senderFp.toLowerCase());
     if (o === 'deleted') return { action: 'delete', ok: true };
-    if (o === 'failed' || o === 'waiting') return { action: 'delete', ok: false };   // owed: refused just now, or inside its retry window
+    if (o === 'failed' || o === 'waiting' || o === 'deferred') return { action: 'delete', ok: false };   // owed: refused just now, inside its retry window, or past this drain's cap
     if (d.listed === 'ok') return { skipped: 'never-allowed' };                       // the relay lists no row for this peer
     return { skipped: 'error' };                                                      // the relay could not be asked (or keeps no list)
   } catch (err) {

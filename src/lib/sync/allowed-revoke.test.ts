@@ -2,7 +2,7 @@
 // Run: node --import tsx --test src/lib/sync/allowed-revoke.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { drainAllowedRevokes, requestDrain, resetRevokeState, REVOKE_BACKOFF_MIN_MS, REVOKE_BACKOFF_MAX_MS, REVOKE_SPACING_MS, DRAIN_BATCH_MS, DRAIN_MIN_GAP_MS, type AllowedRevokeDeps } from './allowed-revoke';
+import { drainAllowedRevokes, requestDrain, resetRevokeState, REVOKE_BACKOFF_MIN_MS, REVOKE_BACKOFF_MAX_MS, REVOKE_SPACING_MS, DRAIN_BATCH_MS, DRAIN_MIN_GAP_MS, REVOKE_MAX_PER_DRAIN, type AllowedRevokeDeps } from './allowed-revoke';
 import type { AllowedListResult, PeerConsent } from './allowed-sync';
 
 const OWNER = 'ee'.repeat(32);
@@ -12,7 +12,7 @@ const BLOCKED: PeerConsent = { ...ALLOWED, blocked: true };
 const NEVER: PeerConsent = { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false };
 
 /** A fake relay that keeps a list, and an in-memory book. A confirmed DELETE takes the peer off the relay's list, as the real one does. */
-const rig = (opts: { relay?: string[]; book?: Record<string, PeerConsent>; list?: 'ok' | 'unknown' | 'gone'; bookThrows?: boolean } = {}) => {
+const rig = (opts: { relay?: string[]; book?: Record<string, PeerConsent>; list?: 'ok' | 'unknown' | 'gone'; bookThrows?: boolean; complete?: boolean | 'throws' } = {}) => {
   const state = { relay: new Set(opts.relay ?? []), book: { ...(opts.book ?? {}) } as Record<string, PeerConsent>, list: opts.list ?? 'ok', t: 1_000_000, bookThrows: !!opts.bookThrows, results: [] as boolean[] };
   const sent: string[] = []; const sleeps: number[] = []; const logs: string[] = []; let lists = 0;
   const io = {
@@ -22,6 +22,7 @@ const rig = (opts: { relay?: string[]; book?: Record<string, PeerConsent>; list?
   const deps: AllowedRevokeDeps = {
     consents: async () => { if (state.bookThrows) throw new Error('book unreadable'); return new Map(Object.entries(state.book)); },
     now: () => state.t, sleep: async (ms) => { sleeps.push(ms); }, log: (m) => { logs.push(m); },
+    ...(opts.complete === undefined ? {} : { bookComplete: async () => { if (opts.complete === 'throws') throw new Error('integrity unreadable'); return opts.complete as boolean; } }),
   };
   return { io, deps, state, sent, sleeps, logs, lists: () => lists, drain: (override?: ReadonlyMap<string, PeerConsent>) => drainAllowedRevokes(OWNER, io, deps, override) };
 };
@@ -224,4 +225,47 @@ test('AR15 a request that arrives while a drain is RUNNING waits for it: two dra
   await Promise.all([first, second]);
   assert.equal(maxActive, 1, 'never two drains at once');
   assert.equal(r.lists(), 2, 'and the late request got a batch of its own');
+});
+
+const UP = (fp: string) => fp.toUpperCase();
+
+test('AR16 (Flint) the book and the relay are compared CASE-INSENSITIVELY, and the DELETE goes out with the relay\'s OWN string', async () => {
+  resetRevokeState();
+  const blocked = rig({ relay: [UP(P)], book: { [P]: BLOCKED } });
+  await blocked.drain();
+  assert.deepEqual(blocked.sent, [UP(P)], 'revoked, with the relay\'s own upper-case string');
+  resetRevokeState();
+  const allowed = rig({ relay: [UP(P)], book: { [P]: ALLOWED } });
+  await allowed.drain();
+  assert.deepEqual(allowed.sent, [], 'an allowed contact is not revoked because of a difference in case');
+  resetRevokeState();
+  const own = rig({ relay: [P], book: {} });
+  await own.drain(new Map([[UP(P), ALLOWED]]));
+  assert.deepEqual(own.sent, [], 'the consent a call just made matches the listed fingerprint whatever its case');
+});
+
+test('AR17 CORRUPT BOOK (Flint): a book flagged corrupt revokes only contacts it still HOLDS; a listed fingerprint ABSENT from it is not revoked (with an ok flag it is); an unreadable flag counts as corrupt', async () => {
+  for (const [label, complete, wantSent] of [['ok flag: an absent peer is revoked', true, [Z]], ['corrupt flag: the absent peer is NOT revoked', false, []], ['an unreadable flag counts as corrupt', 'throws', []]] as const) {
+    resetRevokeState();
+    const r = rig({ relay: [Z], book: { [P]: ALLOWED }, complete });
+    await r.drain();
+    assert.deepEqual(r.sent, wantSent, label);
+  }
+  resetRevokeState();
+  const present = rig({ relay: [P, Z], book: { [P]: BLOCKED }, complete: false });
+  await present.drain();
+  assert.deepEqual(present.sent, [P], 'a peer the damaged book still holds with a not-allowed consent IS revoked; the absent one is not');
+});
+
+test('AR18 CAP (Flint): at most REVOKE_MAX_PER_DRAIN revokes per drain, the rest stay listed (owed) and go out on the next one', async () => {
+  resetRevokeState();
+  const peers = Array.from({ length: REVOKE_MAX_PER_DRAIN + 5 }, (_, i) => i.toString(16).padStart(64, '0'));
+  const r = rig({ relay: peers, book: {} });
+  const first = await r.drain();
+  assert.equal(r.sent.length, REVOKE_MAX_PER_DRAIN);
+  assert.equal(first.attempted, REVOKE_MAX_PER_DRAIN);
+  assert.equal(r.state.relay.size, 5, 'the rest are still listed, so still owed');
+  assert.equal([...first.outcomes.values()].filter((o) => o === 'deferred').length, 5);
+  await r.drain();
+  assert.equal(r.state.relay.size, 0, 'the next drain sent them');
 });

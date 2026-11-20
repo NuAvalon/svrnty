@@ -16,6 +16,8 @@ import { allowedRowShouldExist, type AllowedListResult, type PeerConsent } from 
 export const REVOKE_BACKOFF_MIN_MS = 30_000;
 export const REVOKE_BACKOFF_MAX_MS = 60 * 60 * 1000;
 export const REVOKE_SPACING_MS = 250;
+/** at most this many revokes per drain: the rest stay listed (so still owed) and go out on the next one, so a hostile list cannot hold a tab signing for hours */
+export const REVOKE_MAX_PER_DRAIN = 25;
 /** calls that arrive within this window share ONE drain (so an import-merge of N contacts is one GET), and drains for one owner start at least this far apart */
 export const DRAIN_BATCH_MS = 300;
 export const DRAIN_MIN_GAP_MS = 2000;
@@ -30,6 +32,8 @@ export interface AllowedRevokeIo {
 export interface AllowedRevokeDeps {
   /** the owner's book: peer fingerprint -> consent NOW. A peer that is not in the map is GONE (it has no consent). Throws if the book cannot be read. */
   consents(ownerFp: string): Promise<Map<string, PeerConsent>>;
+  /** is the book WHOLE? "Not in the book = gone" is only true of a whole book: when this says no (the integrity flag is 'corrupt'), or cannot be asked, a listed peer that is absent from the book is NOT revoked. Default: whole. */
+  bookComplete?(ownerFp: string): Promise<boolean>;
   now?: () => number;
   /** the pause between DELETEs (default: a real timer of REVOKE_SPACING_MS) */
   sleep?: (ms: number) => Promise<void>;
@@ -44,8 +48,8 @@ export interface DrainResult {
   attempted: number;
   revoked: number;
   failed: number;
-  /** what happened to each owed peer: 'deleted', 'failed', or 'waiting' (inside its backoff window) */
-  outcomes: Map<string, 'deleted' | 'failed' | 'waiting'>;
+  /** what happened to each owed peer, keyed by its LOWER-CASE fingerprint: 'deleted', 'failed', 'waiting' (inside its backoff window) or 'deferred' (past the per-drain cap) */
+  outcomes: Map<string, 'deleted' | 'failed' | 'waiting' | 'deferred'>;
 }
 
 // in-memory, per session
@@ -83,21 +87,28 @@ export async function drainAllowedRevokes(
     }
     if (listed.status !== 'ok') return out;                                          // unknown: try again next tick, nothing touched
     out.listed = 'ok';
-    const book = new Map(await deps.consents(ownerFp));                              // throws => nothing is sent blind (caught below)
-    for (const [fp, c] of override ?? []) book.set(fp, c);
+    // fingerprints are compared in lower case (the satellite lists them as it was given them); a DELETE goes out with the RELAY'S OWN string
+    const book = new Map<string, PeerConsent>();
+    for (const [fp, c] of await deps.consents(ownerFp)) book.set(fp.toLowerCase(), c);   // throws => nothing is sent blind (caught below)
+    for (const [fp, c] of override ?? []) book.set(fp.toLowerCase(), c);
+    let complete = true;
+    try { complete = deps.bookComplete ? await deps.bookComplete(ownerFp) : true; } catch { complete = false; }   // an integrity flag that cannot be read counts as damaged
     const sleep = deps.sleep ?? realSleep;
     for (const fp of listed.fps) {
-      const c = book.get(fp);
+      const key = fp.toLowerCase();
+      const c = book.get(key);
       if (c && allowedRowShouldExist(c)) continue;                                   // still allowed: its row stays
-      const k = keyOf(ownerFp, fp);
+      if (!c && !complete) continue;                                                 // a damaged book does not say who is gone: only contacts it still holds are revoked
+      const k = keyOf(ownerFp, key);
       const b = backoff.get(k);
-      if (b && now() < b.nextAt) { out.outcomes.set(fp, 'waiting'); continue; }      // inside its window
+      if (b && now() < b.nextAt) { out.outcomes.set(key, 'waiting'); continue; }     // inside its window
+      if (out.attempted >= REVOKE_MAX_PER_DRAIN) { out.outcomes.set(key, 'deferred'); continue; }   // past the cap: still listed, so still owed
       if (out.attempted > 0) await sleep(REVOKE_SPACING_MS);                         // spaced, no pause before the first
       out.attempted++;
       let ok = false;
       try { ok = await io.deleteRow(fp); } catch { ok = false; }
-      if (ok) { out.revoked++; backoff.delete(k); out.outcomes.set(fp, 'deleted'); continue; }
-      out.failed++; out.outcomes.set(fp, 'failed');
+      if (ok) { out.revoked++; backoff.delete(k); out.outcomes.set(key, 'deleted'); continue; }
+      out.failed++; out.outcomes.set(key, 'failed');
       const fails = (backoff.get(k)?.fails ?? 0) + 1;
       backoff.set(k, { fails, nextAt: now() + delayFor(fails) });
     }
