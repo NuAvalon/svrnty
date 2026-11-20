@@ -63,6 +63,20 @@ test('HW2c the fence sees every import form (a control: a fence that cannot see 
   assert.deepEqual(specifiers(sample).sort(), ['@/x/default-and-named', '@/x/dynamic', '@/x/multi-line', '@/x/named', '@/x/re-export', '@/x/required', '@/x/side-effect', '@/x/star', '@/x/type-only']);
 });
 
+test('HW2d A FAILED LOAD IS NEVER THE EMPTY STATE (a source-shape pin, NOT a behaviour test: no spec can lock the app\'s own store; the screens\' own load-failed lines are the visible half): the view\'s and the section\'s load catch set the failure flag and set no list', () => {
+  const view = code(`${DIR}/HeldMessagesView.tsx`);
+  const viewCatch = /await port\.listHeld\(fingerprint\);[\s\S]*?\} catch \{([\s\S]*?)\}\s*\}, \[port, fingerprint\]\)/.exec(view);
+  assert.ok(viewCatch, 'the view\'s load catch is found (control: the pattern matches the source it pins)');
+  assert.match(viewCatch[1], /setLoadFailed\(true\)/);
+  assert.doesNotMatch(viewCatch[1], /setNotes\s*\(/, 'a failed load must not become "nothing held"');
+  const section = code(`${DIR}/HeldMessagesSection.tsx`);
+  const secCatch = /await Promise\.all\(\[sectionPort\.senders\(\), sectionPort\.frozen\(\)\]\);[\s\S]*?\} catch \{([\s\S]*?)\}\s*\};/.exec(section);
+  assert.ok(secCatch, 'the section\'s load catch is found (control)');
+  assert.match(secCatch[1], /setLoadFailed\(true\)/);
+  assert.doesNotMatch(secCatch[1], /setGroups\s*\(\s*\[/, 'a failed load must not become an empty list of senders');
+  assert.match(secCatch[1], /setGroups\(null\)/, 'and the list is cleared, not kept from before');
+});
+
 test('HW3 SENDS NOTHING (calls): no file in the folder uses a network or signalling API', () => {
   for (const f of FILES) assert.doesNotMatch(code(`${DIR}/${f}`), /\bfetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket|EventSource|BroadcastChannel|postMessage|navigator\.|Notification\b|window\.open/, f);
 });
