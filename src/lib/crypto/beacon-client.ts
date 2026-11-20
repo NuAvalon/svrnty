@@ -22,6 +22,8 @@
 // answer, before it is applied. A latched pair is skipped by every scheduled action. matchState is fail-closed.
 import * as wire from './beacon-wire.mjs';
 import { relayDead } from './beacon-relay-margin';
+import { commitRecord, dropRowAt, mergeRecAt, queueWithdrawNowAt } from './beacon-pair-record';
+import { isBugError, queueUnqueuedLiveRows, queueWithdraws, type ReleaseQueueDeps } from './beacon-release-queue';
 import { buildDeposit, signAuth, scheduleRedeposit, type DepositKeys, type Point, type Signals } from './beacon-prover';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -141,6 +143,13 @@ export interface BeaconSecretsPort {
    * record's rows are all there is.
    */
   planPairRows?(pairId: string): Promise<ReadonlyArray<{ rowId: string; epoch: string; H_e: string; N: string }>>;
+  /**
+   * OPTIONAL. true only if EVERY listed row was deposited under the key held for the pair NOW and its one-time seed is still held (so it can still be withdrawn).
+   * False for anything else, and that includes every doubt: the held key cannot be read, the recompute throws, the seed map cannot be read, a row has no epoch.
+   * The client holds back a deposit while a queued withdraw belongs to a row this does not vouch for (a row of an OLDER key can still be matched at the relay).
+   * Absent = the port cannot tell, so no deposit is held back by it (the production adapter always can).
+   */
+  rowsAreUnderHeldKey?(pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>): Promise<boolean>;
 }
 export interface BeaconProverPort {
   buildDeposit(keys: DepositKeys): Promise<{ body: string; signals: Signals }>;
@@ -164,6 +173,11 @@ export interface BeaconClientDeps {
   requestTimeoutMs?: number;
   /** retry spacing for the durable pending-withdraw queue, attempt-indexed. */
   backoffMs?: (attempt: number) => number;
+  /**
+   * Told when the hold or the self-heal meets one of the language's own bug errors (TypeError, ReferenceError, SyntaxError, RangeError). Never needed for safety: the
+   * pair stays held either way. A store or IO failure is none of these and stays the heal's to retry quietly. This module prints nothing itself.
+   */
+  onUnexpected?: (where: 'hold' | 'self-heal', err: unknown) => void;
 }
 
 // ---- typed results: the ONLY shapes that cross the wire boundary ----
@@ -244,106 +258,13 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     return r;
   };
 
-  /** v3 L6b/G3: writes to a pair's record are serialised — compare-and-swap on `version`. The merge
-   * unions the append-only fields; row states are MONOTONE (standing -> withdrawn -> released),
-   * so a stale copy can never move a row backward — merge per row by rank, not "ours is newer". */
-  const ROW_RANK: Record<RowRecord['state'], number> = {
-    unknown: 0, standing: 1, matched: 2, unreachable: 2, withdrawn: 3, spent: 3,
-  };
-  const dropRow = (rec: PairRecord, row: RowRecord): void => {
-    rec.rows = rec.rows.filter((r) => r !== row);
-    // tombstone epoch = the row's epoch, floored at now: an already-closed row still needs its
-    // tombstone to LIVE long enough to guard the merge (R8 prunes it once two epochs close).
-    (rec.deletedRows ??= []).push({ id: row.rowId, epoch: String(Math.max(Number(row.epoch), epochAt(now()))) });
-  };
-  /** A clock is valid only while its stamped gen equals the current tap.gen — a copy from a lower
-   * generation cannot write it back (L14). */
-  const validClock = (c: MatchClock | null | undefined, tap: TapIntent | undefined): MatchClock | null =>
-    c && tap && c.gen === tap.gen ? c : null;
-  /** L14 generation merge: tap-derived fields belong to a generation — the winner supplies BOTH the
-   * tap and the match clock. A remaining tie: trust differs -> false wins (L13c); equal -> ours. */
-  const mergeTap = (ours: PairRecord, cur: PairRecord): { tap?: TapIntent; clock: MatchClock | null } => {
-    const ot = ours.tap, ct = cur.tap;
-    if (!ot && !ct) return { clock: null };
-    if (!ct) return { tap: ot, clock: validClock(ours.firstMatchEpoch, ot) };
-    if (!ot) return { tap: ct, clock: validClock(cur.firstMatchEpoch, ct) };
-    if (ot.gen !== ct.gen) {
-      const win = ot.gen > ct.gen ? ours : cur;
-      return { tap: win.tap, clock: validClock(win.firstMatchEpoch, win.tap) };
-    }
-    // L14d: equal gen + equal trust — the clock is ours if it is valid for that gen, else the
-    // STORED one if it is. A copy read before the first match must not wipe the recorded clock.
-    if (ot.trust === ct.trust)
-      return { tap: ot, clock: validClock(ours.firstMatchEpoch, ot) ?? validClock(cur.firstMatchEpoch, ct) };
-    return { tap: { gen: ot.gen, trust: false }, clock: null };                                 // tie: false wins
-  };
-  /** `resched`: rows the drain rescheduled after its own failed attempt, with the entry it READ.
-   * Unchanged since that read -> the drain's entry (its backoff stands). Changed by another writer
-   * (a Remove re-queue, a stop path) -> that writer's due time stands and attempts never drop. */
+  // The record merge and the commit live in beacon-pair-record.ts (plain functions of the store and the clock), so the contact's key replacement can queue
+  // and commit withdraws by the very same rules without a client. These are thin wrappers that keep every call site below unchanged.
+  const dropRow = (rec: PairRecord, row: RowRecord): void => dropRowAt(rec, row, now());
   const mergeRec = (cur: PairRecord | undefined, ours: PairRecord,
-    resched?: Map<string, { attempts: number; nextAt: number }>): PairRecord => {
-    if (!cur) return ours;
-    // L14c(a): a row/withdraw id in EITHER side's tombstones is dropped from BOTH sides' lists.
-    const del = new Set([...(cur.deletedRows ?? []), ...(ours.deletedRows ?? [])].map((t) => t.id));
-    const rows = new Map(cur.rows.filter((r) => !del.has(r.rowId)).map((r) => [r.rowId, r]));
-    for (const r of ours.rows.filter((r) => !del.has(r.rowId))) {
-      const prior = rows.get(r.rowId);
-      if (!prior || ROW_RANK[r.state] >= ROW_RANK[prior.state]) rows.set(r.rowId, r);
-    }
-    const delW = new Set([...(cur.deletedWithdraws ?? []), ...(ours.deletedWithdraws ?? [])].map((t) => t.id));
-    const wds = new Map(cur.pendingWithdraws.filter((w) => !delW.has(w.rowId)).map((w) => [w.rowId, w]));
-    for (const w of ours.pendingWithdraws.filter((w) => !delW.has(w.rowId))) {
-      // K at merge: an entry only ever gets more urgent / more retried — whichever copy holds the
-      // earlier due time or the higher attempts wins the row.
-      const ex = wds.get(w.rowId);
-      const seen = resched?.get(w.rowId);
-      if (!ex) wds.set(w.rowId, w);
-      else if (seen) wds.set(w.rowId, ex.attempts === seen.attempts && ex.nextAt === seen.nextAt
-        ? w : { rowId: w.rowId, attempts: Math.max(ex.attempts, w.attempts), nextAt: ex.nextAt });
-      else wds.set(w.rowId, { rowId: w.rowId, attempts: Math.max(ex.attempts, w.attempts), nextAt: Math.min(ex.nextAt, w.nextAt) });
-    }
-    const { tap, clock } = mergeTap(ours, cur);
-    const dedup = (a: RowTombstone[] = [], b: RowTombstone[] = []) =>
-      [...new Map([...a, ...b].map((t) => [t.id, t])).values()];
-    // R8/L16: the higher closedFloor wins, CAPPED at the local clock — the floor is derived state,
-    // never a source of time. A forward clock excursion that once wrote a high floor must not pin
-    // it: real epochs below a stale floor would be erased on every merge (spent re-deposited,
-    // final refusals retried every renew).
-    const floor = Math.min(
-      Math.max(Number(cur.closedFloor ?? 0), Number(ours.closedFloor ?? 0)),
-      epochAt(now()) - 2,
-    );
-    const kept = (e: string) => Number(e) >= floor;
-    return {
-      ...ours,
-      observedMatch: cur.observedMatch || ours.observedMatch,
-      tap,
-      firstMatchEpoch: clock,
-      spentEpochs: [...new Set([...cur.spentEpochs, ...ours.spentEpochs])].filter(kept),
-      refusedEpochs: [...new Set([...(cur.refusedEpochs ?? []), ...(ours.refusedEpochs ?? [])])].filter(kept),
-      rows: [...rows.values()],
-      pendingWithdraws: [...wds.values()],
-      deletedRows: dedup(cur.deletedRows, ours.deletedRows).filter((t) => kept(t.epoch)),
-      deletedWithdraws: dedup(cur.deletedWithdraws, ours.deletedWithdraws).filter((t) => kept(t.epoch)),
-      closedFloor: floor > 0 ? String(floor) : undefined,
-    };
-  };
-  /** G11: the store port requires `cas` — commit either wins a compare-and-swap or fails loudly;
-   * never a plain-put fallback, and after 8 lost swaps it throws. A save that failed BEFORE a
-   * deposit leaves means nothing is sent (callers map it to 'busy' with 0 requests). */
-  const commit = async (rec: PairRecord, resched?: Map<string, { attempts: number; nextAt: number }>): Promise<void> => {
-    for (let i = 0; i < 8; i++) {
-      const cur = await deps.store.get(rec.pairId);
-      const base = cur?.version ?? 0;
-      const next = mergeRec(cur, rec, resched);
-      next.version = base + 1;
-      if (await deps.store.cas(rec.pairId, base, next)) {
-        Object.assign(rec, next);
-        return;
-      }
-    }
-    throw new Error(`beacon commit: CAS lost 8 attempts for ${rec.pairId}`);
-  };
+    resched?: Map<string, { attempts: number; nextAt: number }>): PairRecord => mergeRecAt(cur, ours, now, resched);
+  const commit = (rec: PairRecord, resched?: Map<string, { attempts: number; nextAt: number }>): Promise<void> =>
+    commitRecord(deps.store, now, rec, resched);
 
   /** L13c: a tap-intent write is its own compare-and-swap — the generation is computed from the
    * STORED record inside every attempt (`stored gen + 1`), never from the copy read at call start.
@@ -491,6 +412,66 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     return r;
   };
 
+  /**
+   * THE HOLD (#956 S1b): true while a queued withdraw belongs to a row that is NOT under the key held for the pair now — a row of an older key can still be matched at
+   * the relay, and nothing may be deposited under the new key beside it. It is DERIVED from the queue and the rows' own ids (no stored field), and it is narrow on
+   * purpose: a queued withdraw of the SAME key (a Remove, then Trust again) holds nothing back. It FAILS CLOSED: any doubt holds. It reads the STORED record each
+   * time and is called immediately before the deposit leaves, never cached across an await. It ends on its own: a withdraw is confirmed, or the relay can no longer
+   * match the row's epoch (relayDead), so a relay that never answers holds for about a week plus the margin at most.
+   */
+  /** #956 S1b: a bug error is REPORTED, never swallowed (a bare catch once turned a ReferenceError into a silent no-op heal). Reporting itself can never throw into the caller. */
+  const reportUnexpected = (where: 'hold' | 'self-heal', e: unknown): void => {
+    if (!isBugError(e)) return;
+    try { deps.onUnexpected?.(where, e); } catch { /* a reporter that throws changes nothing */ }
+  };
+
+  const heldByOlderKey = async (pairId: string): Promise<boolean> => {
+    if (!deps.secrets.rowsAreUnderHeldKey) return false;
+    const stored = await deps.store.get(pairId);
+    if (!stored) return false;
+    // every queued withdraw, AND every live unsettled row of the record even if it has no queue entry: a row a deposit sent in the gap of a replacement has none
+    const rows = new Map<string, { rowId: string; epoch: string }>();
+    for (const w of stored.pendingWithdraws) rows.set(w.rowId, { rowId: w.rowId, epoch: stored.rows.find((r) => r.rowId === w.rowId)?.epoch ?? '' });
+    for (const r of stored.rows) if (!isSettled(r.state) && !relayDead(r.epoch, now())) rows.set(r.rowId, { rowId: r.rowId, epoch: r.epoch });
+    if (rows.size === 0) return false;
+    try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, [...rows.values()])); } catch (e) { reportUnexpected('hold', e); return true; }
+  };
+
+  /** A row in these states has no withdraw to send. */
+  const isSettled = (state: RowRecord['state']): boolean => state === 'withdrawn' || state === 'spent' || state === 'unreachable';
+
+  /**
+   * #956 S1b SELF-HEAL: queue every live unsettled row that is NOT under the key held now and has no queue entry. A replacement queues the rows it knows of and sweeps once
+   * more after its key write, but a crash between the key write and that sweep (or a sweep that throws) would leave a row under the old key that nothing withdraws and the
+   * queue-only hold never sees. This runs at a held deposit and at every drain, so the next tick of either queues it, and the hold then applies. It queues nothing when the
+   * held key cannot be read (nothing can be told apart then) or the pair is removed (a Remove has already queued its rows).
+   */
+  const queueStaleRows = async (pairId: string): Promise<void> => {
+    const check = deps.secrets.rowsAreUnderHeldKey;
+    if (!check) return;
+    const stored = await deps.store.get(pairId);
+    if (!stored || !(await deps.secrets.depositSecrets(pairId))) return;
+    let added = false;
+    for (const row of stored.rows) {
+      if (isSettled(row.state) || relayDead(row.epoch, now()) || stored.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
+      let under = false;
+      try { under = await check.call(deps.secrets, pairId, [{ rowId: row.rowId, epoch: row.epoch }]); } catch (e) { reportUnexpected('self-heal', e); under = false; }
+      if (!under) { queueWithdrawNowAt(stored, row.rowId, now()); added = true; }
+    }
+    if (added) await commit(stored);
+  };
+
+  /**
+   * #956 S1b: true while the key this proof was built for is still the key held for the pair. A replacement that landed while the proof was being built makes it
+   * stale: the row is not durable yet, so the replacement had nothing to queue, and the hold (which looks at the queue) would not stop it. It is read again
+   * immediately before the deposit leaves and after the write-ahead commit: from then on a replacement sees the row and queues it, and a replacement that
+   * finished earlier has already changed the key. FAILS CLOSED: a key that cannot be read, or has changed in any part, is stale.
+   */
+  const keyStillHeld = async (pairId: string, built: { x: bigint; counterpartY: Point }): Promise<boolean> => {
+    const cur = await deps.secrets.depositSecrets(pairId);
+    return !!cur && cur.x === built.x && cur.counterpartY[0] === built.counterpartY[0] && cur.counterpartY[1] === built.counterpartY[1];
+  };
+
   /** Deposit outcomes richer than the wire answer — mapped to TrustResult at the tap. */
   type DepositOutcome =
     | 'spent-epoch'            // (slot,N) spent for this epoch — owed never (G5)
@@ -578,6 +559,17 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       }
       try { await commit(rec); } catch { return 'unsaved'; }
       return 'latched';
+    }
+    if (!(await keyStillHeld(rec.pairId, sec)) || (await heldByOlderKey(rec.pairId))) {   // a STALE key, or the HOLD (a row of an older key may still be matched): nothing leaves
+      if (freshMint) {                                                // nothing has left: drop the fresh mint + release its seed, like the latch case above
+        dropRow(rec, row);
+        await deps.secrets.releaseRow(row.rowId);
+      } else {
+        queueWithdraw(rec, row.rowId, 0);                             // stored 'unknown': an earlier call may have sent it
+      }
+      try { await commit(rec); } catch { return 'unsaved'; }
+      try { await queueStaleRows(rec.pairId); } catch (e) { reportUnexpected('self-heal', e); /* the next drain tries again */ }
+      return 'unsent';                                                // owed stays derived: the next renew tries again once the hold has ended
     }
     const a = await post('deposit', built.body);
     // L2c + L15d AFTER: re-read the latch AND the stored tap BEFORE recording or acting on the
@@ -706,10 +698,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   };
   /** L6e: the withdraws a Remove queues are due NOW — backoff applies from the first RETRY, never
    * the first attempt. Queues made by a deposit path after a send keep their backoff. */
-  const queueWithdrawNow = (rec: PairRecord, rowId: string): void => {
-    const ex = rec.pendingWithdraws.find((w) => w.rowId === rowId);
-    if (ex) { ex.nextAt = now(); } else rec.pendingWithdraws.push({ rowId, attempts: 0, nextAt: now() });
-  };
   const unqueueWithdraw = (rec: PairRecord, rowId: string, epoch: string): void => {
     rec.pendingWithdraws = rec.pendingWithdraws.filter((x) => x.rowId !== rowId);
     (rec.deletedWithdraws ??= []).push({ id: rowId, epoch: String(Math.max(Number(epoch), epochAt(now()))) });
@@ -718,52 +706,16 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   /** L6b/L6c: the ONE Remove commit — intent false under gen+1, clock tombstoned, a queued withdraw
    * per live row, closed rows dropped and released. removeAtTap and the half-done-Remove repair
    * share it; it commits BEFORE any withdraw fetch leaves. */
+  const releaseDeps: ReleaseQueueDeps = { secrets: deps.secrets, store: deps.store, now };
   const removeCommitBody = async (rec: PairRecord): Promise<void> => {
     rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock
     rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: false };         // L13: intent false under a new gen
-    for (const row of rec.rows) {
-      // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
-      if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-      if (relayDead(row.epoch, now())) {                              // the relay can no longer match the epoch (its clock + the skew margin): drop + release (L11)
-        dropRow(rec, row);
-        await deps.secrets.releaseRow(row.rowId);
-        continue;
-      }
-      queueWithdrawNow(rec, row.rowId);                               // L6e: durable queue entry, due NOW
-    }
-    // Rows the sealed store holds a seed for but the record may not list (an orphan: a crash between minting a seed and saving the record, after a deposit may
-    // already have left). They join the record as rows whose answer is unknown ('unknown' withdraws too, and its seed is kept until confirmed), and the L6d pass
-    // below queues them with the rest. The record's merge keeps ONE row per id (a recorded row's state is never overwritten by a plan entry) and drops a
-    // tombstoned one, so nothing here needs to; test O4-12c pins both. Never dropped here: a seed dropped now would leave a row that may be standing at the
-    // relay with nothing to sign its withdraw.
-    if (deps.secrets.planPairRows) {
-      for (const t of await deps.secrets.planPairRows(rec.pairId)) {
-        if (relayDead(t.epoch, now())) continue;                    // a planned row the relay can no longer match is ignored (the margin applies here too)
-        rec.rows.push({ rowId: t.rowId, epoch: t.epoch, H_e: t.H_e, N: t.N, state: 'unknown' });
-      }
-    }
+    await queueWithdraws(rec, releaseDeps);                           // the queue half, shared with a key replacement (beacon-release-queue.ts)
     await commitIntent(rec, false);
-    // L6d: a Remove retires every live row of the MERGED record. Its own commit merges in rows a
-    // concurrent deposit wrote — they have no queue entry, and the drain walks only the queue.
-    // Bounded passes (the 8-swap rule): queue every live unqueued row of the merged record, commit
-    // again if any were added, repeat until a pass adds nothing. Each pass — and the latch
-    // re-assert — applies only while the merged tap is still THIS Remove's (trust false at the
-    // generation this commit wrote); a newer tap owns the pair and its rows are never queued.
+    // Each sweep pass — and the latch re-assert below — applies only while the merged tap is still THIS Remove's (trust false at the generation this commit
+    // wrote); a newer tap owns the pair and its rows are never queued.
     const myGen = rec.tap?.gen;
-    for (let i = 0; i < 8; i++) {
-      const cur = await deps.store.get(rec.pairId);
-      if (cur?.tap?.gen !== myGen || cur.tap.trust !== false) break;      // a newer tap holds it
-      let added = false;
-      for (const row of rec.rows) {
-        if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-        if (relayDead(row.epoch, now())) continue;                  // only a row the relay can still match is queued
-        if (rec.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
-        queueWithdrawNow(rec, row.rowId);
-        added = true;
-      }
-      if (!added) break;
-      await commit(rec);                                                // merge pulls in rows that landed since
-    }
+    await queueUnqueuedLiveRows(rec, releaseDeps, (cur) => cur?.tap?.gen === myGen && cur.tap.trust === false);
     // L6d: re-assert the LOCAL latch if it is gone — a Trust that cleared it but lost the commit
     // race must leave the pair visibly 'removed' so L6c can still see (and repair) it. Same
     // generation guard: beside a NEWER trust-true tap, a latch here would read as a half-done
@@ -1035,6 +987,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         // L6c: repair a half-done Remove before touching the pair's queue — same single commit,
         // then THIS drain retires the entries it queued.
         if (await repairHalfDoneRemove(stored.pairId)) { /* committed inside repair; rec reload below */ }
+        try { await queueStaleRows(stored.pairId); } catch (e) { reportUnexpected('self-heal', e); /* a failed self-heal must not stop the drain: it runs again next tick */ }
         const rec = (await deps.store.get(stored.pairId)) ?? stored;      // refresh after a repair
         let dirty = false;
         const resched = new Map<string, { attempts: number; nextAt: number }>();

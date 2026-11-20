@@ -339,3 +339,54 @@ test('SM4 MINTING keeps the plain rule: a row is never minted into an epoch the 
   setNow(end + GRACE_MS + 60_000);                                     // a minute after: the relay refuses a deposit into it, so nothing may be minted for it
   await assert.rejects(() => a.newRow(PAIR_Q, BigInt(E)), /epoch-not-live/);
 });
+
+// ---------- the hold's question (#956 S1b): is every listed row under the key held for the pair NOW, with its seed still held? ----------
+const heldKeyAdapter = (y0: Point) => {
+  let y = y0; let broken = false;
+  const h = setup({ counterpartY: async () => (broken ? undefined : y), slotOf: fakeSlot, secretX: async () => X });
+  return { ...h, setKey: (p: Point) => { y = p; }, breakKey: () => { broken = true; } };
+};
+const ask = (a: ReturnType<typeof setup>['a'], ids: string[], epoch = E) => a.rowsAreUnderHeldKey(PAIR_P, ids.map((rowId) => ({ rowId, epoch: String(epoch) })));
+
+test('HK1 every row under the held key, seeds held: true (and an empty list is true)', async () => {
+  const k = heldKeyAdapter(YP);
+  const r1 = await k.a.newRow(PAIR_P, BigInt(E));
+  assert.equal(await ask(k.a, [r1.rowId]), true);
+  assert.equal(await k.a.rowsAreUnderHeldKey(PAIR_P, []), true, 'nothing queued: nothing to hold for');
+});
+
+test('HK2 a row minted under the OLD key is not under the held key once the key is replaced; a row under the new key is; a mix is not', async () => {
+  const k = heldKeyAdapter(YP);
+  const oldRow = await k.a.newRow(PAIR_P, BigInt(E));
+  k.setKey(YQ);
+  const newRow = await k.a.newRow(PAIR_P, BigInt(E));
+  assert.notEqual(oldRow.rowId, newRow.rowId, 'the two keys give two different rows for the same epoch');
+  assert.equal(await ask(k.a, [oldRow.rowId]), false, 'old-key row: not vouched for');
+  assert.equal(await ask(k.a, [newRow.rowId]), true, 'new-key row: vouched for');
+  assert.equal(await ask(k.a, [newRow.rowId, oldRow.rowId]), false, 'ONE old row among them is enough');
+});
+
+test('HK3 a row whose seed is gone, or expired, is not vouched for even under the held key (it cannot sign its withdraw: counts as old)', async () => {
+  const k = heldKeyAdapter(YP);
+  const r = await k.a.newRow(PAIR_P, BigInt(E));
+  assert.equal(await ask(k.a, [r.rowId]), true);
+  k.setNow(startOf(E + 1) + GRACE_MS + MARGIN_MS + 1);                 // one millisecond past the seed's expiry
+  assert.equal(await ask(k.a, [r.rowId]), false, 'expired');
+  k.setNow(MID); await k.a.releaseRow(r.rowId);
+  assert.equal(await ask(k.a, [r.rowId]), false, 'released');
+});
+
+test('HK4 FAIL CLOSED: an unreadable held key, a recompute that throws, an unreadable seed map, or a row with no epoch each answer false and never throw', async () => {
+  const k = heldKeyAdapter(YP);
+  const r = await k.a.newRow(PAIR_P, BigInt(E));
+  assert.equal(await ask(k.a, [r.rowId], E), true, 'control: the same call is true when nothing is wrong');
+  assert.equal(await k.a.rowsAreUnderHeldKey(PAIR_P, [{ rowId: r.rowId, epoch: '' }]), false, 'a row with no epoch');
+  k.st.broken = 'unreadable';
+  assert.equal(await ask(k.a, [r.rowId]), false, 'the seed map cannot be read');
+  k.st.broken = null;
+  k.breakKey();
+  assert.equal(await ask(k.a, [r.rowId]), false, 'the held key cannot be read');
+  const t = setup({ counterpartY: async () => YP, slotOf: async () => { throw new Error('derivation failed'); }, secretX: async () => X });
+  const tr = await (async () => { const s = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X }); return s.a.newRow(PAIR_P, BigInt(E)); })();
+  assert.equal(await t.a.rowsAreUnderHeldKey(PAIR_P, [{ rowId: tr.rowId, epoch: String(E) }]), false, 'the recompute throws');
+});

@@ -92,12 +92,12 @@ test('K5 ROLLBACK (real classifier: a lower generation): KEEP, nothing is writte
   assert.deepEqual(out, { verdict: 'keep', fields: {}, counted: 'rollback' });
 });
 
-test('K6 a held key is NEVER replaced: a valid HIGHER generation is DEFERRED, nothing is written, counted', async () => {
+test('K6 a held key is NEVER written by the decision: a valid HIGHER generation is a REPLACE verdict that carries the newer key APART from `fields`, which stays empty', async () => {
   const held = { beacon_public_key: KEY_A, beacon_key_generation: G(5) };
   const d = await dispositionFor(KEY_B, G(6), held);
   assert.ok(d.beaconKey, 'the classifier accepts it: a valid higher generation');
   const out = decideBeaconIntake(held, d, READABLE);
-  assert.deepEqual(out, { verdict: 'deferred', fields: {}, counted: 'newer-generation-deferred' });
+  assert.deepEqual(out, { verdict: 'replace', fields: {}, replace: { publicKey: KEY_B, keyGeneration: G(6) } });
 });
 
 test('K7 my own key reflected back on a card: dropped by the classifier, nothing stored, counted', async () => {
@@ -184,16 +184,33 @@ const codeOnly = (t: string) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)
 const rel = (p: string) => p.replace(/\\/g, '/').split('/src/').pop();
 const namersOf = (files: { path: string; text: string }[], re: RegExp) => files.filter((f) => re.test(codeOnly(f.text))).map((f) => rel(f.path)).sort();
 
-test('K13 only the card format, the card signer, the store type, the decision module and the confirm rule name the contact\'s beacon fields in non-test source: a new consumer fails here until it is reviewed (the guard FIRES on a synthetic one, CONTROL)', () => {
+test('K13 only the card format, the card signer, the store type, the decision module, the confirm rule and the real-ports file of the key replacement (its compare-and-set write) name the contact\'s beacon fields in non-test source: a new consumer fails here until it is reviewed (the guard FIRES on a synthetic one, CONTROL)', () => {
   const RE = /beacon_public_key|beacon_key_generation/;
   assert.deepEqual(namersOf([{ path: '/x/src/lib/new-consumer.ts', text: 'const k = contact.beacon_public_key;' }, { path: '/x/src/lib/c.ts', text: '// beacon_public_key is the card field' }], RE), ['lib/new-consumer.ts']);
-  assert.deepEqual(namersOf(SRC, RE), ['lib/format/envelope.ts', 'lib/identity/client-store.ts', 'lib/identity/identity-card-sign.ts', 'lib/trust/beacon-confirmed.ts', 'lib/trust/beacon-contact-key.ts']);
+  assert.deepEqual(namersOf(SRC, RE), ['lib/format/envelope.ts', 'lib/identity/client-store.ts', 'lib/identity/identity-card-sign.ts', 'lib/trust/beacon-confirmed.ts', 'lib/trust/beacon-contact-key.ts', 'lib/trust/beacon-key-intake-real.ts']);
 });
 
-test('K14 the intake never writes a held key over a newer one: the decision module has no replace verdict, and only add/backfill carry fields', () => {
+test('K14 the decision never lets a replace write through `fields`: the replace verdict carries the key in `replace` with EMPTY fields, and across every input only add and backfill ever return fields', async () => {
   const mod = SRC.find((f) => rel(f.path) === 'lib/trust/beacon-contact-key.ts')!;
-  assert.doesNotMatch(codeOnly(mod.text), /verdict:\s*'replace'/);
-  assert.match(codeOnly(mod.text), /k\.keyGeneration\s*>\s*held\.keyGeneration\)\s*return\s*\{\s*verdict:\s*'deferred',\s*fields:\s*\{\}/);
+  assert.match(codeOnly(mod.text), /k\.keyGeneration\s*>\s*held\.keyGeneration\)\s*return\s*\{\s*verdict:\s*'replace',\s*fields:\s*\{\},\s*replace:/);
+  // behavioural: a matrix of held x card x own-key states; any non-empty `fields` must come from add or backfill, and `replace` is present only on a replace
+  const helds = [undefined, {}, { beacon_public_key: KEY_A, beacon_key_generation: G(5) }, { beacon_public_key: KEY_A, beacon_key_generation: 'x' as unknown as number }];
+  const cards = [{ beaconKey: null }, { beaconKey: { publicKey: KEY_A, keyGeneration: G(5) } }, { beaconKey: { publicKey: KEY_B, keyGeneration: G(6) } }, { beaconKey: { publicKey: KEY_B, keyGeneration: G(4) } }, { beaconKey: { publicKey: KEY_B, keyGeneration: G(5) } }, { beaconKey: null, beaconKeyDropped: 'conflict' }];
+  const owns: OwnBeacon[] = [READABLE, { state: 'unreadable' }];
+  let replaces = 0;
+  for (const h of helds) for (const c of cards) for (const o of owns) {
+    const out = decideBeaconIntake(h, c as CardBeacon, o);
+    if (Object.keys(out.fields).length > 0) assert.ok(out.verdict === 'add' || out.verdict === 'backfill', `fields only on add/backfill (got ${out.verdict})`);
+    assert.equal(out.replace !== undefined, out.verdict === 'replace', '`replace` is present exactly on a replace verdict');
+    if (out.verdict === 'replace') { replaces++; assert.deepEqual(out.fields, {}); }
+  }
+  assert.ok(replaces > 0, 'CONTROL: the matrix really produces a replace, so the property above is not vacuous');
+});
+
+test('KV1 no other file can fabricate a replace verdict: only the decision module names it in non-test source (a new producer fails here until it is reviewed; the guard FIRES on a synthetic one)', () => {
+  const RE = /verdict:\s*'replace'/;
+  assert.deepEqual(namersOf([{ path: '/x/src/lib/new-producer.ts', text: "return { verdict: 'replace', fields: {} };" }], RE), ['lib/new-producer.ts']);
+  assert.deepEqual(namersOf(SRC, RE), ['lib/trust/beacon-contact-key.ts']);
 });
 
 // Every caller of classifyImportedCard that CONSUMES the beacon key must give it my own key and the key the contact holds, or the own-key and rollback rules
@@ -283,4 +300,21 @@ test('K21 the plaintext-backup contact restore writes ONLY through addContact (i
   const add = code.slice(code.indexOf('export async function addContact('), code.indexOf('An update to a contact'));
   assert.match(code, /ConstraintError[\s\S]{0,400}if \(existing\) return existing;/, 'a duplicate fingerprint returns the held record');
   assert.ok(add.length > 0);
+});
+
+test('KV2 an UNSIGNED card, a card whose signature does not match what it now says, a card signed by a DIFFERENT identity, and a card whose fingerprint does not belong to its key never yield a replace (CONTROL: the same newer key on a valid card does)', async () => {
+  const held = { beacon_public_key: KEY_A, beacon_key_generation: G(5) };
+  const verdictOf = async (c: IdentityCard) => {
+    const d = await classifyImportedCard(c, { knownBeacon: knownBeaconOf(held) });
+    return decideBeaconIntake(held, { beaconKey: d.beaconKey, beaconKeyDropped: d.beaconKeyDropped }, READABLE).verdict;
+  };
+  const newer = { beacon_public_key: KEY_B, beacon_key_generation: G(6) };
+  assert.equal(await verdictOf(await signed(newer)), 'replace', 'CONTROL: a valid signed card with a newer key');
+  assert.notEqual(await verdictOf(card(alice, newer)), 'replace', 'unsigned');
+  const tampered = JSON.parse(JSON.stringify(await signed({ beacon_public_key: KEY_A, beacon_key_generation: G(6) }))) as IdentityCard;
+  (tampered.identity as any).beacon_public_key = KEY_B; (tampered.identity as any).beacon_key_generation = G(7);   // changed after it was signed
+  assert.notEqual(await verdictOf(tampered), 'replace', 'altered after signing');
+  const bob = await makeCanonicalId('bob');
+  assert.notEqual(await verdictOf(await signIdentityCard(card(alice, newer), bob.privateKey, bob.passphrase)), 'replace', 'signed by a different identity');
+  assert.notEqual(await verdictOf(await signed({ ...newer, public_key: bob.publicKey })), 'replace', 'the fingerprint does not belong to the key the card carries');
 });

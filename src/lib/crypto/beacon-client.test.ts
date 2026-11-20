@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   createBeaconClient,
   type BeaconClientDeps,
@@ -16,6 +17,9 @@ import {
 } from './beacon-client';
 import type { DepositKeys } from './beacon-prover';
 import { createBeaconSecrets, type SeedStore } from '../trust/beacon-secrets';
+import { commitRecord } from './beacon-pair-record';
+import { queueWithdraws } from './beacon-release-queue';
+import { replaceHeldBeaconKey } from '../trust/beacon-key-replace';
 import type { BeaconSeeds } from '../identity/beacon-seeds';
 
 const EPOCH_SECONDS = 604800;
@@ -3107,16 +3111,24 @@ const SHAPES: Array<[string, Shape]> = [
 ];
 const WITHDRAWN: Shape = (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : ok('withdrawn'));
 /** The client on the REAL secrets adapter and a clock the test moves. `route` answers every request; the deposit is accepted while `route` is null. */
-const realClient = () => {
+const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>) => Promise<boolean>; prover?: ReturnType<typeof makeProver>; secretsPatch?: Partial<BeaconSecretsPort>; deps?: Partial<BeaconClientDeps> } = {}) => {
   const clock = { t: MID }; const calls: string[] = []; let route: Shape | null = null; let map: BeaconSeeds = {};
+  let heldY: [bigint, bigint] = [BigInt(11), BigInt(22)];             // the key held for the contact: a test can replace it
   const seeds: SeedStore = { read: async () => ({ ...map }), update: async (m) => { map = m({ ...map }); return map; }, reset: async () => { map = {}; } };
-  const secrets = createBeaconSecrets({
-    seeds, now: () => clock.t, secretX: async () => BigInt(123456789), counterpartY: async () => [BigInt(11), BigInt(22)],
-    slotOf: async (_x, _y, e) => ({ H_e: String(10_000 + Number(e)), N: String(20_000 + Number(e)) }),
+  const adapter = createBeaconSecrets({
+    seeds, now: () => clock.t, secretX: async () => BigInt(123456789), counterpartY: async () => heldY,
+    slotOf: async (_x, y, e) => ({ H_e: String(10_000 + Number(y[0]) * 1000 + Number(e)), N: String(20_000 + Number(y[0]) * 1000 + Number(e)) }),   // depends on the key, like the real derivation
   });
-  const fetch: FakeFetch = (url) => { calls.push(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
-  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets });
-  return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; } };
+  const secrets = { ...adapter, ...(over.secretsPatch ?? {}), ...(over.rowsAreUnderHeldKey ? { rowsAreUnderHeldKey: over.rowsAreUnderHeldKey } : {}) };
+  /** the same seeds, the same derivation, but the held key is FIXED at `y`: what the composer hands a replacement (the OLD key), so it keeps answering for the old key after the contact's key moved */
+  const secretsForKey = (y: [bigint, bigint]) => createBeaconSecrets({
+    seeds, now: () => clock.t, secretX: async () => BigInt(123456789), counterpartY: async () => y,
+    slotOf: async (_x, yy, e) => ({ H_e: String(10_000 + Number(yy[0]) * 1000 + Number(e)), N: String(20_000 + Number(yy[0]) * 1000 + Number(e)) }),
+  });
+  let onRequest: ((url: string) => Promise<void>) | null = null;       // a hook that runs INSIDE a request, before it is answered
+  const fetch: FakeFetch = async (url) => { calls.push(url); if (onRequest) await onRequest(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
+  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets, ...(over.prover ? { prover: over.prover } : {}), ...(over.deps ?? {}) });
+  return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; }, setHeldKey: (p: [bigint, bigint]) => { heldY = p; }, onRequest: (fn: (url: string) => Promise<void>) => { onRequest = fn; }, secretsForKey };
 };
 
 for (const [label, shape] of SHAPES) {
@@ -3212,4 +3224,354 @@ test('MG8 the READ side keeps the plain rule: a match one minute after the relay
   assert.equal(await c.client.matchState('pair-1'), 'none', 'the relay cannot match it any more: claiming a live match would say more than is true');
   c.calls.length = 0; await c.client.pollNow('pair-1');
   assert.equal(c.calls.length, 0, 'and polling a closed epoch is wasted calls');
+});
+
+// ---------- the hold (#956 S1b): no deposit under the held key while a queued withdraw belongs to a row of an OLDER key ----------
+const KEY_2: [bigint, bigint] = [BigInt(33), BigInt(44)];
+const IN_WINDOW_MS = EPOCH_END_MS - 300_000;                          // the last 600 s of EPOCH: the next epoch is depositable too
+const deposits = (c: { calls: string[] }) => c.calls.filter((u) => u.endsWith('/deposit')).length;
+/** What a key replacement does first: queue the withdraw of every row (plan, then the queue), committed. */
+const queueEveryRow = async (c: ReturnType<typeof realClient>) => {
+  const rec = (await c.store.get('pair-1'))!;
+  await queueWithdraws(rec, { secrets: c.secrets, store: c.store, now: () => c.clock.t });
+  await commitRecord(c.store, () => c.clock.t, rec);
+};
+
+test('HK5 NEG: after the held key is replaced, a queued withdraw of the OLD key holds the next deposit back; it goes once the withdraw is confirmed', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');                                // a row of epoch EPOCH under the first key
+  c.clock.t = IN_WINDOW_MS; c.setHeldKey(KEY_2); await queueEveryRow(c);
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 1, 'the old key\'s row is queued');
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'NOTHING is deposited under the new key beside a row of the old one');
+  assert.equal(c.seedCount(), 1, 'the held-back attempt left no seed behind (only the old row\'s)');
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000;                        // past the backoff the renew\'s own failed attempt set (the default route has no nonce)
+  await c.client.drainPendingWithdraws(); c.setRoute(null);
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'the withdraw was confirmed: the hold has ended');
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 1, 'and now the next epoch is deposited under the new key');
+});
+
+test('HK6 T-R5 under the real adapter: a queued withdraw of the SAME key holds nothing back (Remove, then Trust again)', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.clock.t = IN_WINDOW_MS; await queueEveryRow(c);                   // the held key is unchanged
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 1, 'the next epoch is deposited: same key, nothing to correlate');
+});
+
+test('HK7 a MIXED queue (one row under the held key, one under the old key) holds; with only the held-key row queued it does not', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');                                // r1: epoch EPOCH under the first key
+  const oldId = (await c.store.get('pair-1'))!.rows[0].rowId;
+  c.setHeldKey(KEY_2);
+  const mint = await c.secrets.newRow('pair-1', BigInt(EPOCH));       // r2: epoch EPOCH under the new key, its seed held
+  const rec = (await c.store.get('pair-1'))!;
+  rec.rows.push({ rowId: mint.rowId, epoch: String(EPOCH), H_e: '', N: '', state: 'standing' });
+  c.clock.t = IN_WINDOW_MS;
+  rec.pendingWithdraws = [{ rowId: oldId, attempts: 0, nextAt: c.clock.t }, { rowId: mint.rowId, attempts: 0, nextAt: c.clock.t }];
+  await commitRecord(c.store, () => c.clock.t, rec);
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'one old-key entry is enough to hold');
+  const only = (await c.store.get('pair-1'))!; only.pendingWithdraws = only.pendingWithdraws.filter((w) => w.rowId === mint.rowId);
+  only.rows = only.rows.filter((r) => r.rowId !== oldId); await c.store.put(only);
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 1, 'CONTROL: with only the held-key row queued the same call deposits');
+});
+
+test('HK8 FAIL CLOSED: if the question itself throws, the deposit is held back', async () => {
+  const c = realClient({ rowsAreUnderHeldKey: async () => { throw new Error('cannot tell'); } });
+  await c.client.trustAtTap('pair-1');
+  c.clock.t = IN_WINDOW_MS; await queueEveryRow(c);                   // a queued same-key row: only the throw can hold it
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0);
+});
+
+test('HK9 FAIL CLOSED: a queued row whose seed is gone holds the deposit back even under the same key (it cannot be withdrawn; the hold ends when the relay can no longer match it)', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  const id = (await c.store.get('pair-1'))!.rows[0].rowId;
+  c.clock.t = IN_WINDOW_MS; await queueEveryRow(c);
+  await c.secrets.releaseRow(id);                                     // the seed is gone
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  c.clock.t = DEAD_MS; await c.client.drainPendingWithdraws();        // the old row\'s epoch can no longer be matched: the entry is dropped, the hold ends
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0);
+});
+
+test('HK10 the check sits immediately before the deposit leaves: after the write-ahead commit and the latch check, before the fetch, and the queue is read fresh inside it', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/crypto/beacon-client.ts'), 'utf8').replace(/\/\/[^\n]*/g, '');
+  const at = (needle: string) => { const i = src.indexOf(needle); assert.ok(i > 0, `${needle} found`); return i; };
+  assert.ok(at('commitWriteAhead(rec)') < at('await heldByOlderKey(rec.pairId)'), 'after the write-ahead commit');
+  assert.ok(at('await removed(rec.pairId)) {') < at('await heldByOlderKey(rec.pairId)'), 'after the latch check');
+  assert.ok(at('await heldByOlderKey(rec.pairId)') < at("post('deposit', built.body)"), 'before the fetch');
+  assert.ok(at('commitWriteAhead(rec)') < at('await keyStillHeld(rec.pairId, sec)') && at('await keyStillHeld(rec.pairId, sec)') < at("post('deposit', built.body)"), 'the key-still-held check sits in the same place: after the write-ahead commit, before the fetch');
+  const fn = src.slice(at('const heldByOlderKey'), at('Deposit outcomes richer'));
+  assert.match(fn, /await deps\.store\.get\(pairId\)/, 'it reads the STORED record each time, not a copy held across an await');
+});
+
+test('HK11 a deposit whose proof was built under the OLD key does not leave if the key was replaced while it was building: nothing is sent, nothing is left behind', async () => {
+  // The replace lands while the proof is still being built: the row is not durable yet, so there is nothing for the replace to queue and the queue is EMPTY. Since the
+  // hold also reads live unsettled rows, the write-ahead row of THIS deposit makes the hold stop it too, so this test passes with either guard; HK27 pins the stale-key
+  // re-read on its own, with a port that has no hold question.
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let started!: () => void; const building = new Promise<void>((r) => { started = r; });
+  const base = makeProver();
+  const slow = makeProver({ buildDeposit: async (k) => { started(); await gate; return base.buildDeposit(k); } });
+  const c = realClient({ prover: slow });
+  const tap = c.client.trustAtTap('pair-1');
+  await building;                                                     // the proof is being built under the first key
+  c.setHeldKey(KEY_2);                                                // the contact's key is replaced meanwhile
+  release(); await tap;
+  assert.equal(deposits(c), 0, 'nothing was sent under the stale key');
+  const rec = await c.store.get('pair-1');
+  assert.equal((rec?.rows ?? []).length, 0, 'no row was left behind');
+  assert.equal(c.seedCount(), 0, 'and the fresh seed was released');
+});
+
+test('HK12 CONTROL for HK11: the same slow deposit with the key UNCHANGED does go out (so HK11 stops it for the key, not for being slow)', async () => {
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let started!: () => void; const building = new Promise<void>((r) => { started = r; });
+  const base = makeProver();
+  const c = realClient({ prover: makeProver({ buildDeposit: async (k) => { started(); await gate; return base.buildDeposit(k); } }) });
+  const tap = c.client.trustAtTap('pair-1');
+  await building; release(); await tap;
+  assert.equal(deposits(c), 1);
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1);
+});
+
+test('HK13 ORDER: the key is re-read AFTER the write-ahead commit. A replace that lands DURING that commit is seen and nothing is sent (re-reading before the commit would miss it)', async () => {
+  const c = realClient();
+  const cas = c.store.cas.bind(c.store);
+  c.store.cas = async (id, v, next) => {                              // the key is replaced right after the write-ahead row became durable
+    const ok = await cas(id, v, next);
+    if (ok && next.rows.some((r) => r.state === 'unknown')) c.setHeldKey(KEY_2);
+    return ok;
+  };
+  await c.client.trustAtTap('pair-1');
+  assert.equal(deposits(c), 0, 'the re-read after the commit saw the new key: nothing left');
+});
+
+test('HK14 a withdraw the relay REFUSES because the deposit has not landed yet keeps its entry queued; the deposit lands under the stale key and the NEXT drain withdraws it', async () => {
+  // A replace lands after the re-read and before the fetch: it queues the write-ahead row, and the drain can try that withdraw BEFORE the deposit reaches the relay.
+  // The relay has no such row yet and answers refused("auth"). The entry must stay queued: it leaves only on a confirmed withdraw (or when the relay can no longer match the epoch).
+  const c = realClient();
+  const baseFetch = c.f.fetch;
+  void baseFetch;
+  let gapDone = false;
+  const fetchGap = async (url: string) => {
+    if (url.endsWith('/deposit') && !gapDone) {
+      gapDone = true;
+      c.setHeldKey(KEY_2); await queueEveryRow(c);                    // the replace lands in the gap: it queues the write-ahead row
+      c.setRoute((u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : refused('auth')));   // the relay has no row yet
+      c.clock.t += 5_000; await c.client.drainPendingWithdraws();     // the drain tries first, and is refused
+      c.setRoute(null);
+    }
+  };
+  c.onRequest(fetchGap);
+  await c.client.trustAtTap('pair-1');
+  const rec = (await c.store.get('pair-1'))!;
+  assert.equal(rec.pendingWithdraws.length, 1, 'the refused withdraw did NOT drop the entry');
+  assert.equal(c.seedCount(), 1, 'and its seed is still held');
+  c.setRoute(WITHDRAWN); c.clock.t += 60_000;                         // the deposit has landed; the relay now has the row
+  await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'the next drain withdraws it');
+  assert.equal(c.seedCount(), 0, 'and releases the seed only after the confirmation');
+});
+
+test('HK15 B1: a deposit that is SENT between the replacement\'s last sweep and its key write is queued for withdraw afterwards, not left standing at the relay', async () => {
+  // The replacement queues and sweeps, then writes the key several awaits later. In between the OLD key is still held, so the stale-key check and the hold both pass and a
+  // deposit goes out under the old key. Its row has no queue entry; the drain walks only the queue, so without a pass AFTER the key write nothing would ever withdraw it.
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');                                // a row of EPOCH under the first key
+  c.clock.t = IN_WINDOW_MS;                                           // the next epoch is depositable too
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let atKeyWrite!: () => void; const reached = new Promise<void>((r) => { atKeyWrite = r; });
+  const replacing = replaceHeldBeaconKey({
+    pairId: 'pair-1', store: c.store, secrets: c.secretsForKey([BigInt(11), BigInt(22)]), now: () => c.clock.t, confirmed: { isConfirmed: async () => false },
+    writeKey: async () => { atKeyWrite(); await gate; c.setHeldKey(KEY_2); return true; },
+  }, { publicKey: 'old-key', generation: 5 }, { publicKey: 'new-key', generation: 6 });
+  await reached;                                                      // queued, committed, swept: only the key write is left
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 1, 'PRECONDITION: the deposit WAS sent under the old key inside the window');
+  release();
+  assert.deepEqual(await replacing, { kind: 'replaced', wasConfirmed: false });
+  const rec = (await c.store.get('pair-1'))!;
+  const inWindow = rec.rows.filter((r) => r.epoch === String(EPOCH + 1));
+  assert.equal(inWindow.length, 1, 'the row sent in the window is in the record');
+  assert.ok(rec.pendingWithdraws.some((w) => w.rowId === inWindow[0].rowId), 'and it is QUEUED for withdraw');
+});
+
+// ---------- the SELF-HEAL: a row under the old key that nothing queued is queued by the next deposit attempt or drain, whatever went wrong before ----------
+/** The state a crash between the key write and the sweep after it leaves: the held key is the NEW one, and a live row of the OLD key has no queue entry. */
+const crashedAfterKeyWrite = async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');                                // R: a live row of EPOCH under the first key, no queue entry
+  c.setHeldKey(KEY_2);                                                // the key write landed; the sweep after it never ran
+  return c;
+};
+
+test('HK16 B1 self-heal at a deposit: with the key already replaced and the old-key row unqueued (a crash after the key write), the next deposit attempt is HELD and queues the row; once it is withdrawn the next epoch is deposited under the new key', async () => {
+  const c = await crashedAfterKeyWrite();
+  const id = (await c.store.get('pair-1'))!.rows[0].rowId;
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'PRECONDITION: nothing is queued, so a queue-only hold would not see the row');
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held: a live row of the old key still stands');
+  assert.ok((await c.store.get('pair-1'))!.pendingWithdraws.some((w) => w.rowId === id), 'and the row is now QUEUED');
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000; await c.client.drainPendingWithdraws(); c.setRoute(null);
+  c.calls.length = 0; await c.client.renew('pair-1');
+  assert.equal(deposits(c), 1, 'withdrawn: the hold has ended and the next epoch is deposited under the new key');
+});
+
+test('HK17 B1 self-heal at a drain: the same crashed state is healed by the next drain alone, which queues the row and withdraws it in the same tick', async () => {
+  const c = await crashedAfterKeyWrite();
+  const id = (await c.store.get('pair-1'))!.rows[0].rowId;
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000; c.calls.length = 0;
+  await c.client.drainPendingWithdraws();
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'a withdraw request was sent');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'confirmed: the entry left');
+  assert.equal(c.seedCount(), 0, 'and the seed was released only after the confirmation');
+  assert.ok(id.length > 0);
+});
+
+test('HK18 NO FALSE POSITIVES: healthy same-key rows are never queued by the self-heal', async () => {
+  const healthy = realClient();
+  await healthy.client.trustAtTap('pair-1');
+  healthy.setRoute(WITHDRAWN); healthy.clock.t += 10_000; healthy.calls.length = 0;
+  await healthy.client.drainPendingWithdraws(); await healthy.client.drainPendingWithdraws();
+  assert.equal((await healthy.store.get('pair-1'))!.pendingWithdraws.length, 0, 'a row under the held key is left alone');
+  assert.equal(healthy.calls.filter((u) => u.endsWith('/withdraw')).length, 0, 'and nothing is withdrawn');
+});
+
+/**
+ * #956 S1b: an UNEXPECTED error (the language's own bug errors) in the hold or the self-heal is REPORTED and the pair stays HELD; an expected store/IO error stays quiet.
+ * The injection throws out of the heal itself (a stack check on its name), because a bare catch around it once hid a ReferenceError and turned the heal into a silent no-op.
+ */
+const failInHeal = (c: { secrets: BeaconSecretsPort }, make: () => Error) => {
+  const real = c.secrets.rowsAreUnderHeldKey;
+  Object.defineProperty(c.secrets, 'rowsAreUnderHeldKey', { configurable: true, get() { if (new Error().stack?.includes('queueStaleRows')) throw make(); return real; } });
+};
+const reporter = () => { const seen: Array<{ where: string; err: unknown }> = []; return { seen, onUnexpected: (where: string, err: unknown) => { seen.push({ where, err }); } }; };
+
+test('HK19 a TypeError out of the self-heal at a deposit: nothing is sent, the error is REPORTED, and the NEXT attempt is still held', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  failInHeal(c, () => new TypeError('injected bug'));
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held: nothing left the device');
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'the bug was reported, not swallowed');
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'and the next attempt still holds');
+});
+
+test('HK20 an EXPECTED (non-bug) error out of the self-heal is not reported, the pair stays held, and the next drain heals it once the error is gone', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  failInHeal(c, () => new Error('store busy'));
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  assert.equal(r.seen.length, 0, 'an ordinary store error is the heal\'s to retry quietly');
+  Object.defineProperty(c.secrets, 'rowsAreUnderHeldKey', { configurable: true, value: c.secrets.rowsAreUnderHeldKey, writable: true });
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000; await c.client.drainPendingWithdraws();
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'healed by the next drain');
+});
+
+test('HK21 a TypeError out of the self-heal at a DRAIN is reported and does not stop the drain: a queued withdraw still goes through', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1');
+  c.setRoute({ status: 503, body: '{}' } as never); await c.client.removeAtTap('pair-1'); c.setRoute(null);
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 1, 'PRECONDITION: one queued withdraw');
+  failInHeal(c, () => new TypeError('injected bug'));
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000; await c.client.drainPendingWithdraws();
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'reported');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'and the drain still retired the queue');
+});
+
+test('HK22 a TypeError out of the HOLD\'s own question holds (nothing sent) and is reported as a hold error, and the heal\'s own per-row question reports its bug too', async () => {
+  const r = reporter(); let armed = false;
+  const c = realClient({ rowsAreUnderHeldKey: async () => { if (armed) throw new TypeError('injected bug'); return true; }, deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1');                 // armed later: the first trust must leave a standing row, or the heal has nothing to ask about
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'PRECONDITION: a standing row exists');
+  armed = true; c.setHeldKey(KEY_2);
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held: a question that fails with a bug is a hold, never no hold');
+  assert.ok(r.seen.some((x) => x.where === 'hold' && x.err instanceof TypeError), 'reported as a hold error');
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'and the heal\'s own per-row question reported its bug too');
+});
+
+test('HK23 a reporter that itself THROWS changes nothing: the held deposit still returns unsent, the drain still retires the queue, and nothing is sent', async () => {
+  const boom = { onUnexpected: () => { throw new Error('reporter exploded'); } };
+  const held = realClient({ deps: boom });
+  await held.client.trustAtTap('pair-1'); held.setHeldKey(KEY_2);
+  failInHeal(held, () => new TypeError('injected bug'));
+  held.clock.t = IN_WINDOW_MS; held.calls.length = 0;
+  await held.client.renew('pair-1');                       // must not reject
+  assert.equal(deposits(held), 0, 'held');
+  const drained = realClient({ deps: boom });
+  await drained.client.trustAtTap('pair-1');
+  drained.setRoute({ status: 503, body: '{}' } as never); await drained.client.removeAtTap('pair-1'); drained.setRoute(null);
+  failInHeal(drained, () => new TypeError('injected bug'));
+  drained.setRoute(WITHDRAWN); drained.clock.t += 10_000; await drained.client.drainPendingWithdraws();   // must not reject
+  assert.equal((await drained.store.get('pair-1'))!.pendingWithdraws.length, 0, 'the drain still retired the queue');
+});
+
+test('HK24 the self-heal ALSO runs at a deposit reached by a TAP, where no drain follows: a Trust tap in the last 600 s of a crashed replacement is held and queues the old-key row', async () => {
+  const c = await crashedAfterKeyWrite();
+  const id = (await c.store.get('pair-1'))!.rows[0].rowId;
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'PRECONDITION: nothing is queued');
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.trustAtTap('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  assert.ok((await c.store.get('pair-1'))!.pendingWithdraws.some((w) => w.rowId === id), 'and the deposit path alone queued the row');
+});
+
+test('HK25 a TypeError out of the self-heal at a deposit reached by a TAP is reported by the deposit path itself, and nothing is sent', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  failInHeal(c, () => new TypeError('injected bug'));
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.trustAtTap('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'reported');
+});
+
+test('HK26 the self-heal queues NOTHING when the held key cannot be read: a row of the old key and a row of the key held now cannot be told apart then', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'PRECONDITION: a standing row exists (a test with no row proves nothing)');
+  c.secrets.depositSecrets = async () => undefined;                   // the held key is now unreadable
+  c.setHeldKey(KEY_2); c.setRoute(WITHDRAWN); c.clock.t += 10_000; c.calls.length = 0;
+  await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'nothing was queued');
+  assert.equal(c.calls.filter((u) => u.endsWith('/withdraw')).length, 0, 'and nothing was withdrawn');
+});
+
+const slowTap = (over: { rowsAreUnderHeldKey?: undefined } = {}) => {
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let started!: () => void; const building = new Promise<void>((r) => { started = r; });
+  const base = makeProver();
+  const c = realClient({ prover: makeProver({ buildDeposit: async (k) => { started(); await gate; return base.buildDeposit(k); } }), secretsPatch: { ...over } });
+  return { c, tap: c.client.trustAtTap('pair-1'), building, release };
+};
+
+test('HK27 with a port that has NO hold question, a deposit whose proof was built under the old key does not leave when the replacement changed ONLY the second coordinate (the stale-key re-read is what stops it)', async () => {
+  const { c, tap, building, release } = slowTap({ rowsAreUnderHeldKey: undefined });
+  await building;
+  c.setHeldKey([BigInt(11), BigInt(99)]);                              // the key differs from [11, 22] in the second coordinate alone
+  release(); await tap;
+  assert.equal(deposits(c), 0, 'nothing was sent under the stale key');
+  assert.equal(((await c.store.get('pair-1'))?.rows ?? []).length, 0, 'no row was left behind');
+});
+
+test('HK28 CONTROL for HK27: the same slow deposit with that port and the key UNCHANGED does go out', async () => {
+  const { c, tap, building, release } = slowTap({ rowsAreUnderHeldKey: undefined });
+  await building; release(); await tap;
+  assert.equal(deposits(c), 1);
 });

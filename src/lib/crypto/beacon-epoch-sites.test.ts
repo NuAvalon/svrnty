@@ -26,14 +26,19 @@ const bodyOf = (src: string, signature: RegExp): string | null => {
   return null;
 };
 
-type Site = { name: string; file: 'client' | 'secrets'; signature: RegExp };
+type Site = { name: string; file: 'client' | 'secrets' | 'queue'; signature: RegExp; uses?: RegExp[] };
 /** MARGIN: must use the margin predicate, and must not use the plain visible-epoch rule or a leftover `live` set. */
 const MARGIN: Site[] = [
   { name: 'closeEpochs', file: 'client', signature: /async function closeEpochs\(/ },
-  { name: 'removeCommitBody', file: 'client', signature: /const removeCommitBody = async/ },
+  // removeCommitBody no longer decides "closed" itself: it delegates to the shared queue functions below (which are margin sites), and must keep calling them
+  { name: 'removeCommitBody', file: 'client', signature: /const removeCommitBody = async/, uses: [/\bqueueWithdraws\(/, /\bqueueUnqueuedLiveRows\(/] },
   { name: 'drainQueuedWithdraws', file: 'client', signature: /const drainQueuedWithdraws = async/ },
   { name: 'drainPendingWithdraws', file: 'client', signature: /async drainPendingWithdraws\(/ },
   { name: 'planPairRows', file: 'secrets', signature: /async planPairRows\(/ },
+  { name: 'heldByOlderKey', file: 'client', signature: /const heldByOlderKey = async/ },
+  { name: 'queueStaleRows', file: 'client', signature: /const queueStaleRows = async/ },
+  { name: 'queueWithdraws', file: 'queue', signature: /export async function queueWithdraws\(/ },
+  { name: 'queueUnqueuedLiveRows', file: 'queue', signature: /export async function queueUnqueuedLiveRows\(/ },
 ];
 /** READ / MINT: keep the plain visible-epoch rule, each with its reason. A new unlisted call must be added here ON PURPOSE, with a reason. */
 const READ: Array<Site & { reason: string }> = [
@@ -42,11 +47,11 @@ const READ: Array<Site & { reason: string }> = [
   { name: 'newRow', file: 'secrets', signature: /async newRow\(/, reason: 'chooses which epoch to deposit into: a row must never be minted into an epoch the relay no longer accepts' },
 ];
 
-const SRC = { client: strip(read('src/lib/crypto/beacon-client.ts')), secrets: strip(read('src/lib/trust/beacon-secrets.ts')) };
+const SRC = { client: strip(read('src/lib/crypto/beacon-client.ts')), secrets: strip(read('src/lib/trust/beacon-secrets.ts')), queue: strip(read('src/lib/crypto/beacon-release-queue.ts')) };
 const CALL = /\bvisibleEpochs(?:At)?\(\s*now\(\)\s*\)/g;
 
 /** Every plain visible-epoch call that sits OUTSIDE the listed read/mint functions: each is a site nobody has classified. */
-function unclassifiedCalls(file: 'client' | 'secrets', src: string): string[] {
+function unclassifiedCalls(file: 'client' | 'secrets' | 'queue', src: string): string[] {
   const inside: Array<[number, number]> = [];
   for (const r of READ.filter((x) => x.file === file)) {
     const m = r.signature.exec(src); const b = bodyOf(src, r.signature);
@@ -67,12 +72,13 @@ test('ES1 every site is found: each listed function has a real body (so no check
 test('ES2 no plain visible-epoch call exists outside the listed read/mint functions: a new unlisted call fails here', () => {
   assert.deepEqual(unclassifiedCalls('client', SRC.client), [], 'an unclassified visibleEpochs(now()) in beacon-client.ts: decide margin or read, and list it');
   assert.deepEqual(unclassifiedCalls('secrets', SRC.secrets), [], 'an unclassified visibleEpochsAt(now()) in beacon-secrets.ts: decide margin or read, and list it');
+  assert.deepEqual(unclassifiedCalls('queue', SRC.queue), [], 'the shared queue module decides "closed" with relayDead only: no plain visible-epoch call belongs there');
 });
 
 test('ES3 every MARGIN site uses the margin predicate and none of the plain rule: no visibleEpochs call, no leftover `live` set', () => {
   for (const s of MARGIN) {
     const b = bodyOf(SRC[s.file], s.signature)!;
-    assert.match(b, /\brelayDead\(|\bepochsToPlanAt\(/, `${s.name}: must decide "closed" with relayDead / epochsToPlanAt`);
+    for (const u of s.uses ?? [/\brelayDead\(|\bepochsToPlanAt\(/]) assert.match(b, u, `${s.name}: must ${s.uses ? 'delegate to the shared queue function' : 'decide "closed" with relayDead / epochsToPlanAt'} (${u})`);
     assert.doesNotMatch(b, /\bvisibleEpochs(?:At)?\(/, `${s.name}: must not read the plain visible-epoch rule`);
     assert.doesNotMatch(b, /\blive\.has\(/, `${s.name}: a leftover \`live\` set is the plain rule by another name`);
   }

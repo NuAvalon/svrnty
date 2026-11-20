@@ -61,6 +61,8 @@ import {
 import { wasRemovedBefore } from '@/lib/trust/readd-removed';
 import { publicKeyOf as beaconPublicKeyOf } from '@/lib/identity/beacon-key-record';
 import { ownBeaconFrom, knownBeaconOf, decideBeaconIntake } from '@/lib/trust/beacon-contact-key';
+import { replaceContactBeaconKey } from '@/lib/trust/beacon-key-intake-real';
+import { replaceNotice } from '@/lib/trust/beacon-key-replace-copy';
 import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
@@ -791,6 +793,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         // Upgrade-on-re-exchange (§7#5): a known contact re-sharing a VALID pq card back-fills
         // pq on the existing edge — no duplicate; NEVER silently replaces a different stored pq
         // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
+        const backfillsKeyMaterial = (d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment) || beaconIntake.verdict === 'backfill';
         if (d.alarm === 'loud') {
           // Security warnings name the BOOK's contact (existing.name), never the card's display name.
           setExchangeResult({ success: false, message: unverifiedCardMessage(existing.name) });
@@ -800,10 +803,21 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         } else if (beaconIntake.verdict === 'loud') {
           // The same generation with a DIFFERENT beacon key is loud and changes nothing; the sentence carries no key and no generation.
           setExchangeResult({ success: false, message: beaconKeyConflictMessage(existing.name) });
-        } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox) || (d.authorityPin && !existing.next_authority_commitment) || beaconIntake.verdict === 'backfill') {
-          // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held).
-          await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField), ...beaconIntake.fields });
-          setExchangeResult({ success: true, message: `Updated "${displayName}" — their key material is now stored.` });
+        } else if (backfillsKeyMaterial || beaconIntake.verdict === 'replace') {
+          // Back-fill authenticated pq, the device-mailbox and/or the authority pin onto a known edge that lacks them (the pin only if none is held). For a 'replace' verdict
+          // `fields` is EMPTY, so this one write can never carry the new beacon key: that goes through the release-first function below, AFTER this write.
+          if (backfillsKeyMaterial) {
+            await updateContact(existing.id, { ...pqFields, ...mailboxField, ...(existing.next_authority_commitment ? {} : pinField), ...beaconIntake.fields });
+          }
+          if (beaconIntake.verdict === 'replace' && beaconIntake.replace) {
+            // A newer SIGNED card for a contact we hold a beacon key for (the verdict exists only under a valid signature, for the contact whose identity key signed it:
+            // `existing` was looked up by that verified fingerprint). The new key goes through the one release-first function, which queues the old key's withdraws
+            // before it writes anything. The words name the BOOK's contact (existing.name), never the card's display name: the card may be the impersonator's.
+            const replaced = await replaceContactBeaconKey(fingerprint, { contact: existing, next: beaconIntake.replace });
+            setExchangeResult({ success: replaced.kind === 'replaced', message: replaceNotice(replaced, existing.name) });
+          } else {
+            setExchangeResult({ success: true, message: `Updated "${displayName}" — their key material is now stored.` });
+          }
         } else {
           setExchangeResult({ success: true, message: `You already have "${displayName}".` });
         }

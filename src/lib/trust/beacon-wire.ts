@@ -46,6 +46,8 @@ export interface BeaconWireDeps {
   now?: () => number;
   requestTimeoutMs?: number;
   backoffMs?: (attempt: number) => number;
+  /** told when the hold or the self-heal meets one of the language's own bug errors; see BeaconClientDeps.onUnexpected. The wire prints nothing. */
+  onUnexpected?: (where: 'hold' | 'self-heal', err: unknown) => void;
   random?: (n: number) => Uint8Array;
 }
 
@@ -105,6 +107,7 @@ export function createBeaconWireWithGate(deps: BeaconWireDeps, live: () => boole
     now: deps.now,
     requestTimeoutMs: deps.requestTimeoutMs,
     backoffMs: deps.backoffMs,
+    onUnexpected: deps.onUnexpected,
     // baseUrl is deliberately not passed: the client's fixed same-origin base is the only one
   });
   const client: BeaconClient = {
