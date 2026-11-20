@@ -345,7 +345,7 @@ test('ALS4 the list request carries cache: "no-store" itself, so a failure canno
   assert.equal(init?.cache, 'no-store');
 });
 
-test('ALS5 THE BOUND (Flint): MAX_LISTED entries is an answer; one more is UNKNOWN as a whole, never a partial use', async () => {
+test('ALS5 THE BOUND: MAX_LISTED entries is an answer; one more is UNKNOWN as a whole, never a partial use', async () => {
   const fp = (i: number) => i.toString(16).padStart(64, '0');
   const at = replyingFetch(() => json(200, { allowed: Array.from({ length: MAX_LISTED }, (_, i) => fp(i)) }));
   const ok = await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl: at.fetchImpl, nowUnixSeconds: FIXED_UNIX });

@@ -88,7 +88,8 @@ test('full invariant (trusted ∩ open_vis ∩ !blocked) + unlocked → ADD (POS
   assert.equal(count('POST'), 1); assert.equal(count('GET'), 1); assert.equal(count('DELETE'), 0);
 });
 
-// piece-1 (Flint seal #158892): KNOWN-reveal exits = go-private, block, per_contact_private (new). UNTRUST is NO LONGER a known-exit (trusted dropped to the trust layer, piece-2).
+// piece-1 (Flint seal #158892): KNOWN-reveal exits = go-private, block, per_contact_private (new). UNTRUST
+// is NO LONGER a known-exit (trusted dropped to the trust layer, piece-2).
 const EXITS = [
   { name: 'go-private', consent: { trusted: true, openVisibility: false, blocked: false, perContactPrivate: false } },
   { name: 'block', consent: { trusted: false, openVisibility: false, blocked: true, perContactPrivate: false } },
@@ -235,7 +236,7 @@ test('ARH4 a tick with NOTHING owed makes one GET and no DELETE; a dark gate doe
   await unreadable.run(); assert.equal(unreadable.relay.count('DELETE'), 0, 'a book that cannot be read sends nothing blind');
 });
 
-test('ARH7 BURST (Flint): 10 hook calls in one tick make ONE GET, and each call still gets ITS OWN peer\'s outcome', async () => {
+test('ARH7 BURST: 10 hook calls in one tick make ONE GET, and each call still gets ITS OWN peer\'s outcome', async () => {
   common();
   const peers = Array.from({ length: 10 }, (_, i) => `${i}`.padStart(2, '0').repeat(32));
   const relay = relayFetch({ list: peers });

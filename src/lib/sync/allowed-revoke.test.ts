@@ -29,7 +29,7 @@ const rig = (opts: { relay?: string[]; book?: Record<string, PeerConsent>; list?
   return { io, deps, state, sent, sleeps, logs, lists: () => lists, drain: (override?: ReadonlyMap<string, PeerConsent>) => drainAllowedRevokes(OWNER, io, deps, override) };
 };
 
-test('AR1 NEG (Flint): the relay lists a BLOCKED contact with a local record -> exactly one DELETE, and the relay then no longer lists it', async () => {
+test('AR1 NEG: the relay lists a BLOCKED contact with a local record -> exactly one DELETE, and the relay then no longer lists it', async () => {
   resetRevokeState();
   const r = rig({ relay: [P], book: { [P]: BLOCKED } });
   const out = await r.drain();
@@ -38,7 +38,7 @@ test('AR1 NEG (Flint): the relay lists a BLOCKED contact with a local record -> 
   assert.deepEqual([...r.state.relay], []);
 });
 
-test('AR2 NEG (Flint): the relay lists a fingerprint that is NOT IN THE BOOK at all (a removed contact, a restored device, a contact this device never had) -> DELETE', async () => {
+test('AR2 NEG: the relay lists a fingerprint that is NOT IN THE BOOK at all (a removed contact, a restored device, a contact this device never had) -> DELETE', async () => {
   resetRevokeState();
   const r = rig({ relay: [Z], book: { [P]: ALLOWED } });
   await r.drain();
@@ -54,7 +54,7 @@ test('AR3 a peer whose consent ALLOWS a row is never revoked, and a peer the rel
   assert.equal(r.lists(), 1);
 });
 
-test('AR4 NEG (Flint): a GET that FAILS is UNKNOWN: 0 DELETEs, nothing marked done, nothing cleared, and the next drain retries and sends them', async () => {
+test('AR4 NEG: a GET that FAILS is UNKNOWN: 0 DELETEs, nothing marked done, nothing cleared, and the next drain retries and sends them', async () => {
   resetRevokeState();
   const r = rig({ relay: [P], book: { [P]: BLOCKED }, list: 'unknown' });
   const out = await r.drain();
@@ -167,7 +167,7 @@ const batching = (r: ReturnType<typeof rig>, real = false) => {
   return waits;
 };
 
-test('AR12 BURST CONTROL (Flint): 10 calls in one tick make ONE GET; every caller gets the shared result and its own peer\'s outcome, because each call\'s consent was merged into the batch', async () => {
+test('AR12 BURST CONTROL: 10 calls in one tick make ONE GET; every caller gets the shared result and its own peer\'s outcome, because each call\'s consent was merged into the batch', async () => {
   resetRevokeState();
   const peers = Array.from({ length: 10 }, (_, i) => String(i).repeat(2).padEnd(64, 'f'));
   const r = rig({ relay: peers, book: Object.fromEntries(peers.map((fp) => [fp, ALLOWED])) });   // the book still says allowed for every peer: ONLY each call's own consent revokes it
@@ -231,7 +231,7 @@ test('AR15 a request that arrives while a drain is RUNNING waits for it: two dra
 
 const UP = (fp: string) => fp.toUpperCase();
 
-test('AR16 (Flint) the book and the relay are compared CASE-INSENSITIVELY, and the DELETE goes out with the relay\'s OWN string', async () => {
+test('AR16 the book and the relay are compared CASE-INSENSITIVELY, and the DELETE goes out with the relay\'s OWN string', async () => {
   resetRevokeState();
   const blocked = rig({ relay: [UP(P)], book: { [P]: BLOCKED } });
   await blocked.drain();
@@ -255,7 +255,7 @@ test('AR16 (Flint) the book and the relay are compared CASE-INSENSITIVELY, and t
   assert.deepEqual(own.sent, [], 'the consent a call just made matches the listed fingerprint whatever its case');
 });
 
-test('AR17 CORRUPT BOOK (Flint): a book flagged corrupt revokes only contacts it still HOLDS; a listed fingerprint ABSENT from it is not revoked (with an ok flag it is); an unreadable flag counts as corrupt', async () => {
+test('AR17 CORRUPT BOOK: a book flagged corrupt revokes only contacts it still HOLDS; a listed fingerprint ABSENT from it is not revoked (with an ok flag it is); an unreadable flag counts as corrupt', async () => {
   for (const [label, complete, wantSent] of [['ok flag: an absent peer is revoked', true, [Z]], ['corrupt flag: the absent peer is NOT revoked', false, []], ['an unreadable flag counts as corrupt', 'throws', []]] as const) {
     resetRevokeState();
     const r = rig({ relay: [Z], book: { [P]: ALLOWED }, complete });
@@ -268,7 +268,7 @@ test('AR17 CORRUPT BOOK (Flint): a book flagged corrupt revokes only contacts it
   assert.deepEqual(present.sent, [P], 'a peer the damaged book still holds with a not-allowed consent IS revoked; the absent one is not');
 });
 
-test('AR18 CAP (Flint): at most REVOKE_MAX_PER_DRAIN revokes per drain, the rest stay listed (owed) and go out on the next one', async () => {
+test('AR18 CAP: at most REVOKE_MAX_PER_DRAIN revokes per drain, the rest stay listed (owed) and go out on the next one', async () => {
   resetRevokeState();
   const peers = Array.from({ length: REVOKE_MAX_PER_DRAIN + 5 }, (_, i) => i.toString(16).padStart(64, '0'));
   const r = rig({ relay: peers, book: {} });
