@@ -1,0 +1,41 @@
+{
+  "circom_binaries_sha256": {
+    "2.1.6": "f3958483caaaa0cdd3912df5049e2e635eab4d09b9a66807be9633d547859f12",
+    "2.2.3": "85342c7ff332d948df7c0c50ecf201e6129349aef550ce873f3c811b79fe53a3"
+  },
+  "circom_command": "circom slotbind.circom --r1cs --wasm --sym --O2 -l node_modules -o build",
+  "r1cs_sha256": "4f334609c93f39cc4acd0eff773bba2cdd203941a358e2160c884c4ede1a711b",
+  "wasm_sha256": {
+    "2.1.6": "571c1a2faf99115c1b2bb397e92fa19292ad9d939da8dd83dc8096a053453c3c",
+    "2.2.3": "3f603c198ba712cb8fb3e34f59bbf75c445ddd8cf3596a305ea57c31000083be"
+  },
+  "witness_calculator_js_sha256": {
+    "2.1.6": "2bf018b05cb6dc399e72f57721d0f7b236b1a4a2d438d8b1c6763e9cd38ac8a8",
+    "2.2.3": "cc2d37b2cff2a589dd86f8636f1a1dc9fe4a854550b021aa0cea2e235d14e942"
+  },
+  "generate_witness_js_sha256": {
+    "2.1.6": "e9f90211859797466368231b5f02afeb84afa497c3ccd04129e0a57a5c5a3eff",
+    "2.2.3": "4995a2e6b01432f76182abec6a831fdaf7f840384035072002ccaa43101b14d4"
+  },
+  "phase1_ptau": {
+    "source": "PSE perpetual powers of tau ppot_0080_14.ptau (contribution 80 + beacon); snarkjs powersoftau verify OK twice (Flint, Apollo)",
+    "source_sha256": "3ca1149e9349b22b0ee0649399cfb787677129b7b1189d1899fc0d615d9583db",
+    "prepared_by": "snarkjs 0.7.6: powersoftau prepare phase2 <source> <prepared> (deterministic: two runs, same bytes)",
+    "prepared_sha256": "427b5a6c07ba401548c22b87c2640eba7c63a0259b6a81ede87ff99a7088a119",
+    "prepared_vs_source": "sections 2-7 and 13-15 byte-identical; section 12 (Lagrange tauG1) blocks for 2^0..2^14 points identical; the 2^15-point block and the ceremonyPower header byte (28 -> 14) differ. Our circuit needs domain 2^13 (6,574 constraints + 5), so it never reads the differing block."
+  },
+  "recorded_not_enforced": {
+    "sym_sha256": "2c7a90bc786a2c2a400c5f6630c29407bcab16a5c0687d9bf1e0df081bd2c610"
+  },
+  "constraints": 6574,
+  "public_wires": 4,
+  "snarkjs": "0.7.6",
+  "status": "WORKING DRAFT. Circuit not reviewed (R5 pending). Toolchain RULED (Archie #2931, confirming Flint #2803): circom 2.2.3 --O2 for the ceremony AND the release; the shipped artefacts are the 2.2.3 wasm + witness_calculator.js. The 2.1.6 entries are r1cs-reproduction evidence only (r1cs and .sym are identical across the two compilers; wasm and the witness js files differ per version, so they are pinned per version). Enforced fail-closed before anything runs: binary sha256, r1cs, wasm, witness_calculator.js, generate_witness.js. Recorded only: .sym.",
+  "phase2_tooling": {
+    "snarkjs_version": "0.7.6",
+    "snarkjs_cli_cjs_sha256": "6d787e37a4d1a2c6dd6032dadca09c0b3b007d4d4578bb6232a98136555d051a",
+    "snarkjs_main_cjs_sha256": "7380039fd8f9af5b97fbd033ee6c8f7d298268c3a1c96fa894e62515443bf14d",
+    "z0_sha256": "bb25e98c63fb48dfaf30a4bfc4f1e957d57f4a9a16b4eee260d90feb8904aed6",
+    "z0_note": "groth16 setup <pinned r1cs> <prepared ptau> is deterministic (two runs, same bytes); stage 0 of the transcript"
+  }
+}
