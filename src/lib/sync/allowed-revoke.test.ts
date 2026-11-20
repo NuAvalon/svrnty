@@ -246,6 +246,10 @@ test('AR16 (Flint) the book and the relay are compared CASE-INSENSITIVELY, and t
   await upperBook.drain();
   assert.deepEqual(upperBook.sent, [P], 'a book that holds the fingerprint in upper case still matches the relay\'s lower case');
   resetRevokeState();
+  const upperAllowed = rig({ relay: [P], book: { [UP(P)]: ALLOWED } });   // blocked and ABSENT are both revoked, so only an ALLOWED upper-case key tells a matched key from a missed one
+  await upperAllowed.drain();
+  assert.deepEqual(upperAllowed.sent, [], 'an allowed contact whose book key is upper case is matched, not read as absent and revoked');
+  resetRevokeState();
   const own = rig({ relay: [P], book: {} });
   await own.drain(new Map([[UP(P), ALLOWED]]));
   assert.deepEqual(own.sent, [], 'the consent a call just made matches the listed fingerprint whatever its case');
