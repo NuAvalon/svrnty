@@ -13,7 +13,7 @@ import { mintHeadlessAgent } from '../identity/headless-mint';
 import { memIO } from './ratchet-test-io';
 import { signNoteWire } from './note-auth';
 import { acceptInboundNote } from './transport';
-import { HOLD_CAP_PER_SENDER, heldSweepAction } from './held-note';
+import { HOLD_CAP_PER_SENDER, clearedHeld, clearedHeldNote, heldSweepAction } from './held-note';
 import { NOTE_WIRE_TYPE } from './domains';
 import { sealDirectNote, openDirectNoteStagedTyped } from './direct-session';
 import type { NoteRecord, NoteThread, NoteWireV0 } from './types';
@@ -53,17 +53,17 @@ async function world() {
       id.public_key, sender.secret_material.classicalPrivateKey, sender.secret_material.classicalKpass, id.pq_kem_public_key, id.pq_sig_public_key);
   const frame = async (text: string) => (await sealDirectNote(ME, text, them, peerOf(me), theirIO.io))!;
   const accept = async (wire: NoteWireV0, o: { admitted?: boolean; frozen?: boolean } = {}) => {
-    const reasons: string[] = []; let created = 0;
+    const reasons: string[] = []; let created = 0; let refused = 0;
     let r: NoteRecord | null = null, threw: unknown = null;
     try {
       r = await acceptInboundNote({
         wire, isAdmitted: async () => !!o.admitted,
         isFrozen: async () => { calls.isFrozen++; return !!o.frozen; },
-        io: io as never, onDrop: (x: string) => reasons.push(x), onCreated: () => { created++; },
+        io: io as never, onDrop: (x: string) => reasons.push(x), onCreated: () => { created++; }, onRewriteRefused: () => { refused++; },
         openRatchet: (_f: string, body: string) => openDirectNoteStagedTyped(THEM, body, me, peerOf(them), myIO.io),
       } as never);
     } catch (e) { threw = e; }
-    return { r, reasons, created, threw };
+    return { r, reasons, created, refused, threw };
   };
   return { id, me, peerOf: peerOf(them), myIO, notes, threads, calls, flags, heldCounts, countFlags, clock, wireFor, frame, accept };
 }
@@ -434,5 +434,81 @@ test('HG5 a note held BEFORE the field existed (no held_at) and then redelivered
   assert.ok(b.r, `accepted (reasons ${JSON.stringify(b.reasons)}, threw ${String(b.threw)})`);
   assert.equal(b.r!.held_at, new Date(T0 + 5 * DAYMS).toISOString());
   assert.equal('expiry_seen_at' in b.r!, false);
+});
+
+// ── the hold is the OWNER'S: an unblocked sender's redelivery never moves a held note out of the hold ──────────────────────────────────────────────────────────────────────────
+test('HD1 an ADMITTED sender re-sending a note this device holds (a fresh frame, same words) is a DUPLICATE: the held row is byte-identical with its stamps, nothing is written, no receipt, no refusal signal, the session still advances', async () => {
+  const w = await world();
+  const sent = '2026-05-30T00:00:00.000Z';
+  w.clock.ms = T0;
+  const a = await w.accept(await w.wireFor('hd1', await w.frame('same words'), 'thr', sent), { frozen: true });
+  assert.equal(a.r?.held, true);
+  w.notes.set('hd1', { ...w.notes.get('hd1')!, expiry_seen_at: new Date(T0 + 2 * DAYMS).toISOString() });   // the sweep marked it
+  const rowBefore = JSON.stringify(w.notes.get('hd1'));
+  const threadsBefore = JSON.stringify([...w.threads.entries()]);
+  const writesBefore = { putNote: w.calls.putNote, putThread: w.calls.putThread };
+  const sessionBefore = JSON.stringify(w.myIO.rows.get(THEM) ?? null);
+  w.clock.ms = T0 + 10 * DAYMS;
+  const b = await w.accept(await w.wireFor('hd1', await w.frame('same words'), 'thr', sent), { admitted: true });
+  assert.ok(b.r, `returned the stored note (reasons ${JSON.stringify(b.reasons)}, threw ${String(b.threw)})`);
+  assert.equal(JSON.stringify(b.r), rowBefore, 'what comes back is the stored held row');
+  assert.equal(JSON.stringify(w.notes.get('hd1')), rowBefore, 'the stored row is BYTE-IDENTICAL: still held, stamps unchanged');
+  assert.equal(JSON.stringify([...w.threads.entries()]), threadsBefore, 'the thread rows are untouched');
+  assert.deepEqual({ putNote: w.calls.putNote, putThread: w.calls.putThread }, writesBefore, 'NO write of any kind (so the held-count row, which only a note write moves, is untouched)');
+  assert.equal(b.created, 0, 'no creation reported, so no receipt beyond what a duplicate gets');
+  assert.equal(b.refused, 0, 'and no rewrite-refused signal: identical content is not an attack');
+  assert.deepEqual(b.reasons, [], 'nothing dropped');
+  assert.notEqual(JSON.stringify(w.myIO.rows.get(THEM) ?? null), sessionBefore, 'the session ADVANCED: the staged open was committed (session continuity is not content)');
+  const c = await w.accept(await w.wireFor('hd1b', await w.frame('and the next one'), 'thr2'), { admitted: true });
+  assert.ok(c.r, 'a later note from the same sender still opens (the session is not behind)');
+  assert.equal('held' in c.r!, false, 'and an admitted sender\'s new note is an ordinary one');
+});
+
+test('HD2 an admitted sender re-sending a held note with CHANGED words is refused as a rewrite (the existing first-write-wins rule, with its signal), and the held row is left exactly as it was', async () => {
+  const w = await world();
+  const sent = '2026-05-30T00:00:00.000Z';
+  w.clock.ms = T0;
+  await w.accept(await w.wireFor('hd2', await w.frame('the real words'), 'thr', sent), { frozen: true });
+  const rowBefore = JSON.stringify(w.notes.get('hd2'));
+  const b = await w.accept(await w.wireFor('hd2', await w.frame('different words'), 'thr', sent), { admitted: true });
+  assert.ok(b.r);
+  assert.equal(b.refused, 1, 'refused as a rewrite, with the signal');
+  assert.equal(JSON.stringify(w.notes.get('hd2')), rowBefore);
+});
+
+test('HD3 freeze, hold, stamp, RELEASE, re-freeze: the released note is dropped if re-sent (never re-held), and a NEW note gets a fresh LOCAL held_at and no expiry_seen_at', async () => {
+  const w = await world();
+  const sent = '2026-05-30T00:00:00.000Z';
+  w.clock.ms = T0;
+  await w.accept(await w.wireFor('hd3', await w.frame('kept words'), 'thr', sent), { frozen: true });
+  w.notes.set('hd3', { ...w.notes.get('hd3')!, expiry_seen_at: new Date(T0 + 2 * DAYMS).toISOString() });
+  // the owner RELEASES it (the store's release does exactly this to the row and its thread)
+  const released = clearedHeldNote(w.notes.get('hd3')!);
+  w.notes.set('hd3', released);
+  w.threads.set('thr', clearedHeld(w.threads.get('thr')!));
+  for (const k of ['held', 'held_at', 'expiry_seen_at']) assert.equal(k in w.notes.get('hd3')!, false, `released: no ${k}`);
+  // the sender is frozen AGAIN and re-sends the same note
+  w.clock.ms = T0 + 10 * DAYMS;
+  const again = await w.accept(await w.wireFor('hd3', await w.frame('kept words'), 'thr', sent), { frozen: true });
+  assert.equal(again.r, null, 'a released (ordinary) note re-sent by a frozen sender is dropped, as before: never re-held');
+  assert.deepEqual(again.reasons, ['not-in-book']);
+  assert.deepEqual(w.notes.get('hd3'), released, 'the released row is exactly as it was');
+  // and a NEW note from the re-frozen sender is held with the NEW local time and no expiry mark
+  const fresh = await w.accept(await w.wireFor('hd3b', await w.frame('a new note after the re-freeze'), 'thr', '2026-06-10T00:00:00.000Z'), { frozen: true });
+  assert.equal(fresh.r?.held, true);
+  assert.equal(fresh.r?.held_at, new Date(T0 + 10 * DAYMS).toISOString(), 'held_at is the NEW local time, not the old one');
+  assert.equal('expiry_seen_at' in fresh.r!, false);
+});
+
+test('HD4 CONTROL: an admitted sender re-sending an ORDINARY note behaves exactly as before (the idempotent rewrite proceeds): only a HELD prior is protected', async () => {
+  const w = await world();
+  const sent = '2026-05-30T00:00:00.000Z';
+  const a = await w.accept(await w.wireFor('hd4', await w.frame('ordinary words'), 'thr', sent), { admitted: true });
+  assert.equal('held' in a.r!, false);
+  const putsBefore = w.calls.putNote;
+  const b = await w.accept(await w.wireFor('hd4', await w.frame('ordinary words'), 'thr', sent), { admitted: true });
+  assert.ok(b.r);
+  assert.equal(w.calls.putNote, putsBefore + 1, 'the ordinary redelivery is still written (idempotently), as it always was');
+  assert.equal(b.refused, 0);
 });
 
