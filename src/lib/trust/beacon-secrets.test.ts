@@ -63,7 +63,7 @@ test('S1 newRow mints a row: the id is H_e:N, the one-time key is the public key
   const seed = b64d(entry.seed);
   assert.equal(seed.length, 32);
   assert.deepEqual(Array.from(r.oneTimePk), Array.from(ed25519.getPublicKey(seed)), 'pk is the public key of the stored seed');
-  assert.equal(entry.expiresAtMs, (E + 1) * EPOCH_MS + GRACE_MS, 'epoch end + one grace window, computed here by hand');
+  assert.equal(entry.expiresAtMs, (E + 1) * EPOCH_MS + GRACE_MS + 3_600_000, 'epoch end + one grace window + the relay skew margin (3600 s), computed here by hand');
   assert.equal(entry.epoch, String(E));
   assert.deepEqual(Object.keys(r).sort(), ['oneTimePk', 'rowId'], 'nothing secret comes back');
   const r2 = await a.newRow(PAIR_Q, BigInt(E));
@@ -282,4 +282,60 @@ test('S15 with the REAL prover, the slot and nullifier do not depend on the one-
   assert.equal(Object.keys(st.map).length, 1, 'and drops nothing');
   await a.releaseRow(r.rowId);                                   // the confirmed path: the only way a seed leaves
   assert.deepEqual(st.map, {});
+});
+
+// ---------- the relay skew margin: a device clock running FAST must not expire the seed while the relay still accepts the epoch ----------
+// The relay closes an epoch by ITS clock: it keeps epoch E open until its clock reads (E+1) * week + 600 s. A device whose clock runs `skew`
+// seconds AHEAD reads that instant `skew` seconds EARLY. The seed signs the row's withdraw, so it must outlive what the relay still accepts.
+const MARGIN_MS = 3_600_000;   // the relay's own skew allowance (RETENTION_MARGIN_S), written out here by hand
+
+for (const skewS of [60, 1200, 3600]) {
+  test(`SM1 a device clock ${skewS} s FAST: the seed still signs on the last millisecond the relay keeps the epoch open`, async () => {
+    const { a, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+    const { rowId } = await a.newRow(PAIR_P, BigInt(E));
+    const end = startOf(E + 1);
+    setNow(end + GRACE_MS + skewS * 1000 - 1);        // the relay's clock reads one millisecond before it closes epoch E
+    assert.ok(await a.rowAuth(rowId), `a signer must still be handed out: the relay still accepts deposits into epoch ${E}`);
+  });
+}
+
+test('SM2 the margin is exactly 3600 s past the grace window: the seed signs AT that instant, is gone one millisecond later, and the next newRow sweeps it', async () => {
+  const { a, st, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+  const { rowId } = await a.newRow(PAIR_P, BigInt(E));
+  const dead = startOf(E + 1) + GRACE_MS + MARGIN_MS;
+  assert.equal(st.map[rowId].expiresAtMs, dead, 'the stored expiry is epoch end + grace + margin, by hand');
+  setNow(dead);
+  assert.ok(await a.rowAuth(rowId), 'usable AT the instant (expiry == now is still usable)');
+  await a.newRow(PAIR_Q, BigInt(E + 1));             // a newRow at that instant (epoch E+1 is the live one) sweeps with the same clock: the seed must survive it
+  assert.ok(st.map[rowId], 'not swept at the instant');
+  setNow(dead + 1);
+  assert.equal(await a.rowAuth(rowId), undefined, 'gone one millisecond later');
+  await a.newRow(PAIR_P, BigInt(E + 1));
+  assert.equal(st.map[rowId], undefined, 'and swept by the next newRow');
+});
+
+test('SM3 BOUND (stated, not fixed): a device clock fast by MORE than the margin still loses the seed while the relay keeps the epoch open', async () => {
+  const { a, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+  const { rowId } = await a.newRow(PAIR_P, BigInt(E));
+  setNow(startOf(E + 1) + GRACE_MS + 7200 * 1000 - 1);   // 7200 s fast: the relay's clock still reads before its close
+  assert.equal(await a.rowAuth(rowId), undefined, 'the margin covers a skew up to 3600 s; beyond it the device can still act early (a documented bound)');
+});
+
+test('MG6 planPairRows on a fast clock: a row of the previous epoch is still planned inside the margin (so a Remove withdraws it), and not at the dead instant', async () => {
+  const { a, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+  await a.newRow(PAIR_P, BigInt(E));                                   // an orphan: a seed with no pair record
+  const end = startOf(E + 1);
+  const ids = async (ms: number) => { setNow(ms); const plan = await a.planPairRows!(PAIR_P); return plan.map((r) => r.rowId); };
+  assert.deepEqual(await ids(end + 100_000), [rowOf(YP, E)], 'inside the relay\'s grace window: planned (this was already so)');
+  assert.deepEqual(await ids(end + GRACE_MS + 1_000), [rowOf(YP, E)], 'past the old grace-only close, inside the margin: planned (this was NOT planned before)');
+  assert.deepEqual(await ids(end + GRACE_MS + MARGIN_MS - 1), [rowOf(YP, E)], 'one millisecond before the dead instant: planned');
+  assert.deepEqual(await ids(end + GRACE_MS + MARGIN_MS), [], 'AT the dead instant: not planned: the relay can no longer match it');
+});
+
+test('SM4 MINTING keeps the plain rule: a row is never minted into an epoch the relay no longer accepts, even inside the margin', async () => {
+  const { a, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+  const end = startOf(E + 1);
+  setNow(end + GRACE_MS - 1_000); await a.newRow(PAIR_P, BigInt(E));  // one second before the relay closes epoch E: still accepted
+  setNow(end + GRACE_MS + 60_000);                                     // a minute after: the relay refuses a deposit into it, so nothing may be minted for it
+  await assert.rejects(() => a.newRow(PAIR_Q, BigInt(E)), /epoch-not-live/);
 });

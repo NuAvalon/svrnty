@@ -73,10 +73,10 @@ test('BS6 sweepExpired removes entries whose expiry has PASSED (strictly), keeps
   assert.equal(sweepExpired(kept, 2000).removed, 0);
 });
 
-test('BS7 expiryForEpoch = the end of the epoch plus one grace window, from the ONE definition in beacon-wire', async () => {
+test('BS7 expiryForEpoch = the end of the epoch plus one grace window plus the relay skew margin (3600 s, written out here by hand), from the ONE definition in beacon-wire', async () => {
   const wire: any = await import('../crypto/beacon-wire.mjs');
   const e = 2900;
-  assert.equal(expiryForEpoch(BigInt(e)), (e + 1) * wire.EPOCH_SECONDS * 1000 + wire.GRACE_SECONDS * 1000);
+  assert.equal(expiryForEpoch(BigInt(e)), (e + 1) * wire.EPOCH_SECONDS * 1000 + wire.GRACE_SECONDS * 1000 + 3_600_000);
 });
 
 test('BS8 the map is bounded: the (MAX_SEEDS+1)th distinct entry is refused, an existing one is still idempotent', () => {

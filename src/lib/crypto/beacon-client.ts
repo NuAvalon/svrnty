@@ -21,6 +21,7 @@
 // read immediately before every deposit fetch (a tap mid-proof ends with nothing sent) and after every poll/withdraw
 // answer, before it is applied. A latched pair is skipped by every scheduled action. matchState is fail-closed.
 import * as wire from './beacon-wire.mjs';
+import { relayDead } from './beacon-relay-margin';
 import { buildDeposit, signAuth, scheduleRedeposit, type DepositKeys, type Point, type Signals } from './beacon-prover';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -205,6 +206,18 @@ export function visibleEpochsAt(ms: number): Set<string> {
   const cur = Math.floor(ms / 1000 / EPOCH_SECONDS), start = cur * EPOCH_SECONDS * 1000, out = new Set([String(cur)]);
   if (ms < start + GRACE_SECONDS * 1000) out.add(String(cur - 1));
   if (ms > start + EPOCH_SECONDS * 1000 - GRACE_SECONDS * 1000) out.add(String(cur + 1));
+  return out;
+}
+
+/**
+ * The epochs whose rows a Remove must still plan to withdraw: every visible epoch, plus the previous one until the relay can no longer match it
+ * (its end, the grace window and the skew margin: relayDead). A device clock ahead of the relay's would otherwise leave a row of an epoch the
+ * relay still accepts out of the plan. This is for what to WITHDRAW; what to poll and where to mint stay on visibleEpochsAt.
+ */
+export function epochsToPlanAt(ms: number): Set<string> {
+  const w: any = wire;
+  const out = visibleEpochsAt(ms), cur = Math.floor(ms / 1000 / w.EPOCH_SECONDS);
+  if (!relayDead(cur - 1, ms)) out.add(String(cur - 1));
   return out;
 }
 
@@ -657,11 +670,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
    * observedMatch is a lifetime fact and survives; spentEpochs prunes entries older than two
    * epochs. 'unreachable' rows retire here too. */
   async function closeEpochs(rec: PairRecord): Promise<boolean> {
-    const live = visibleEpochs(now());
     const cur = epochAt(now());
     let dirty = false;
     for (const row of [...rec.rows]) {
-      if (!live.has(row.epoch) && Number(row.epoch) <= cur - 1) {
+      if (relayDead(row.epoch, now())) {                                 // the RELAY can no longer match this epoch (its clock, plus the skew margin), not just this device's reading of it
         dropRow(rec, row);
         await deps.secrets.releaseRow(row.rowId);
         dirty = true;
@@ -709,11 +721,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const removeCommitBody = async (rec: PairRecord): Promise<void> => {
     rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock
     rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: false };         // L13: intent false under a new gen
-    const live = visibleEpochs(now());
     for (const row of rec.rows) {
       // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
       if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-      if (!live.has(row.epoch)) {                                     // epoch closed: drop + release (L11)
+      if (relayDead(row.epoch, now())) {                              // the relay can no longer match the epoch (its clock + the skew margin): drop + release (L11)
         dropRow(rec, row);
         await deps.secrets.releaseRow(row.rowId);
         continue;
@@ -727,7 +738,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     // relay with nothing to sign its withdraw.
     if (deps.secrets.planPairRows) {
       for (const t of await deps.secrets.planPairRows(rec.pairId)) {
-        if (!live.has(t.epoch)) continue;
+        if (relayDead(t.epoch, now())) continue;                    // a planned row the relay can no longer match is ignored (the margin applies here too)
         rec.rows.push({ rowId: t.rowId, epoch: t.epoch, H_e: t.H_e, N: t.N, state: 'unknown' });
       }
     }
@@ -745,7 +756,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       let added = false;
       for (const row of rec.rows) {
         if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-        if (!live.has(row.epoch)) continue;
+        if (relayDead(row.epoch, now())) continue;                  // only a row the relay can still match is queued
         if (rec.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
         queueWithdrawNow(rec, row.rowId);
         added = true;
@@ -786,11 +797,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
 
   /** The Remove queue drain: a confirmed withdraw removes its entry (idempotent on the server). */
   const drainQueuedWithdraws = async (rec: PairRecord): Promise<void> => {
-    const live = visibleEpochs(now());
     const cur = epochAt(now());
     for (const w of [...rec.pendingWithdraws]) {
       const row = rec.rows.find((r) => r.rowId === w.rowId);
-      if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {
+      if (!row || relayDead(row.epoch, now())) {
         unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
         if (row) await deps.secrets.releaseRow(row.rowId);
         continue;
@@ -1020,7 +1030,6 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
      * -> released. Runs for latched pairs too — renew returns early on a latch, so the scheduler
      * keeps calling this to retire queues. */
     async drainPendingWithdraws() {
-      const live = visibleEpochs(now());
       const cur = epochAt(now());
       for (const stored of await deps.store.pairs()) {
         // L6c: repair a half-done Remove before touching the pair's queue — same single commit,
@@ -1041,7 +1050,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         for (const w of [...rec.pendingWithdraws]) {
           dirty = true;
           const row = rec.rows.find((r) => r.rowId === w.rowId);
-          if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {   // epoch closed: drop + release (L11)
+          if (!row || relayDead(row.epoch, now())) {   // the relay can no longer match the epoch (its clock + the skew margin): drop + release (L11)
             unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
             if (row) await deps.secrets.releaseRow(row.rowId);
             dirty = true;

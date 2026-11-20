@@ -26,7 +26,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { randomBytes as nobleRandom } from '@noble/hashes/utils.js';
 import { addSeed, removeSeed, seedKey, sweepExpired, type BeaconSeeds } from '../identity/beacon-seeds';
 import { expiryForEpoch } from '../identity/beacon-seed-expiry';
-import { visibleEpochsAt, type BeaconSecretsPort } from '../crypto/beacon-client';
+import { epochsToPlanAt, visibleEpochsAt, type BeaconSecretsPort } from '../crypto/beacon-client';
 import type { Point } from '../crypto/beacon-prover';
 
 /** The sealed seed map, as this module needs it. read/update are the STRICT ones (absent = {}, unreadable/locked throw); reset is the deliberate repair. */
@@ -160,7 +160,7 @@ export function createBeaconSecrets(deps: BeaconSecretsDeps): BeaconSecretsAdapt
       if (!s) return []; // nothing can be recomputed (and without the keys nothing could have been deposited from here)
       const map = await guarded(() => deps.seeds.read());
       const out: Array<{ rowId: string; epoch: string; H_e: string; N: string }> = [];
-      for (const e of [...visibleEpochsAt(now())].sort((a, b) => Number(a) - Number(b))) {
+      for (const e of [...epochsToPlanAt(now())].sort((a, b) => Number(a) - Number(b))) {   // what a Remove must still WITHDRAW: the visible epochs plus the previous one until the relay can no longer match it
         const { H_e, N } = await slotOf(s.x, s.y, BigInt(e));
         const held = map[seedKey(H_e, N)];
         if (held && held.expiresAtMs >= now()) out.push({ rowId: seedKey(H_e, N), epoch: e, H_e, N }); // only a row we can still SIGN for is a target

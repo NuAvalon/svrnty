@@ -15,6 +15,8 @@ import {
   type RowRecord,
 } from './beacon-client';
 import type { DepositKeys } from './beacon-prover';
+import { createBeaconSecrets, type SeedStore } from '../trust/beacon-secrets';
+import type { BeaconSeeds } from '../identity/beacon-seeds';
 
 const EPOCH_SECONDS = 604800;
 const GRACE_SECONDS = 600;
@@ -3086,4 +3088,128 @@ test('O4-12c a planned row already in the record is not added twice, a planned r
   assert.equal(rec.rows[0].state, 'standing', 'the recorded row keeps its recorded state: a plan entry never overwrites it');
   assert.equal(rec.rows[0].oneTimePk, rec0.rows[0].oneTimePk, 'and its pinned one-time key');
   assert.deepEqual(rec.pendingWithdraws.map((w) => w.rowId), ['row-1']);
+});
+
+// ---------- the relay skew margin (#956 S1): a device clock running FAST must not drop a row, give up on its withdraw or release its seed while the relay still accepts the epoch ----------
+// These run on the REAL secrets adapter (the fake one never expires a seed, so it cannot show the seed clock). The relay keeps epoch EPOCH open until ITS clock reads
+// (EPOCH+1) * week + 600 s; a device `skew` seconds ahead of it reads that instant `skew` seconds early. The margin is the relay's own skew allowance, written out by hand.
+const MARGIN_S = 3600;
+const EPOCH_END_MS = EPOCH_START_MS + EPOCH_SECONDS * 1000;
+const DEAD_MS = EPOCH_END_MS + (GRACE_SECONDS + MARGIN_S) * 1000;   // the instant a row of EPOCH is dead as far as a device can tell
+const reply = (st: { status?: number; body?: string; throw?: boolean }): Promise<FetchResp> => st.throw
+  ? Promise.reject(new TypeError('fetch failed'))
+  : Promise.resolve({ status: st.status ?? 200, headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) }, text: async () => st.body ?? '' });
+type Shape = (url: string) => { status?: number; body?: string; throw?: boolean };
+const SHAPES: Array<[string, Shape]> = [
+  ['the nonce request throws', (u) => (u.endsWith('/nonce') ? { throw: true } : { status: 200, body: '{"status":"none"}' })],
+  ['the nonce is fine, the withdraw request throws', (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : { throw: true })],
+  ['the nonce is fine, the withdraw answers HTTP 500', (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : { status: 500, body: 'boom' })],
+];
+const WITHDRAWN: Shape = (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : ok('withdrawn'));
+/** The client on the REAL secrets adapter and a clock the test moves. `route` answers every request; the deposit is accepted while `route` is null. */
+const realClient = () => {
+  const clock = { t: MID }; const calls: string[] = []; let route: Shape | null = null; let map: BeaconSeeds = {};
+  const seeds: SeedStore = { read: async () => ({ ...map }), update: async (m) => { map = m({ ...map }); return map; }, reset: async () => { map = {}; } };
+  const secrets = createBeaconSecrets({
+    seeds, now: () => clock.t, secretX: async () => BigInt(123456789), counterpartY: async () => [BigInt(11), BigInt(22)],
+    slotOf: async (_x, _y, e) => ({ H_e: String(10_000 + Number(e)), N: String(20_000 + Number(e)) }),
+  });
+  const fetch: FakeFetch = (url) => { calls.push(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
+  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets });
+  return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; } };
+};
+
+for (const [label, shape] of SHAPES) {
+  test(`MG1 a device clock 1200 s FAST, ${label}: the queued withdraw is neither dropped nor released early, and goes through when the relay answers`, async () => {
+    const c = realClient();
+    await c.client.trustAtTap('pair-1');
+    assert.equal(c.seedCount(), 1, 'the row holds a seed');
+    c.setRoute(shape); await c.client.removeAtTap('pair-1');      // the withdraw is queued and its first attempt fails
+    assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 1);
+    c.clock.t = EPOCH_END_MS + 601_000;                           // this device reads 601 s past the epoch end; the relay's clock reads 599 s BEFORE it (1200 s behind)
+    const before = c.calls.length; await c.client.drainPendingWithdraws();
+    const rec = (await c.store.get('pair-1'))!;
+    assert.equal(rec.pendingWithdraws.length, 1, 'the entry is still queued: the relay still accepts the epoch');
+    assert.equal(rec.rows.length, 1, 'the row is still held');
+    assert.equal(c.seedCount(), 1, 'the seed that signs the withdraw is still held');
+    assert.ok(c.calls.length > before, 'and the drain really tried the withdraw again');
+    c.setRoute(WITHDRAWN); c.clock.t = EPOCH_END_MS + 1_199_000;   // the relay answers again; its clock still reads before the epoch closes
+    await c.client.drainPendingWithdraws();
+    assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'a CONFIRMED withdraw removes the entry');
+    assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'a withdraw request reached the relay');
+    assert.equal(c.seedCount(), 0, 'the seed goes only after the confirmation');
+  });
+}
+
+test('MG2 a standing row is kept until the relay can no longer match its epoch: one millisecond before the dead instant it is still there with its seed, AT the instant it is dropped and the seed released', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.clock.t = EPOCH_END_MS + 601_000; await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'past the old grace-only close, inside the margin: kept');
+  c.clock.t = DEAD_MS - 1; await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'one millisecond before the dead instant: kept');
+  assert.equal(c.seedCount(), 1);
+  c.clock.t = DEAD_MS; await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 0, 'AT the dead instant: dropped');
+  assert.equal(c.seedCount(), 0, 'and the seed is released with it');
+});
+
+// ---------- Remove on a fast clock (its own commit: a seed is now released up to an hour later, a row lives an hour longer) ----------
+test('MG3 Remove on a device clock 1200 s FAST, inside the margin: the withdraw is SENT and confirmed, it is not skipped as if the epoch were closed', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.setRoute(WITHDRAWN); c.clock.t = EPOCH_END_MS + 601_000;      // past the old grace-only close; the relay's clock still reads before the epoch end
+  c.calls.length = 0; await c.client.removeAtTap('pair-1');
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'a withdraw request reached the relay (before this change the row was just dropped)');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'confirmed, so the entry left');
+  assert.equal(c.seedCount(), 0, 'and the seed went only after the confirmation');
+});
+
+for (const [label, shape] of SHAPES) {
+  test(`MG4 Remove on a device clock 1200 s FAST, ${label}: the withdraw is queued, retried and its seed kept, not dropped as if the epoch were closed`, async () => {
+    const c = realClient();
+    await c.client.trustAtTap('pair-1');
+    c.setRoute(shape); c.clock.t = EPOCH_END_MS + 601_000;
+    c.calls.length = 0; await c.client.removeAtTap('pair-1');
+    const rec = (await c.store.get('pair-1'))!;
+    assert.ok(c.calls.length > 0, 'an attempt was made');
+    assert.equal(rec.pendingWithdraws.length, 1, 'the entry is queued');
+    assert.equal(rec.rows.length, 1, 'the row is held');
+    assert.equal(c.seedCount(), 1, 'the seed that signs the withdraw is held');
+  });
+}
+
+test('MG5 Remove AT the dead instant keeps the old behaviour: the row is dropped and its seed released, no request is sent', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.setRoute(WITHDRAWN); c.clock.t = DEAD_MS;
+  c.calls.length = 0; await c.client.removeAtTap('pair-1');
+  assert.ok(!c.calls.some((u) => u.endsWith('/withdraw') || u.endsWith('/nonce')), 'nothing to withdraw: the relay can no longer match that epoch');
+  assert.equal(c.seedCount(), 0, 'the seed is released');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0);
+});
+
+test('MG7 an ORPHAN row (a seed with no saved record) of an epoch the relay may still match is withdrawn by a Remove on a device clock 1200 s FAST', async () => {
+  const c = realClient();
+  await c.secrets.newRow('pair-1', BigInt(EPOCH));                 // a crash between minting the seed and saving the record: the seed exists, the record does not
+  assert.equal(c.seedCount(), 1);
+  c.setRoute(WITHDRAWN); c.clock.t = EPOCH_END_MS + 601_000;       // past the old grace-only close, inside the margin
+  c.calls.length = 0; await c.client.removeAtTap('pair-1');
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'the orphan row was planned and its withdraw sent');
+  assert.equal(c.seedCount(), 0, 'and its seed was released after the confirmation');
+});
+
+const POLL_MATCH: Shape = (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : ok('match'));
+test('MG8 the READ side keeps the plain rule: a match one minute after the relay closed its epoch reports "none", and that epoch is no longer polled, even though the row is still held inside the margin', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.setRoute(POLL_MATCH); await c.client.pollNow('pair-1');
+  assert.equal(await c.client.matchState('pair-1'), 'match', 'a match while the epoch is open');
+  c.clock.t = EPOCH_END_MS + GRACE_SECONDS * 1000 - 1_000;          // one second before the relay closes epoch EPOCH
+  assert.equal(await c.client.matchState('pair-1'), 'match', 'still a match inside the relay\'s own grace window');
+  c.clock.t = EPOCH_END_MS + GRACE_SECONDS * 1000 + 60_000;         // one minute after the relay closed it
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'control: the row is still held (the margin keeps it), so the answer below is the rule, not a dropped row');
+  assert.equal(await c.client.matchState('pair-1'), 'none', 'the relay cannot match it any more: claiming a live match would say more than is true');
+  c.calls.length = 0; await c.client.pollNow('pair-1');
+  assert.equal(c.calls.length, 0, 'and polling a closed epoch is wasted calls');
 });
