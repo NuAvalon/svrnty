@@ -49,7 +49,7 @@ test('IK1 a replace: the old key is decoded, the pair id is derived from the con
   assert.deepEqual(k.store.data.get('pair-1')!.pendingWithdraws.map((w) => w.rowId), ['r1'], 'queued and committed');
 });
 
-test('IK2 the plan is made from the OLD key, for THIS pair only: the derivation is only ever asked about the old point', async () => {
+test('IK2 the plan is made from the OLD key: the derivation is only ever asked about the old point', async () => {
   const k = ports(); withRow(k.store);
   await replaceContactBeaconKeyWith(k.p, TARGET);
   assert.ok(k.slotKeys.length > 0, 'the plan did derive');
@@ -166,4 +166,9 @@ test('IK14 the composer hands the reporter to the replacement: a bug in the swee
 test('IK15 a reporter that THROWS changes nothing in the composer: a bug out of a port is still a refusal, and does not reject', async () => {
   const x = ports({ decodeKey: (() => { throw new ReferenceError('injected bug'); }) as KeyIntakePorts['decodeKey'], onUnexpected: () => { throw new Error('reporter exploded'); } });
   assert.deepEqual(await replaceContactBeaconKeyWith(x.p, TARGET), { kind: 'refused' });
+});
+
+test('IK16 (source shape) the old key answers for THIS pair only: nothing in the replacement asks about another pair, so no behaviour can see this limit, and it is pinned as written', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/trust/beacon-key-intake.ts'), 'utf8');
+  assert.match(src, /counterpartY:\s*async \(p\)\s*=>\s*\(p === pairId \? oldPoint : undefined\)/);
 });

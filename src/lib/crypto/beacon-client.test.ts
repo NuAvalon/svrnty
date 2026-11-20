@@ -3311,8 +3311,9 @@ test('HK10 the check sits immediately before the deposit leaves: after the write
 });
 
 test('HK11 a deposit whose proof was built under the OLD key does not leave if the key was replaced while it was building: nothing is sent, nothing is left behind', async () => {
-  // The replace lands while the proof is still being built: the row is not durable yet, so there is nothing for the replace to queue, the queue is EMPTY, and the
-  // hold alone would not stop this deposit. Without this check it would go out under the stale key and its row would never be withdrawn.
+  // The replace lands while the proof is still being built: the row is not durable yet, so there is nothing for the replace to queue and the queue is EMPTY. Since the
+  // hold also reads live unsettled rows, the write-ahead row of THIS deposit makes the hold stop it too, so this test passes with either guard; HK27 pins the stale-key
+  // re-read on its own, with a port that has no hold question.
   let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
   let started!: () => void; const building = new Promise<void>((r) => { started = r; });
   const base = makeProver();
@@ -3433,18 +3434,13 @@ test('HK17 B1 self-heal at a drain: the same crashed state is healed by the next
   assert.ok(id.length > 0);
 });
 
-test('HK18 NO FALSE POSITIVES: healthy same-key rows are never queued by the self-heal, and neither is anything when the held key cannot be read', async () => {
+test('HK18 NO FALSE POSITIVES: healthy same-key rows are never queued by the self-heal', async () => {
   const healthy = realClient();
   await healthy.client.trustAtTap('pair-1');
   healthy.setRoute(WITHDRAWN); healthy.clock.t += 10_000; healthy.calls.length = 0;
   await healthy.client.drainPendingWithdraws(); await healthy.client.drainPendingWithdraws();
   assert.equal((await healthy.store.get('pair-1'))!.pendingWithdraws.length, 0, 'a row under the held key is left alone');
   assert.equal(healthy.calls.filter((u) => u.endsWith('/withdraw')).length, 0, 'and nothing is withdrawn');
-  const blind = realClient({ secretsPatch: { depositSecrets: async () => undefined } });
-  await blind.client.trustAtTap('pair-1').catch(() => undefined);
-  const rec = await blind.store.get('pair-1');
-  if (rec) { blind.setHeldKey(KEY_2); blind.setRoute(WITHDRAWN); blind.clock.t += 10_000; await blind.client.drainPendingWithdraws(); }
-  assert.equal(((await blind.store.get('pair-1'))?.pendingWithdraws ?? []).length, 0, 'an unreadable held key tells nothing apart, so nothing is queued');
 });
 
 /**
@@ -3523,4 +3519,59 @@ test('HK23 a reporter that itself THROWS changes nothing: the held deposit still
   failInHeal(drained, () => new TypeError('injected bug'));
   drained.setRoute(WITHDRAWN); drained.clock.t += 10_000; await drained.client.drainPendingWithdraws();   // must not reject
   assert.equal((await drained.store.get('pair-1'))!.pendingWithdraws.length, 0, 'the drain still retired the queue');
+});
+
+test('HK24 the self-heal ALSO runs at a deposit reached by a TAP, where no drain follows: a Trust tap in the last 600 s of a crashed replacement is held and queues the old-key row', async () => {
+  const c = await crashedAfterKeyWrite();
+  const id = (await c.store.get('pair-1'))!.rows[0].rowId;
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'PRECONDITION: nothing is queued');
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.trustAtTap('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  assert.ok((await c.store.get('pair-1'))!.pendingWithdraws.some((w) => w.rowId === id), 'and the deposit path alone queued the row');
+});
+
+test('HK25 a TypeError out of the self-heal at a deposit reached by a TAP is reported by the deposit path itself, and nothing is sent', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  failInHeal(c, () => new TypeError('injected bug'));
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.trustAtTap('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'reported');
+});
+
+test('HK26 the self-heal queues NOTHING when the held key cannot be read: a row of the old key and a row of the key held now cannot be told apart then', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'PRECONDITION: a standing row exists (a test with no row proves nothing)');
+  c.secrets.depositSecrets = async () => undefined;                   // the held key is now unreadable
+  c.setHeldKey(KEY_2); c.setRoute(WITHDRAWN); c.clock.t += 10_000; c.calls.length = 0;
+  await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'nothing was queued');
+  assert.equal(c.calls.filter((u) => u.endsWith('/withdraw')).length, 0, 'and nothing was withdrawn');
+});
+
+const slowTap = (over: { rowsAreUnderHeldKey?: undefined } = {}) => {
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let started!: () => void; const building = new Promise<void>((r) => { started = r; });
+  const base = makeProver();
+  const c = realClient({ prover: makeProver({ buildDeposit: async (k) => { started(); await gate; return base.buildDeposit(k); } }), secretsPatch: { ...over } });
+  return { c, tap: c.client.trustAtTap('pair-1'), building, release };
+};
+
+test('HK27 with a port that has NO hold question, a deposit whose proof was built under the old key does not leave when the replacement changed ONLY the second coordinate (the stale-key re-read is what stops it)', async () => {
+  const { c, tap, building, release } = slowTap({ rowsAreUnderHeldKey: undefined });
+  await building;
+  c.setHeldKey([BigInt(11), BigInt(99)]);                              // the key differs from [11, 22] in the second coordinate alone
+  release(); await tap;
+  assert.equal(deposits(c), 0, 'nothing was sent under the stale key');
+  assert.equal(((await c.store.get('pair-1'))?.rows ?? []).length, 0, 'no row was left behind');
+});
+
+test('HK28 CONTROL for HK27: the same slow deposit with that port and the key UNCHANGED does go out', async () => {
+  const { c, tap, building, release } = slowTap({ rowsAreUnderHeldKey: undefined });
+  await building; release(); await tap;
+  assert.equal(deposits(c), 1);
 });
