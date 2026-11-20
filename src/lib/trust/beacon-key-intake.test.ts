@@ -123,3 +123,13 @@ test('IK10 (source shape) the real key write is a compare-and-set on BOTH the ol
   assert.match(src, /updateContactIf\(contactId, \(cur\) =>\s*cur\.beacon_public_key === expected\.publicKey && cur\.beacon_key_generation === expected\.generation\s*\?\s*\{ beacon_public_key: next\.publicKey, beacon_key_generation: next\.generation \}\s*:\s*null\)/);
   assert.match(src, /return r\.applied;/);
 });
+
+test('IK11 an old key that cannot be decoded refuses BY THE EXPLICIT RULE, not by a later accident: even with no own beacon key (so no plan would derive anything and nothing could throw), the replace is refused and nothing is written', async () => {
+  // With an own key, a null old point happens to throw later, while deriving the plan, and the replace still refuses. With NO own key nothing is derived and nothing throws, so only the
+  // explicit check stands between an undecodable old key and a replace. The rule is "if the old rows cannot be named, refuse": it must not depend on what happens to throw.
+  const k = ports({ ownSecret: async () => undefined, decodeKey: async () => null }); withRow(k.store);
+  const before = JSON.stringify(k.store.data.get('pair-1'));
+  assert.deepEqual(await replaceContactBeaconKeyWith(k.p, TARGET), { kind: 'refused' });
+  assert.ok(!k.log.some((l) => l.startsWith('writeKeyIf')), 'the key was never written');
+  assert.equal(JSON.stringify(k.store.data.get('pair-1')), before, 'the pair record is exactly as it was');
+});
