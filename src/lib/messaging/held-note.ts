@@ -50,6 +50,12 @@ export const HOLD_AGE_LIMIT_DAYS = 30;
 export const HOLD_EXPIRY_GRACE_DAYS = 7;
 const DAY_MS = 86_400_000;
 
+/**
+ * The hold's two numbers, read from their constants HERE and nowhere else: the rule (heldSweepAction), the view's "expiring" fact (heldExpiry) and the words on the hold view (which say the limit
+ * and the grace plainly) all take them from this one function, so there is one place to look and one place a later owner-facing setting would change.
+ */
+export const holdLimits = (): { limitDays: number; graceDays: number } => ({ limitDays: HOLD_AGE_LIMIT_DAYS, graceDays: HOLD_EXPIRY_GRACE_DAYS });
+
 /** What the age sweep does to ONE held note. Only 'delete' removes anything; the others rewrite the sealed row's own two stamps. */
 export type HeldSweepAction = 'keep' | 'stamp-held-at' | 'stamp-expiry' | 'clear-expiry' | 'delete';
 
@@ -65,7 +71,7 @@ const timeMs = (v: unknown): number | null => {
  * field existed) or one that does not parse is STAMPED, never deleted on sight. Past the limit the first sweep only stamps `expiry_seen_at`; deletion needs the limit AND a grace after that stamp. If the
  * clock is put back so the note is no longer past the limit, the stamp is cleared. A stamp in the future (a clock that went back) never deletes. A limit that is 0, negative or not a number deletes nothing.
  */
-export function heldSweepAction(note: Flagged & { held_at?: unknown; expiry_seen_at?: unknown }, nowMs: number, limitDays: number = HOLD_AGE_LIMIT_DAYS, graceDays: number = HOLD_EXPIRY_GRACE_DAYS): HeldSweepAction {
+export function heldSweepAction(note: Flagged & { held_at?: unknown; expiry_seen_at?: unknown }, nowMs: number, limitDays: number = holdLimits().limitDays, graceDays: number = holdLimits().graceDays): HeldSweepAction {
   if (!isHeldNote(note)) return 'keep';
   if (!(limitDays > 0) || !Number.isFinite(nowMs)) return 'keep';
   const heldAt = timeMs(note.held_at);
@@ -86,6 +92,36 @@ export function stampedHeldNote<T extends Flagged & { held_at?: string; expiry_s
   if (action === 'stamp-expiry') return { ...note, expiry_seen_at: iso };
   if (action === 'clear-expiry') return rest;
   return note;
+}
+
+/** The three keys a note carries only while it is held. A note that leaves the hold carries none of them. */
+const HOLD_KEYS = ['held', 'held_at', 'expiry_seen_at'];
+
+/**
+ * The note a RELEASE leaves behind (a copy; the input is untouched): an ordinary note again, with held, held_at and expiry_seen_at all gone TOGETHER. A stamp left on an ordinary note would be read as
+ * the age of a note that is held again later, and delete it early. Used by the owner's release and nothing else.
+ */
+export function clearedHeldNote<T extends Flagged>(note: T): T {
+  return Object.fromEntries(Object.entries(note).filter(([k]) => !HOLD_KEYS.includes(k))) as T;
+}
+
+/** What the hold view says about ONE held note's age: nothing, or that the sweep has marked it and the earliest moment it can be removed. */
+export type HeldExpiry = { expiring: false } | { expiring: true; removableAfterMs: number };
+
+/**
+ * Whether the sweep has MARKED this note, and when it can first be removed: the SAME facts heldSweepAction decides on (held exactly true, a limit above 0, a parseable held_at that is past the limit,
+ * a parseable expiry mark), and the deletion time is the sweep's own (the later of the limit and the mark plus the grace). It says nothing about a note the sweep has not marked yet: "expiring" is a fact the sweep made, not a
+ * guess the view makes. Pinned against heldSweepAction in held-release.test.ts so the two cannot drift apart.
+ */
+export function heldExpiry(note: Flagged & { held_at?: unknown; expiry_seen_at?: unknown }, nowMs: number, limitDays: number = holdLimits().limitDays, graceDays: number = holdLimits().graceDays): HeldExpiry {
+  if (!isHeldNote(note) || !(limitDays > 0) || !Number.isFinite(nowMs)) return { expiring: false };
+  const heldAt = timeMs(note.held_at);
+  if (heldAt === null || nowMs - heldAt < limitDays * DAY_MS) return { expiring: false };
+  const seen = timeMs(note.expiry_seen_at);
+  if (seen === null) return { expiring: false };
+  // Deletion needs BOTH: the note past the limit AND a full grace since the mark. Normally the mark was made after the note passed the limit, so the grace is the later of the two; after a clock jump the mark can be
+  // older than that, and then the note becomes removable when it passes the limit. The later of the two is the earliest moment the sweep can delete it, so the date the view shows is always true.
+  return { expiring: true, removableAfterMs: Math.max(heldAt + limitDays * DAY_MS, seen + graceDays * DAY_MS) };
 }
 
 /**
