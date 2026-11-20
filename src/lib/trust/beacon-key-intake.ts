@@ -12,6 +12,7 @@
 import { createBeaconSecrets, type BeaconSecretsDeps, type SeedStore } from './beacon-secrets';
 import { replaceHeldBeaconKey, type HeldKey, type KeyReplaceOutcome } from './beacon-key-replace';
 import { knownBeaconOf, type HeldBeaconKey } from './beacon-contact-key';
+import { isBugError } from '../crypto/beacon-release-queue';
 import type { BeaconStorePort, PairConfirmedPort } from '../crypto/beacon-client';
 import type { Point } from '../crypto/beacon-prover';
 
@@ -30,6 +31,8 @@ export interface KeyIntakePorts {
   now(): number;
   /** the (slot, nullifier) derivation; tests inject a cheap one, production leaves it to the secrets adapter's default */
   slotOf?: BeaconSecretsDeps['slotOf'];
+  /** told when a replacement meets one of the language's own bug errors ('replace': the composer; 'replace-sweep': the sweep after the key write). Never changes an outcome. */
+  onUnexpected?: (where: 'replace' | 'replace-sweep', err: unknown) => void;
 }
 
 export interface ReplaceTarget {
@@ -55,11 +58,12 @@ export async function replaceContactBeaconKeyWith(ports: KeyIntakePorts, target:
       ...(ports.slotOf ? { slotOf: ports.slotOf } : {}),
     });
     return await replaceHeldBeaconKey(
-      { pairId, store: ports.store, secrets, now: ports.now, confirmed: ports.confirmed, writeKey: (expected, next) => ports.writeKeyIf(target.contact.id, expected, next) },
+      { pairId, store: ports.store, secrets, now: ports.now, confirmed: ports.confirmed, writeKey: (expected, next) => ports.writeKeyIf(target.contact.id, expected, next), onUnexpected: ports.onUnexpected },
       { publicKey: held.publicKey, generation: held.keyGeneration },
       { publicKey: target.next.publicKey, generation: target.next.keyGeneration },
     );
-  } catch {
+  } catch (e) {
+    if (isBugError(e)) { try { ports.onUnexpected?.('replace', e); } catch { /* a reporter that throws changes nothing */ } }   // a refusal with no trace would hide a defect behind "could not save"
     return { kind: 'refused' };
   }
 }

@@ -14,6 +14,12 @@ import { relayDead } from './beacon-relay-margin';
 import { commitRecord, dropRowAt, queueWithdrawNowAt } from './beacon-pair-record';
 import type { BeaconSecretsPort, BeaconStorePort, PairRecord } from './beacon-client';
 
+/**
+ * #956 S1b: the language's own bug errors. A store or IO failure is none of these, so a best-effort step may retry it quietly, but a bug is REPORTED and never swallowed
+ * (a bare catch once turned a ReferenceError into a silent no-op heal). The ONE definition: the client's hold and heal and the key replacement's sweep all use it.
+ */
+export const isBugError = (e: unknown): boolean => e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError || e instanceof RangeError;
+
 export interface ReleaseQueueDeps {
   secrets: Pick<BeaconSecretsPort, 'releaseRow' | 'planPairRows' | 'rowsAreUnderHeldKey'>;
   store: BeaconStorePort;

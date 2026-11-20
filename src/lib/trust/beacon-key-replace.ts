@@ -29,7 +29,7 @@
 // It is a TIGHTENING (a local write that sends nothing), so it runs whatever the wire switch says, like a Remove's local latch: it takes no switch and no client.
 // The contact record and the pair record use different compare-and-swap protocols, so this ORDER is the only crash-safe way to move from one to the other.
 import { commitRecord } from '../crypto/beacon-pair-record';
-import { queueUnqueuedLiveRows, queueWithdraws, type ReleaseQueueDeps } from '../crypto/beacon-release-queue';
+import { isBugError, queueUnqueuedLiveRows, queueWithdraws, type ReleaseQueueDeps } from '../crypto/beacon-release-queue';
 import type { PairConfirmedPort, PairRecord } from '../crypto/beacon-client';
 
 export interface HeldKey { publicKey: string; generation: number }
@@ -43,6 +43,8 @@ export interface KeyReplaceDeps extends ReleaseQueueDeps {
   confirmed: PairConfirmedPort;
   /** the compare-and-set write of the contact's key: applies only while the held key is still `expected`; false = it moved, nothing was written */
   writeKey(expected: HeldKey, next: HeldKey): Promise<boolean>;
+  /** told when the post-write sweep meets one of the language's own bug errors; it never changes the outcome. Prints nothing here. */
+  onUnexpected?: (where: 'replace-sweep', err: unknown) => void;
 }
 
 export type KeyReplaceOutcome =
@@ -86,6 +88,9 @@ export async function replaceHeldBeaconKey(deps: KeyReplaceDeps, held: HeldKey, 
         deps.secrets.rowsAreUnderHeldKey ? deps.secrets.rowsAreUnderHeldKey(deps.pairId, [{ rowId: row.rowId, epoch: row.epoch }]) : true;
       await queueUnqueuedLiveRows(cur, deps, () => true, underOld);
     }
-  } catch { /* the key changed: stay 'replaced'; the self-heal queues the row on the next drain or deposit attempt */ }
+  } catch (e) {
+    // the key changed: stay 'replaced'; the self-heal queues the row on the next drain or deposit attempt. A BUG here is reported, never swallowed.
+    if (isBugError(e)) { try { deps.onUnexpected?.('replace-sweep', e); } catch { /* a reporter that throws changes nothing */ } }
+  }
   return { kind: 'replaced', wasConfirmed };
 }

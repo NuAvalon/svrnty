@@ -28,12 +28,13 @@ const row = (id: string, epoch: number, state: RowRecord['state'] = 'standing'):
 const seed = (store: ReturnType<typeof memStore>, rows: RowRecord[]) => store.data.set(PAIR, { pairId: PAIR, observedMatch: false, spentEpochs: [], refusedEpochs: [], rows, pendingWithdraws: [], version: 1 });
 
 /** Everything observable: the order of the events, and what the store held at the instant the key was written. */
-const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'throw'; plan?: 'throw'; gapRows?: RowRecord[]; underOld?: (rowId: string) => boolean; postWriteReadThrows?: boolean } = {}) => {
-  const store = memStore(); const log: string[] = []; const released: string[] = [];
+const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'throw'; plan?: 'throw'; gapRows?: RowRecord[]; underOld?: (rowId: string) => boolean; postWriteReadThrows?: boolean | 'bug'; reporterThrows?: boolean } = {}) => {
+  const store = memStore(); const log: string[] = []; const released: string[] = []; const reported: Array<{ where: string; err: unknown }> = [];
   let atKeyWrite: { pending: string[]; rows: string[] } | null = null;
   const over = opts;                                                  // the rig's own switches, kept apart from the dependencies they configure
   const deps: KeyReplaceDeps = {
     pairId: PAIR, store, now: () => MID,
+    onUnexpected: (where, err) => { reported.push({ where, err }); if (opts.reporterThrows) throw new Error('reporter exploded'); },
     secrets: {
       releaseRow: async (id) => { released.push(id); },
       planPairRows: async () => { log.push('plan'); if (over.plan === 'throw') throw new Error('the old key cannot be named'); return []; },
@@ -48,12 +49,12 @@ const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'thro
       if (over.gapRows) {                                            // rows a deposit landed between the last sweep and the key write
         const g = store.data.get(PAIR)!; g.rows.push(...over.gapRows); g.version = (g.version ?? 0) + 1;
       }
-      if (over.postWriteReadThrows) store.get = async () => { throw new Error('the store cannot be read now'); };
+      if (over.postWriteReadThrows) store.get = async () => { throw over.postWriteReadThrows === 'bug' ? new TypeError('injected bug') : new Error('the store cannot be read now'); };
       if (over.keyApplies === 'throw') throw new Error('storage failed');
       return over.keyApplies !== false;
     },
   };
-  return { deps, store, log, released, atKeyWrite: () => atKeyWrite };
+  return { deps, store, log, released, reported, atKeyWrite: () => atKeyWrite };
 };
 
 test('KR1 ORDER: confirmed is read first, the plan is made, the queue is COMMITTED, and only then is the key written (the store already holds the queue at that instant)', async () => {
@@ -143,4 +144,24 @@ test('KR11 the sweep after the key write queues a row a deposit landed in the ga
   const r = rig({ gapRows: [row('gapOld', E), row('gapNew', E)], underOld: (id) => id !== 'gapNew' }); seed(r.store, [row('a', E)]);
   assert.deepEqual(await replaceHeldBeaconKey(r.deps, OLD, NEW), { kind: 'replaced', wasConfirmed: false });
   assert.deepEqual(r.store.data.get(PAIR)!.pendingWithdraws.map((w) => w.rowId).sort(), ['a', 'gapOld'], 'the old-key row from the gap is queued; the new-key row is not');
+});
+
+test('KR12 a BUG error (a TypeError) in the sweep after the key write is REPORTED and the outcome is still replaced: a swallowed bug there would leave nothing to see', async () => {
+  const r = rig({ postWriteReadThrows: 'bug' }); seed(r.store, [row('a', E)]);
+  assert.deepEqual(await replaceHeldBeaconKey(r.deps, OLD, NEW), { kind: 'replaced', wasConfirmed: false });
+  assert.equal(r.reported.length, 1, 'reported once');
+  assert.equal(r.reported[0].where, 'replace-sweep');
+  assert.ok(r.reported[0].err instanceof TypeError);
+});
+
+test('KR13 an ORDINARY store error in the sweep after the key write is not reported: it is the self-heal\'s to retry quietly', async () => {
+  const r = rig({ postWriteReadThrows: true }); seed(r.store, [row('a', E)]);
+  assert.deepEqual(await replaceHeldBeaconKey(r.deps, OLD, NEW), { kind: 'replaced', wasConfirmed: false });
+  assert.equal(r.reported.length, 0);
+});
+
+test('KR14 a reporter that THROWS changes nothing: the outcome is still replaced', async () => {
+  const r = rig({ postWriteReadThrows: 'bug', reporterThrows: true }); seed(r.store, [row('a', E)]);
+  assert.deepEqual(await replaceHeldBeaconKey(r.deps, OLD, NEW), { kind: 'replaced', wasConfirmed: false });
+  assert.equal(r.reported.length, 1, 'it was called, and its throw went nowhere');
 });

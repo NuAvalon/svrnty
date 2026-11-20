@@ -23,7 +23,7 @@
 import * as wire from './beacon-wire.mjs';
 import { relayDead } from './beacon-relay-margin';
 import { commitRecord, dropRowAt, mergeRecAt, queueWithdrawNowAt } from './beacon-pair-record';
-import { queueUnqueuedLiveRows, queueWithdraws, type ReleaseQueueDeps } from './beacon-release-queue';
+import { isBugError, queueUnqueuedLiveRows, queueWithdraws, type ReleaseQueueDeps } from './beacon-release-queue';
 import { buildDeposit, signAuth, scheduleRedeposit, type DepositKeys, type Point, type Signals } from './beacon-prover';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -421,7 +421,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
    */
   /** #956 S1b: a bug error is REPORTED, never swallowed (a bare catch once turned a ReferenceError into a silent no-op heal). Reporting itself can never throw into the caller. */
   const reportUnexpected = (where: 'hold' | 'self-heal', e: unknown): void => {
-    if (!(e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError || e instanceof RangeError)) return;
+    if (!isBugError(e)) return;
     try { deps.onUnexpected?.(where, e); } catch { /* a reporter that throws changes nothing */ }
   };
 

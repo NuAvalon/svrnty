@@ -38,6 +38,7 @@ export function realKeyIntakePorts(ownerFingerprint: string): KeyIntakePorts {
       return r.applied;
     },
     now: () => Date.now(),
+    onUnexpected: (where, err) => console.error('beacon key replacement:', where, err),
   };
 }
 

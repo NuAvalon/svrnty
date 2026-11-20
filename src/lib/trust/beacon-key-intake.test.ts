@@ -133,3 +133,21 @@ test('IK11 an old key that cannot be decoded refuses BY THE EXPLICIT RULE, not b
   assert.ok(!k.log.some((l) => l.startsWith('writeKeyIf')), 'the key was never written');
   assert.equal(JSON.stringify(k.store.data.get('pair-1')), before, 'the pair record is exactly as it was');
 });
+
+test('IK12 a BUG error out of a port is a refusal AND is reported; an ordinary error is a refusal and is not (a refusal with no trace would hide a defect behind "could not save")', async () => {
+  const seen: Array<{ where: string; err: unknown }> = [];
+  const onUnexpected = (where: string, err: unknown) => { seen.push({ where, err }); };
+  const bug = ports({ decodeKey: (() => { throw new ReferenceError('injected bug'); }) as KeyIntakePorts['decodeKey'], onUnexpected });
+  assert.deepEqual(await replaceContactBeaconKeyWith(bug.p, TARGET), { kind: 'refused' });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].where, 'replace');
+  assert.ok(seen[0].err instanceof ReferenceError);
+  const plain = ports({ decodeKey: (() => { throw new Error('boom'); }) as KeyIntakePorts['decodeKey'], onUnexpected });
+  assert.deepEqual(await replaceContactBeaconKeyWith(plain.p, TARGET), { kind: 'refused' });
+  assert.equal(seen.length, 1, 'an ordinary error adds nothing');
+});
+
+test('IK13 (source shape) the real ports hand the reporter to the composer, so a bug in a replacement reaches the console and not nowhere', () => {
+  const src = readFileSync('src/lib/trust/beacon-key-intake-real.ts', 'utf8');
+  assert.match(src, /onUnexpected:\s*\(where,\s*err\)\s*=>\s*console\.error\(/);
+});
