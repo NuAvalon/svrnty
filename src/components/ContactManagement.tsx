@@ -88,6 +88,9 @@ import {
 } from '@/components/contacts/ClassicalFieldsEditor';
 import type { TrustEdge } from '@/lib/trust/types';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
+import { HeldMessagesView } from '@/components/held/HeldMessagesView';
+import { realHeldPort } from '@/components/held/held-port';
+import { HOLD_VIEW_ENTRY } from '@/components/held/hold-view-copy';
 import { PASSPHRASE_LOSS_NOTICE_CONTACTS } from '@/lib/identity/passphrase-loss-notice';
 import {
   applyTrustAction,
@@ -227,6 +230,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   const [pendingBookExport, setPendingBookExport] = useState<'json' | 'vcard' | null>(null);
   const [vaultExporting, setVaultExporting] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
+  // The hold view is open for this contact (its normalised fingerprint), or for nobody. Chosen by the owner from the contact's own menu; nothing is read or shown before that.
+  const [heldOpenFor, setHeldOpenFor] = useState<string | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   /** Master book scope — All / Classical / SVRNTY (not living/resting). Default All so network peers stay visible (demo-arc beat 3/4). */
   const [bookScope, setBookScope] = useState<'all' | 'classical' | 'svrn'>('all');
@@ -1836,6 +1841,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               expanded={bookSheetExpanded}
               onToggleExpand={() => setBookSheetExpanded((v) => !v)}
               onClose={() => {
+                setHeldOpenFor(null);
                 setSelectedContact(null);
                 setBookActionsOpen(false);
                 setBookSheetExpanded(false);
@@ -1907,6 +1913,14 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       closeMenu();
                     }}
                   />
+                  {/* A FROZEN contact's own entry to the notes kept from them: beside Unblock, carrying no count and no digit, shown whether or not anything is held. */}
+                  {isContactBlocked(focused) && fp ? (
+                    <CardMenuItem
+                      testId="held-entry"
+                      label={HOLD_VIEW_ENTRY}
+                      onClick={() => { setHeldOpenFor(fp.toLowerCase()); closeMenu(); }}
+                    />
+                  ) : null}
                   <CardMenuItem
                     label="Remove"
                     danger
@@ -2016,6 +2030,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                 </>
               )}
             />
+            {heldOpenFor && fp && heldOpenFor === fp.toLowerCase() ? (
+              <HeldMessagesView key={heldOpenFor} fingerprint={heldOpenFor} name={focused.name || null} port={realHeldPort} />
+            ) : null}
             </div>
           );
         })() : null}

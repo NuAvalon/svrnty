@@ -109,6 +109,7 @@ test('S7 the modules that import the messaging store (or its index) are exactly 
   }).sort();
   assert.deepEqual(importers, [
     'app/msg/page.tsx',
+    'src/components/held/held-port.ts', // the hold view's LOCAL port: the owner's own list, move-to-inbox and delete of held notes (four named functions, pinned in hold-view-wiring.test.ts HW2); the view itself imports no store and nothing that sends
     'src/components/notes/NotesInbox.tsx',
     'src/components/notes/notes-field.ts',
     'src/components/notes/seed-demo-notes.ts',

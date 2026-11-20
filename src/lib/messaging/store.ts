@@ -3,7 +3,7 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
-import { clearedHeld, clearedHeldNote, heldSince, heldSweepAction, isHeldNote, isHeldThread, noteExpired, stampedHeldNote, visibleThreads, type HeldSweepAction } from './held-note';
+import { clearedHeld, clearedHeldNote, heldSince, heldSweepAction, isHeldNote, isHeldThread, noteExpired, stampedHeldNote, visibleThreads, type HeldMoveResult, type HeldSweepAction } from './held-note';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
@@ -634,7 +634,7 @@ async function heldAgeStep(noteId: string, nowMs: number, limits?: HeldAgeLimits
 
 let _sweepRun: Promise<HeldAgeSweep> | null = null;
 
-export type HeldMoveResult = 'done' | 'gone' | 'not-held' | 'unreadable' | 'lost-race';
+export type { HeldMoveResult };
 
 /**
  * The counted RELEASE of one held note (the owner moves it to the inbox): the note row becomes an ordinary note (held, held_at and expiry_seen_at all go together), the count row drops by one, and the

@@ -94,6 +94,9 @@ export function stampedHeldNote<T extends Flagged & { held_at?: string; expiry_s
   return note;
 }
 
+/** What the owner's delete or release of ONE held note answered (store.ts): done; the note is already gone; it is not held (so it was left alone); it cannot be decrypted (left alone); or another write kept winning. */
+export type HeldMoveResult = 'done' | 'gone' | 'not-held' | 'unreadable' | 'lost-race';
+
 /** The three keys a note carries only while it is held. A note that leaves the hold carries none of them. */
 const HOLD_KEYS = ['held', 'held_at', 'expiry_seen_at'];
 
@@ -103,6 +106,11 @@ const HOLD_KEYS = ['held', 'held_at', 'expiry_seen_at'];
  */
 export function clearedHeldNote<T extends Flagged>(note: T): T {
   return Object.fromEntries(Object.entries(note).filter(([k]) => !HOLD_KEYS.includes(k))) as T;
+}
+
+/** When this device first held the note (held_at, on the owner's clock) as ms, or null when it has none or it does not parse. The hold view's "arrived here" line says nothing for null. */
+export function heldAtMs(note: Flagged & { held_at?: unknown }): number | null {
+  return timeMs(note.held_at);
 }
 
 /** When this device held the note, as a number to sort by: held_at when it parses, else the sender's own time, else 0 (a note with no usable time sorts last). The hold view lists newest first by this. */

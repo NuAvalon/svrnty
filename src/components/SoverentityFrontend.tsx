@@ -52,6 +52,8 @@ import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel
 import { RelaySettings } from '@/components/settings/RelaySettings';
 import { DeliverySettings } from '@/components/settings/DeliverySettings';
 import { TrustMapSettings } from '@/components/settings/TrustMapSettings';
+import { HeldMessagesSection } from '@/components/held/HeldMessagesSection';
+import { makeHeldSectionPort, realHeldPort } from '@/components/held/held-port';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 import { contactUpdateSendMessage } from '@/components/contact-update-send-copy';
 
@@ -2133,6 +2135,7 @@ export function SoverentityFrontend({
           )}
           <MailNotificationsSettingsPanel />
           {identity?.identity?.fingerprint ? <TrustMapSettings ownerFingerprint={identity.identity.fingerprint} /> : null}
+          {identity?.identity?.fingerprint ? <HeldMessagesSection sectionPort={makeHeldSectionPort(identity.identity.fingerprint)} heldPort={realHeldPort} /> : null}
         </CardMorePanel>
 
         {identity?.identity?.fingerprint ? <DeliverySettings ownerFingerprint={identity.identity.fingerprint} /> : null}
