@@ -11,6 +11,7 @@ import {
   allowedRowShouldExist,
   allowedRowDecision,
   listAllowedSenders,
+  MAX_LISTED,
   type PeerConsent,
 } from './allowed-sync';
 
@@ -316,6 +317,11 @@ test('ALS2 EVERY failure is UNKNOWN, never an empty list: 403, 429, 500, 502, a 
     ['a non-string member', () => json(200, { allowed: [SENDER, 5] })],
     ['an empty-string member', () => json(200, { allowed: [''] })],
     ['null body', () => json(200, null)],
+    ['a junk entry among good ones (the WHOLE list is unknown)', () => json(200, { allowed: [SENDER, 'x:y'] })],
+    ['a path-like entry', () => json(200, { allowed: ['../../etc'] })],
+    ['an entry one character short of a fingerprint', () => json(200, { allowed: ['a'.repeat(63)] })],
+    ['an entry one character past a fingerprint', () => json(200, { allowed: ['a'.repeat(65)] })],
+    ['a non-hex entry of the right length', () => json(200, { allowed: ['g'.repeat(64)] })],
   ];
   for (const [label, reply] of bad) {
     const { fetchImpl } = replyingFetch(reply);
@@ -337,4 +343,19 @@ test('ALS4 the list request carries cache: "no-store" itself, so a failure canno
   await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl, nowUnixSeconds: FIXED_UNIX });
   assert.equal(init?.method, 'GET');
   assert.equal(init?.cache, 'no-store');
+});
+
+test('ALS5 THE BOUND (Flint): MAX_LISTED entries is an answer; one more is UNKNOWN as a whole, never a partial use', async () => {
+  const fp = (i: number) => i.toString(16).padStart(64, '0');
+  const at = replyingFetch(() => json(200, { allowed: Array.from({ length: MAX_LISTED }, (_, i) => fp(i)) }));
+  const ok = await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl: at.fetchImpl, nowUnixSeconds: FIXED_UNIX });
+  assert.equal(ok.status, 'ok'); assert.equal(ok.status === 'ok' && ok.fps.length, MAX_LISTED);
+  const over = replyingFetch(() => json(200, { allowed: Array.from({ length: MAX_LISTED + 1 }, (_, i) => fp(i)) }));
+  assert.deepEqual(await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl: over.fetchImpl, nowUnixSeconds: FIXED_UNIX }), { status: 'unknown' });
+});
+
+test('ALS6 a fingerprint is 40 or 64 hex digits in either case, and the relay\'s OWN string is returned as it came (the caller compares case-insensitively and revokes with that string)', async () => {
+  const upper = 'AB'.repeat(32), mixed = 'aB'.repeat(20);
+  const { fetchImpl } = replyingFetch(() => json(200, { allowed: [upper, mixed] }));
+  assert.deepEqual(await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl, nowUnixSeconds: FIXED_UNIX }), { status: 'ok', fps: [upper, mixed] });
 });

@@ -132,7 +132,9 @@ export function allowedRowDecision(rowAtRelay: boolean, after: PeerConsent): All
 export type AllowedListResult = { status: 'ok'; fps: string[] } | { status: 'gone' } | { status: 'unknown' };
 
 /** a bound so a hostile or damaged answer cannot make the drain do unbounded work */
-const MAX_LISTED = 50_000;
+export const MAX_LISTED = 50_000;
+/** a fingerprint as the satellite and the rest of the app know it: 40 or 64 hex digits (the shape dead-letter.ts already uses), in either case */
+const FP_SHAPE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
 /**
  * The satellite's own list of who it allows for this owner (GET /api/satellite/allowed/{owner}; Ed25519 psi-auth tag in X-Signature, the same wire as the DELETE; the relay returns
@@ -140,7 +142,8 @@ const MAX_LISTED = 50_000;
  *
  * Retire this with #540; the revoke check moves client-side with it.
  *
- * A FAILURE IS NEVER AN EMPTY LIST: a 403, a 5xx, a network error, a body that is not a list of non-empty strings, all answer 'unknown', which the caller treats as "try again next tick" and
+ * The satellite is NOT trusted, and this list drives SIGNED DELETEs: every entry must be a fingerprint (40 or 64 hex digits), and ONE bad entry makes the WHOLE list 'unknown', never a partial use.
+ * A FAILURE IS NEVER AN EMPTY LIST: a 403, a 5xx, a network error, a body that is not a list of fingerprints, all answer 'unknown', which the caller treats as "try again next tick" and
  * which touches no state. 410 is the ONE exception ('gone': once the relay stops keeping the list there is nothing owed). A real empty list is { status: 'ok', fps: [] }.
  */
 export async function listAllowedSenders(args: AllowedOpArgs): Promise<AllowedListResult> {
@@ -157,7 +160,7 @@ export async function listAllowedSenders(args: AllowedOpArgs): Promise<AllowedLi
     if (!res.ok) return { status: 'unknown' };
     const body: unknown = await res.json();
     const list = body && typeof body === 'object' ? (body as { allowed?: unknown }).allowed : undefined;
-    if (!Array.isArray(list) || list.length > MAX_LISTED || !list.every((x) => typeof x === 'string' && x.length > 0)) return { status: 'unknown' };
+    if (!Array.isArray(list) || list.length > MAX_LISTED || !list.every((x) => typeof x === 'string' && FP_SHAPE.test(x))) return { status: 'unknown' };
     return { status: 'ok', fps: list as string[] };
   } catch (err) {
     // unknown (retry next tick), but NEVER silently: a bug in this request must not look like a quiet relay
