@@ -10,7 +10,7 @@
 //    (a joiner nonce the giver signs over, or an in-person short code) no request can be made for any pair. Previously, the intended source was the in-person / QR ceremony. NEVER an Import Contacts paste, a pasted card or any file: those can carry an OLD card
 //    replayed from a seized device, and if its key equals the stale key we hold, keep-equal would confirm the stale key;
 //  - the card carried a beacon key that passed the card check, and the intake verdict was add, backfill, or keep with the SAME key at the SAME generation
-//    (not deferred, loud, none, own-key-unreadable, nor a keep that was counted as rollback or held-malformed).
+//    (not replace, loud, none, own-key-unreadable, nor a keep that was counted as rollback or held-malformed).
 // The wire has no write path to this set: an owner re-tap alone never confirms.
 import type { PairConfirmedPort } from '../crypto/beacon-client';
 import type { BeaconIntakeVerdict, CardBeacon, HeldBeaconKey } from './beacon-contact-key';

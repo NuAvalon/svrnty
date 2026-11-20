@@ -6,8 +6,10 @@
 //
 // Rules:
 //  - Stored for EVERY contact the card is valid for, whatever their trust level (a stored key enables nothing by itself).
-//  - A held key is NEVER replaced here. A valid card with a higher generation is 'deferred' (counted, nothing written): replacing a key must first plan and
-//    queue the withdraw of the rows deposited under the old key while the old key can still name them, and that release-first path is a later slice.
+//  - A held key is NEVER replaced here, and a verdict never carries it in `fields`. A valid card with a higher generation is 'replace': the caller must go
+//    through replaceHeldBeaconKey (beacon-key-replace.ts), which first plans and queues the withdraw of the rows deposited under the old key while the old key
+//    can still name them and only then writes the new one. The new key travels in `replace`, and `fields` stays EMPTY, so no generic write (the back-fill
+//    both screens do with `fields`) can ever put it on the contact without that release-first step.
 //  - The same generation with a different key is 'loud': nothing changes, and the caller shows ONE fixed sentence that carries no key and no generation.
 //  - A contact whose record holds a beacon key but a missing or garbled generation (a mangled restored record) STILL holds that key: it is kept, counted as
 //    'held-malformed', and never written over.
@@ -22,11 +24,13 @@ export interface CardBeacon {
   beaconKeyDropped?: string;
 }
 
-export type BeaconIntakeVerdict = 'add' | 'backfill' | 'keep' | 'deferred' | 'loud' | 'none';
+export type BeaconIntakeVerdict = 'add' | 'backfill' | 'keep' | 'replace' | 'loud' | 'none';
 export interface BeaconIntake {
   verdict: BeaconIntakeVerdict;
-  /** the fields to write on the contact: non-empty ONLY for 'add' and 'backfill' */
+  /** the fields to write on the contact: non-empty ONLY for 'add' and 'backfill' (never for 'replace') */
   fields: { beacon_public_key?: string; beacon_key_generation?: number };
+  /** the newer key a 'replace' is to move the contact to: present ONLY for 'replace', and applied ONLY by replaceHeldBeaconKey */
+  replace?: { publicKey: string; keyGeneration: number };
   /** a fixed word counting why a present key was not stored, or undefined */
   counted?: string;
 }
@@ -70,7 +74,7 @@ export function decideBeaconIntake(existing: HeldBeaconKey | undefined, card: Ca
     return NONE; // the card carried no beacon key
   }
   if (!held) return { verdict: existing ? 'backfill' : 'add', fields: { beacon_public_key: k.publicKey, beacon_key_generation: k.keyGeneration } };
-  if (k.keyGeneration > held.keyGeneration) return { verdict: 'deferred', fields: {}, counted: 'newer-generation-deferred' };
+  if (k.keyGeneration > held.keyGeneration) return { verdict: 'replace', fields: {}, replace: { publicKey: k.publicKey, keyGeneration: k.keyGeneration } };
   if (k.keyGeneration === held.keyGeneration && k.publicKey === held.publicKey) return { verdict: 'keep', fields: {} };
   // the classifier drops these two before they get here; refuse them anyway so a classifier change cannot turn them into a write
   if (k.keyGeneration === held.keyGeneration) return { verdict: 'loud', fields: {}, counted: 'conflict' };

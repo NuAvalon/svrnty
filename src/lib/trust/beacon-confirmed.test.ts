@@ -15,7 +15,7 @@ const held = { beacon_public_key: KEY_A, beacon_key_generation: 5 };
 
 // ---------- the rule ----------
 test('C1 EVERY verdict x source: ONLY the live ceremony, and only on add / backfill / an exact keep, confirms; an import NEVER does (the replayed-card case)', () => {
-  const verdicts: BeaconIntakeVerdict[] = ['add', 'backfill', 'keep', 'deferred', 'loud', 'none'];
+  const verdicts: BeaconIntakeVerdict[] = ['add', 'backfill', 'keep', 'replace', 'loud', 'none'];
   const sources: ConfirmSource[] = ['live-ceremony', 'import'];
   const confirmed: string[] = [];
   for (const v of verdicts) for (const s of sources) {
