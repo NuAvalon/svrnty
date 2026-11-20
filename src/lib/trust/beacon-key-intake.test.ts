@@ -106,3 +106,20 @@ test('IK8 NO STORAGE IMPORT, NO NETWORK, NO SWITCH: the composer imports no clie
   assert.match(real, /identity\/client-store/, 'CONTROL: the real-ports file is where storage is imported');
   assert.doesNotMatch(real, /\bfetch\b|isBeaconWireLive|claim-gates/);
 });
+
+// ---- SOURCE-SHAPE pins for the two behaviours of the real-ports file that only the sealed stores can produce (the browser cannot make a key unreadable or move a contact
+// mid-write). They are not behaviour tests, and they say so: they stop the file being edited into the unsafe shape without anyone noticing.
+const realSrc = () => readFileSync(join(process.cwd(), 'src/lib/trust/beacon-key-intake-real.ts'), 'utf8').replace(/\/\/[^\n]*/g, '');
+
+test('IK9 (source shape) an own beacon key that is held but unreadable THROWS in the real ports, and only a key that was never held answers "none"', () => {
+  const src = realSrc();
+  assert.match(src, /if \(r\.state === 'none'\) return undefined;/);
+  assert.match(src, /if \(r\.state === 'unreadable'\) throw new Error\(/);
+  assert.doesNotMatch(src, /unreadable'\)\s*return\s+undefined/, 'an unreadable key is never "no key"');
+});
+
+test('IK10 (source shape) the real key write is a compare-and-set on BOTH the old key and the old generation, applied only if both still match', () => {
+  const src = realSrc();
+  assert.match(src, /updateContactIf\(contactId, \(cur\) =>\s*cur\.beacon_public_key === expected\.publicKey && cur\.beacon_key_generation === expected\.generation\s*\?\s*\{ beacon_public_key: next\.publicKey, beacon_key_generation: next\.generation \}\s*:\s*null\)/);
+  assert.match(src, /return r\.applied;/);
+});
