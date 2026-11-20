@@ -3110,7 +3110,7 @@ const SHAPES: Array<[string, Shape]> = [
 ];
 const WITHDRAWN: Shape = (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : ok('withdrawn'));
 /** The client on the REAL secrets adapter and a clock the test moves. `route` answers every request; the deposit is accepted while `route` is null. */
-const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>) => Promise<boolean> } = {}) => {
+const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>) => Promise<boolean>; prover?: ReturnType<typeof makeProver> } = {}) => {
   const clock = { t: MID }; const calls: string[] = []; let route: Shape | null = null; let map: BeaconSeeds = {};
   let heldY: [bigint, bigint] = [BigInt(11), BigInt(22)];             // the key held for the contact: a test can replace it
   const seeds: SeedStore = { read: async () => ({ ...map }), update: async (m) => { map = m({ ...map }); return map; }, reset: async () => { map = {}; } };
@@ -3120,7 +3120,7 @@ const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: Readonl
   });
   const secrets = over.rowsAreUnderHeldKey ? { ...adapter, rowsAreUnderHeldKey: over.rowsAreUnderHeldKey } : adapter;
   const fetch: FakeFetch = (url) => { calls.push(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
-  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets });
+  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets, ...(over.prover ? { prover: over.prover } : {}) });
   return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; }, setHeldKey: (p: [bigint, bigint]) => { heldY = p; } };
 };
 
@@ -3298,6 +3298,36 @@ test('HK10 the check sits immediately before the deposit leaves: after the write
   assert.ok(at('commitWriteAhead(rec)') < at('await heldByOlderKey(rec.pairId)'), 'after the write-ahead commit');
   assert.ok(at('await removed(rec.pairId)) {') < at('await heldByOlderKey(rec.pairId)'), 'after the latch check');
   assert.ok(at('await heldByOlderKey(rec.pairId)') < at("post('deposit', built.body)"), 'before the fetch');
+  assert.ok(at('commitWriteAhead(rec)') < at('await keyStillHeld(rec.pairId, sec)') && at('await keyStillHeld(rec.pairId, sec)') < at("post('deposit', built.body)"), 'the key-still-held check sits in the same place: after the write-ahead commit, before the fetch');
   const fn = src.slice(at('const heldByOlderKey'), at('Deposit outcomes richer'));
   assert.match(fn, /await deps\.store\.get\(pairId\)/, 'it reads the STORED record each time, not a copy held across an await');
+});
+
+test('HK11 a deposit whose proof was built under the OLD key does not leave if the key was replaced while it was building: nothing is sent, nothing is left behind', async () => {
+  // The replace lands while the proof is still being built: the row is not durable yet, so there is nothing for the replace to queue, the queue is EMPTY, and the
+  // hold alone would not stop this deposit. Without this check it would go out under the stale key and its row would never be withdrawn.
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let started!: () => void; const building = new Promise<void>((r) => { started = r; });
+  const base = makeProver();
+  const slow = makeProver({ buildDeposit: async (k) => { started(); await gate; return base.buildDeposit(k); } });
+  const c = realClient({ prover: slow });
+  const tap = c.client.trustAtTap('pair-1');
+  await building;                                                     // the proof is being built under the first key
+  c.setHeldKey(KEY_2);                                                // the contact's key is replaced meanwhile
+  release(); await tap;
+  assert.equal(deposits(c), 0, 'nothing was sent under the stale key');
+  const rec = await c.store.get('pair-1');
+  assert.equal((rec?.rows ?? []).length, 0, 'no row was left behind');
+  assert.equal(c.seedCount(), 0, 'and the fresh seed was released');
+});
+
+test('HK12 CONTROL for HK11: the same slow deposit with the key UNCHANGED does go out (so HK11 stops it for the key, not for being slow)', async () => {
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  let started!: () => void; const building = new Promise<void>((r) => { started = r; });
+  const base = makeProver();
+  const c = realClient({ prover: makeProver({ buildDeposit: async (k) => { started(); await gate; return base.buildDeposit(k); } }) });
+  const tap = c.client.trustAtTap('pair-1');
+  await building; release(); await tap;
+  assert.equal(deposits(c), 1);
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1);
 });

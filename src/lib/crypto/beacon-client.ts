@@ -422,6 +422,17 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, rows)); } catch { return true; }
   };
 
+  /**
+   * #956 S1b: true while the key this proof was built for is still the key held for the pair. A replacement that landed while the proof was being built makes it
+   * stale: the row is not durable yet, so the replacement had nothing to queue, and the hold (which looks at the queue) would not stop it. It is read again
+   * immediately before the deposit leaves and after the write-ahead commit: from then on a replacement sees the row and queues it, and a replacement that
+   * finished earlier has already changed the key. FAILS CLOSED: a key that cannot be read, or has changed in any part, is stale.
+   */
+  const keyStillHeld = async (pairId: string, built: { x: bigint; counterpartY: Point }): Promise<boolean> => {
+    const cur = await deps.secrets.depositSecrets(pairId);
+    return !!cur && cur.x === built.x && cur.counterpartY[0] === built.counterpartY[0] && cur.counterpartY[1] === built.counterpartY[1];
+  };
+
   /** Deposit outcomes richer than the wire answer — mapped to TrustResult at the tap. */
   type DepositOutcome =
     | 'spent-epoch'            // (slot,N) spent for this epoch — owed never (G5)
@@ -510,7 +521,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       try { await commit(rec); } catch { return 'unsaved'; }
       return 'latched';
     }
-    if (await heldByOlderKey(rec.pairId)) {                           // the HOLD: a row of an older key may still be matched — nothing is deposited beside it
+    if (!(await keyStillHeld(rec.pairId, sec)) || (await heldByOlderKey(rec.pairId))) {   // a STALE key, or the HOLD (a row of an older key may still be matched): nothing leaves
       if (freshMint) {                                                // nothing has left: drop the fresh mint + release its seed, like the latch case above
         dropRow(rec, row);
         await deps.secrets.releaseRow(row.rowId);
