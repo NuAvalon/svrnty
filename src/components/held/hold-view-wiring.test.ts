@@ -15,7 +15,17 @@ const codeOnly = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').repla
 const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 const code = (rel: string): string => codeOnly(read(rel));
 const FILES = readdirSync(join(ROOT, DIR)).filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\./.test(f)).sort();
-const imports = (rel: string): string[] => [...read(rel).matchAll(/^import\s[\s\S]*?from\s+'([^']+)'/gm)].map((m) => m[1]);
+/** EVERY module a source text pulls in, in every form: `import x from 'm'`, a side-effect `import 'm'`, `export ... from 'm'`, a dynamic `import('m')` and `require('m')`. (A lazy `import ... from` match swallows a side-effect import into the NEXT line's `from`, so it is not used.) */
+const specifiers = (src: string): string[] => {
+  const t = codeOnly(src);
+  const found = [
+    ...t.matchAll(/^(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/gm),
+    ...t.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g),
+    ...t.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g),
+  ];
+  return found.map((m) => m[1]);
+};
+const imports = (rel: string): string[] => specifiers(read(rel));
 
 test('HW1 the folder is exactly these files (a new one must be added here on purpose, with a reason)', () => {
   assert.deepEqual(FILES, ['HeldMessagesSection.tsx', 'HeldMessagesView.tsx', 'held-port.ts', 'hold-view-copy.ts', 'hold-view-model.ts']);
@@ -33,6 +43,24 @@ test('HW2 SENDS NOTHING (imports): no file in the folder imports a send, relay, 
   for (const f of ['HeldMessagesView.tsx', 'HeldMessagesSection.tsx', 'hold-view-model.ts']) {
     for (const i of imports(`${DIR}/${f}`)) if (i.startsWith('@/lib/messaging/')) assert.ok(i === '@/lib/messaging/held-note' || i === '@/lib/messaging/types', `${f} imports ${i}`);
   }
+});
+
+test('HW2c the fence sees every import form (a control: a fence that cannot see a form proves nothing about it)', () => {
+  const sample = [
+    "import { a } from '@/x/named';",
+    "import b, { c } from '@/x/default-and-named';",
+    "import type { T } from '@/x/type-only';",
+    "import '@/x/side-effect';",
+    "import { d,",
+    "  e } from '@/x/multi-line';",
+    "export { f } from '@/x/re-export';",
+    "export * from '@/x/star';",
+    "const g = await import('@/x/dynamic');",
+    "const h = require('@/x/required');",
+    "// import '@/x/in-a-comment';",
+    "/* import '@/x/in-a-block'; */",
+  ].join('\n');
+  assert.deepEqual(specifiers(sample).sort(), ['@/x/default-and-named', '@/x/dynamic', '@/x/multi-line', '@/x/named', '@/x/re-export', '@/x/required', '@/x/side-effect', '@/x/star', '@/x/type-only']);
 });
 
 test('HW3 SENDS NOTHING (calls): no file in the folder uses a network or signalling API', () => {

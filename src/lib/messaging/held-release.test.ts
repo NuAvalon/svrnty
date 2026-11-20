@@ -4,7 +4,7 @@
 // Run: npx tsx --test src/lib/messaging/held-release.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HOLD_AGE_LIMIT_DAYS, HOLD_EXPIRY_GRACE_DAYS, clearedHeldNote, heldExpiry, heldSweepAction, holdLimits, isHeldNote } from './held-note';
+import { HOLD_AGE_LIMIT_DAYS, HOLD_EXPIRY_GRACE_DAYS, clearedHeldNote, heldAtMs, heldExpiry, heldSince, heldSweepAction, holdLimits, isHeldNote } from './held-note';
 
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-06-01T12:00:00.000Z');
@@ -82,4 +82,18 @@ test('RL6 holdLimits() is the one reader of the two constants: it returns exactl
   assert.deepEqual(holdLimits(), { limitDays: 30, graceDays: 7 });
   assert.equal(holdLimits().limitDays, HOLD_AGE_LIMIT_DAYS);
   assert.equal(holdLimits().graceDays, HOLD_EXPIRY_GRACE_DAYS);
+});
+
+test('RL7 heldAtMs reads held_at ONLY (when this device held it), never the sender\'s sent_at; heldSince sorts by held_at, then sent_at, then 0, so the list is newest-HELD first whatever the senders\' clocks say', () => {
+  const a = held({ note_id: 'a', held_at: iso(NOW - 1 * DAY), sent_at: iso(NOW - 50 * DAY) });
+  const b = held({ note_id: 'b', held_at: iso(NOW - 3 * DAY), sent_at: iso(NOW - 2 * DAY) });
+  assert.equal(heldAtMs(a), NOW - 1 * DAY, 'held_at, not sent_at');
+  assert.equal(heldAtMs(held({ sent_at: iso(NOW - 2 * DAY) })), null, 'no held_at: null, the sender\'s time is not borrowed');
+  assert.equal(heldAtMs(held({ held_at: 'junk' })), null);
+  assert.equal(heldSince(a), NOW - 1 * DAY);
+  assert.equal(heldSince(held({ sent_at: iso(NOW - 2 * DAY) })), NOW - 2 * DAY, 'no held_at: the sender\'s time');
+  assert.equal(heldSince(held({ sent_at: 'junk' })), 0, 'nothing usable: 0, sorts last');
+  // a sent_at that disagrees with held_at must not decide the order: a is the NEWER held note though its sender claims it is the older one
+  const order = [b, a].sort((x, y) => heldSince(y) - heldSince(x)).map((n) => n.note_id);
+  assert.deepEqual(order, ['a', 'b']);
 });

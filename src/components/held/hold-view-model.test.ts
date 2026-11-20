@@ -94,6 +94,15 @@ test('HM7 the lines under a note: when it arrived HERE, the sender\'s time label
   assert.deepEqual(none, { arrived: null, theirs: null, expiring: null }, 'nothing true to say: nothing said');
 });
 
+test('HM7b "arrived here" is the time THIS device held it and "theirs" is the sender\'s time: two different values, each in its own line', () => {
+  const heldAt = NOW - 2 * DAY, sentAt = NOW - 9 * DAY;
+  const lines = noteLines(note('x', { held_at: iso(heldAt), sent_at: iso(sentAt) }), NOW);
+  assert.ok((lines.arrived ?? '').includes(new Date(heldAt).toLocaleString()), `arrived carries the held time: ${lines.arrived}`);
+  assert.ok((lines.theirs ?? '').includes(new Date(sentAt).toLocaleString()), `theirs carries the sender time: ${lines.theirs}`);
+  assert.equal((lines.arrived ?? '').includes(new Date(sentAt).toLocaleString()), false, 'arrived does not carry the sender time');
+  assert.equal((lines.theirs ?? '').includes(new Date(heldAt).toLocaleString()), false, 'theirs does not carry the held time');
+});
+
 test('HM8 senderTag is the first eight hex digits, lower-cased: an identifier, not a count', () => {
   assert.equal(senderTag('AB12CD34EF56' + '0'.repeat(52)), 'ab12cd34');
   assert.doesNotMatch(senderTag('ab'.repeat(32)), /\{|\}/);
