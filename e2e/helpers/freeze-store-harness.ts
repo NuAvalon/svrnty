@@ -15,6 +15,8 @@ declare global {
       initApp(owner: string, typedPassphrase: string): Promise<void>;
       /** Set or clear the block flag through the app's own contact store (it handles a sealed or a plaintext record), the state the Block action leaves. */
       setBlocked(contactId: string, blocked: boolean): Promise<void>;
+      /** Make a contact trusted with open visibility ON (or off), through the app's own contact store: the state in which the satellite mirror holds a row for them. */
+      setOpenVisible(contactId: string, on: boolean): Promise<void>;
       putThread(t: NoteThread): Promise<void>;
       putNote(n: NoteRecord): Promise<boolean>;
       threads(): Promise<NoteThread[]>;
@@ -88,6 +90,9 @@ window.__fz = {
     await initNotesStore(key.passphrase, owner);
   },
   setBlocked: async (contactId, blocked) => { await updateContact(contactId, (fresh) => blockPatch(fresh, blocked)); },
+  setOpenVisible: async (contactId, on) => {
+    await updateContact(contactId, (fresh) => ({ trusted: on, trust_level: on ? 'trusted' : 'unverified', metadata: { ...fresh.metadata, share_settings: { ...(fresh.metadata?.share_settings || {}), open_visibility: on } } }) as never);
+  },
   putThread: (t) => putThread(t),
   putNote: (n) => putNoteReportingCreated(n),
   threads: () => listThreads(),
