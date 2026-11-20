@@ -40,11 +40,17 @@ test('KS2 NO LINE in an in-person exchange view: none of the views an exchange r
 test('KS3 the Contacts import replaces only the contact looked up by the card\'s VERIFIED fingerprint, and names the BOOK\'s contact, never the card\'s display name', () => {
   const t = text('components/ContactManagement.tsx');
   assert.match(t, /const existing = await getContactByFingerprint\(fingerprint, contactIdentity\.fingerprint\);/, 'existing is looked up by the card\'s fingerprint, after the binding check refused a mismatch');
-  const branch = t.slice(t.indexOf("beaconIntake.verdict === 'replace'"), t.indexOf("beaconIntake.verdict === 'backfill'", t.indexOf("beaconIntake.verdict === 'replace'")));
+  const start = t.indexOf("beaconIntake.verdict === 'replace' && beaconIntake.replace");
+  assert.ok(start > 0, 'the replace branch was found');
+  const branch = t.slice(start, t.indexOf('} else {', start));                 // the replace clause only: its sibling message (the back-fill result) legitimately names the card
   assert.match(branch, /replaceContactBeaconKey\(fingerprint, \{ contact: existing, next: beaconIntake\.replace \}\)/, 'the replace targets `existing`, nothing else');
   assert.match(branch, /replaceNotice\(replaced, existing\.name\)/, 'the words name the book\'s contact');
   assert.doesNotMatch(branch, /displayName|contactIdentity\.(name|display_name)|card\./, 'never the name the card carries');
-  assert.doesNotMatch(branch, /\.\.\.beaconIntake\.fields[^}]*beacon_/, 'and the key is never written by the generic back-fill');
+  assert.doesNotMatch(branch, /beacon_public_key|beacon_key_generation/, 'and the replace branch itself never names the key fields');
+  // ONE back-fill write, and it comes BEFORE the replace (fields are empty for a replace, so it cannot carry the key)
+  const whole = t.slice(t.indexOf('backfillsKeyMaterial ||'), t.indexOf('You already have'));
+  assert.equal((whole.match(/await updateContact\(/g) ?? []).length, 1, 'one object-form back-fill write');
+  assert.ok(whole.indexOf('await updateContact(') < whole.indexOf('replaceContactBeaconKey('), 'the back-fill runs before the replace');
 });
 
 test('KS4 the Grow ceremony replaces only the contact looked up by the peer\'s verified fingerprint, names the book\'s contact, and shows the line only on this device\'s own done screen', () => {
