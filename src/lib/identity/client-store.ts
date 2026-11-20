@@ -1230,9 +1230,30 @@ export async function beaconPairIdFor(contactFingerprint: string): Promise<strin
   return beaconPairId(_contactKeys.indexKey, contactFingerprint);
 }
 
-/** The port the beacon client asks "is this pair confirmed?" through: reads the confirmed row; ANY doubt answers false. */
+/**
+ * The generation of the beacon key this device holds for the contact whose pair id is `pairId`, or undefined. The pair id is a one-way blinded id, so the contact is found by computing each
+ * contact's own pair id and comparing (a contact whose fingerprint is not a durable id has no pair and is skipped). Needs the unlocked session; a locked or failing read throws, which the confirmed
+ * port turns into "not confirmed". DARK: only the confirmed port asks.
+ */
+async function heldBeaconGenerationOf(ownerFingerprint: string, pairId: string): Promise<number | undefined> {
+  for (const c of await getAllContacts(ownerFingerprint)) {
+    let id: string;
+    try {
+      id = await beaconPairIdFor(c.fingerprint);
+    } catch (e) {
+      if (e instanceof BeaconConfirmedLocked) throw e;
+      continue;
+    }
+    if (id !== pairId) continue;
+    const g = c.beacon_key_generation;
+    return typeof g === 'number' && Number.isSafeInteger(g) ? g : undefined;
+  }
+  return undefined;
+}
+
+/** The port the beacon client asks "is this pair confirmed?" through: the pair must be in the confirmed row AND confirmed at the generation of the key held NOW; ANY doubt answers false. */
 export function createBeaconConfirmedPort(ownerFingerprint: string): PairConfirmedPort {
-  return createConfirmedPort(() => readBeaconConfirmed(ownerFingerprint));
+  return createConfirmedPort(() => readBeaconConfirmed(ownerFingerprint), (pairId) => heldBeaconGenerationOf(ownerFingerprint, pairId));
 }
 
 /** Mark this contact's pair confirmed at this generation. The ONLY writer: called from the live ceremony, never from an import, a file or the wire. */

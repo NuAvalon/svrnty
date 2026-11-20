@@ -270,7 +270,7 @@ test("W13 a beacon key stored on a CONTACT: the wire reads it through counterpar
 // ---------- the real confirmed port, and a removed pair ----------
 test("W14 a pair that is MARKED confirmed but latched (the peer removed it) still sends NOTHING; CONTROL: the same confirmed pair, unlatched, DOES send; and an UNCONFIRMED pair sends nothing", async () => {
   const confirmedMap = { [PAIR_ID64]: { generation: 3 } };
-  const port = createConfirmedPort(async () => confirmedMap);
+  const port = createConfirmedPort(async () => confirmedMap, async () => 3);   // the held key is at generation 3, as the confirm was
   // the pair id the client asks about is the id the store used: use the same string for both, 64 hex
   const ok1 = await rig({ confirmed: port });
   assert.equal(await port.isConfirmed(PAIR_ID64), true);
@@ -282,9 +282,15 @@ test("W14 a pair that is MARKED confirmed but latched (the peer removed it) stil
   await latched.wire.client.renew(PAIR_ID64);
   await latched.wire.client.pollNow(PAIR_ID64);
   assert.equal(latched.f.calls.length, 0, 'marked confirmed AND latched: zero requests, the latch decides');
-  const unconfirmed = await rig({ confirmed: createConfirmedPort(async () => ({})) });
+  const unconfirmed = await rig({ confirmed: createConfirmedPort(async () => ({}), async () => 3) });
   assert.equal((await unconfirmed.wire.client.trustAtTap(PAIR_ID64)).kind, 'unconfirmed');
   assert.equal(unconfirmed.f.calls.length, 0);
+  // GATE 15: confirmed at 3, but the held key has since been replaced by generation 4: the same wire, the same marked pair, sends NOTHING until a live confirm at 4
+  const replaced = await rig({ confirmed: createConfirmedPort(async () => confirmedMap, async () => 4) });
+  assert.equal((await replaced.wire.client.trustAtTap(PAIR_ID64)).kind, 'unconfirmed', 'a pair confirmed at 3 is not confirmed for a key held at 4');
+  await replaced.wire.client.renew(PAIR_ID64);
+  await replaced.wire.client.pollNow(PAIR_ID64);
+  assert.equal(replaced.f.calls.length, 0, 'zero requests until a live re-confirm');
 });
 
 // ---------- static guards ----------

@@ -69,14 +69,44 @@ test('C6 withConfirmed: a NEW map, monotone (a lower generation never lowers a h
 });
 
 // ---------- the port fails closed ----------
-test('C7 the port: a confirmed pair is true; absent is false; a failing read, a malformed row and an inherited key are all FALSE', async () => {
+const HELD = (g: number | undefined) => async () => g;
+
+test('C7 the port: a confirmed pair is true only at the held generation; absent is false; a failing read, a malformed row and an inherited key are all FALSE', async () => {
   const m = { [P1]: { generation: 3 } };
-  assert.equal(await createConfirmedPort(async () => m).isConfirmed(P1), true);
-  assert.equal(await createConfirmedPort(async () => m).isConfirmed(P2), false);
-  assert.equal(await createConfirmedPort(async () => { throw new Error('locked'); }).isConfirmed(P1), false, 'a read that fails');
-  assert.equal(await createConfirmedPort(async () => ({ [P1]: { generation: 'x' } })).isConfirmed(P1), false, 'a malformed row');
-  assert.equal(await createConfirmedPort(async () => null).isConfirmed(P1), false);
-  assert.equal(await createConfirmedPort(async () => ({})).isConfirmed('toString'), false, 'an inherited property is not a confirmed pair');
+  assert.equal(await createConfirmedPort(async () => m, HELD(3)).isConfirmed(P1), true);
+  assert.equal(await createConfirmedPort(async () => m, HELD(3)).isConfirmed(P2), false);
+  assert.equal(await createConfirmedPort(async () => { throw new Error('locked'); }, HELD(3)).isConfirmed(P1), false, 'a read that fails');
+  assert.equal(await createConfirmedPort(async () => ({ [P1]: { generation: 'x' } }), HELD(3)).isConfirmed(P1), false, 'a malformed row');
+  assert.equal(await createConfirmedPort(async () => null, HELD(3)).isConfirmed(P1), false);
+  assert.equal(await createConfirmedPort(async () => ({}), HELD(3)).isConfirmed('toString'), false, 'an inherited property is not a confirmed pair');
+});
+
+test('C7b GENERATION-BOUND: the stored generation must EQUAL the held key\'s, at and one either side; an unknown or malformed held generation, or a resolver that throws, is FALSE', async () => {
+  const m = { [P1]: { generation: 5 } };
+  const ask = (held: unknown) => createConfirmedPort(async () => m, (async () => held) as never).isConfirmed(P1);
+  assert.equal(await ask(5), true, 'the same generation');
+  assert.equal(await ask(6), false, 'the key was replaced by a higher generation since the confirm');
+  assert.equal(await ask(4), false, 'a lower generation is not the confirmed one either');
+  for (const bad of [undefined, null, 0, -5, 5.5, NaN, Infinity, '5', 2 ** 60]) assert.equal(await ask(bad), false, `held generation ${String(bad)} is not a positive safe integer`);
+  assert.equal(await createConfirmedPort(async () => m, async () => { throw new Error('locked'); }).isConfirmed(P1), false, 'a resolver that throws');
+  // the resolver is asked about the pair that was asked about, and only once the row has been found
+  const asked: string[] = [];
+  await createConfirmedPort(async () => m, async (id) => { asked.push(id); return 5; }).isConfirmed(P1);
+  await createConfirmedPort(async () => m, async (id) => { asked.push(id); return 5; }).isConfirmed(P2);
+  assert.deepEqual(asked, [P1], 'asked for P1; not asked for a pair with no confirmed row');
+});
+
+test('C7c THE NEGATIVE (gate 15): confirmed at N, then the held key is replaced by N+1 -> NOT confirmed (nothing is asked of the wire) until a live confirm records N+1', async () => {
+  let map = withConfirmed({}, P1, 5);
+  let held = 5;
+  const port = createConfirmedPort(async () => map, async () => held);
+  assert.equal(await port.isConfirmed(P1), true, 'confirmed at 5 and holding 5');
+  held = 6;   // the replace
+  assert.equal(await port.isConfirmed(P1), false, 'replaced by 6: the old confirm does not carry over');
+  map = withConfirmed(map, P1, 6);   // a live re-confirm at the new generation
+  assert.equal(await port.isConfirmed(P1), true, 'confirmed again at 6, holding 6');
+  held = 5;   // and a held key that went BACK is not the confirmed one either (the stored entry is monotone upward)
+  assert.equal(await port.isConfirmed(P1), false);
 });
 
 // ---------- static pins ----------
