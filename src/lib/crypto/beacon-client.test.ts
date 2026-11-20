@@ -3496,14 +3496,17 @@ test('HK21 a TypeError out of the self-heal at a DRAIN is reported and does not 
   assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'and the drain still retired the queue');
 });
 
-test('HK22 a TypeError out of the HOLD\'s own question holds (nothing sent) and is reported as a hold error', async () => {
-  const r = reporter();
-  const c = realClient({ rowsAreUnderHeldKey: async () => { throw new TypeError('injected bug'); }, deps: { onUnexpected: r.onUnexpected } });
-  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+test('HK22 a TypeError out of the HOLD\'s own question holds (nothing sent) and is reported as a hold error, and the heal\'s own per-row question reports its bug too', async () => {
+  const r = reporter(); let armed = false;
+  const c = realClient({ rowsAreUnderHeldKey: async () => { if (armed) throw new TypeError('injected bug'); return true; }, deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1');                 // armed later: the first trust must leave a standing row, or the heal has nothing to ask about
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'PRECONDITION: a standing row exists');
+  armed = true; c.setHeldKey(KEY_2);
   c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
   await c.client.renew('pair-1');
   assert.equal(deposits(c), 0, 'held: a question that fails with a bug is a hold, never no hold');
   assert.ok(r.seen.some((x) => x.where === 'hold' && x.err instanceof TypeError), 'reported as a hold error');
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'and the heal\'s own per-row question reported its bug too');
 });
 
 test('HK23 a reporter that itself THROWS changes nothing: the held deposit still returns unsent, the drain still retires the queue, and nothing is sent', async () => {

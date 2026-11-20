@@ -357,3 +357,9 @@ test('W11 the public entry takes ONE parameter: the switch cannot be overridden 
   const wire = SRC.find((f) => isFile(f.path, 'src/lib/trust/beacon-wire.ts'))!;
   assert.match(codeOnly(wire.text), /export function createBeaconWire\(deps: BeaconWireDeps\): BeaconWire \{\s*return createBeaconWireWithGate\(deps, isBeaconWireLive\);\s*\}/);
 });
+
+test('W-ON1 (source shape) the wire hands onUnexpected to the client it builds, so a bug in the hold or the self-heal reaches the caller\'s reporter', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/trust/beacon-wire.ts'), 'utf8');
+  assert.match(src, /onUnexpected:\s*deps\.onUnexpected/);
+  assert.match(src, /onUnexpected\?:\s*\(where:\s*'hold'\s*\|\s*'self-heal',\s*err:\s*unknown\)\s*=>\s*void/);
+});

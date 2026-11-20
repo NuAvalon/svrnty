@@ -151,3 +151,14 @@ test('IK13 (source shape) the real ports hand the reporter to the composer, so a
   const src = readFileSync('src/lib/trust/beacon-key-intake-real.ts', 'utf8');
   assert.match(src, /onUnexpected:\s*\(where,\s*err\)\s*=>\s*console\.error\(/);
 });
+
+test('IK14 the composer hands the reporter to the replacement: a bug in the sweep AFTER the key write reaches it, and the outcome is still replaced', async () => {
+  const seen: Array<{ where: string; err: unknown }> = [];
+  const x = ports({ onUnexpected: (where, err) => { seen.push({ where, err }); } });
+  withRow(x.store);
+  const realWrite = x.p.writeKeyIf;
+  x.p.writeKeyIf = async (id, expected, next) => { const ok = await realWrite(id, expected, next); x.store.get = async () => { throw new TypeError('injected bug'); }; return ok; };
+  assert.deepEqual(await replaceContactBeaconKeyWith(x.p, TARGET), { kind: 'replaced', wasConfirmed: false });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].where, 'replace-sweep');
+});
