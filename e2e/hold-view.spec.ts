@@ -330,5 +330,24 @@ for (const [vpName, viewport] of [['desktop', null], ['phone 390x844', { width: 
       await view.scrollIntoViewIfNeeded();
       await testInfo.attach(`hold-view-${vpName.split(' ')[0]}.png`, { body: await page.screenshot({ fullPage: false }), contentType: 'image/png' });
     });
+
+    test('U10 Lenses & vault MOVE ALL: it says how many were moved, with no "frozen" in it, and the count follows (the sender is not frozen, so "still frozen" would be false)', async ({ page }) => {
+      const s = await setup(page, { blocked: true });
+      const STRANGER = 'c0ffee11'.repeat(8);
+      await seedHeld(page, STRANGER, 'T-stranger', [{ id: 's1', body: 'one' }, { id: 's2', body: 'two', heldAgoDays: 2 }]);
+      const section = await openLensesSection(page);
+      await section.getByTestId('held-section-entry').click();
+      await section.getByTestId(`held-section-sender-${STRANGER.slice(0, 8)}`).click();
+      const view = section.getByTestId('held-view');
+      await expect(view.getByTestId('held-note-s1')).toBeVisible({ timeout: 15_000 });
+      await view.getByTestId('held-move-all').click();
+      await expect(view.getByTestId('held-status')).toHaveText('Moved 2 notes to your inbox.');
+      expect(await view.getByTestId('held-status').innerText()).not.toMatch(/frozen/i);
+      await expect(view.getByTestId('held-empty')).toBeVisible();
+      expect(await held(page, STRANGER)).toEqual({ count: 0 });
+      await expectRowEqualsScan(page, STRANGER, 'after move all from the section');
+      expect(await visibleThreads(page), 'the thread is ordinary now').toEqual(['T-stranger']);
+      void s;
+    });
   });
 }

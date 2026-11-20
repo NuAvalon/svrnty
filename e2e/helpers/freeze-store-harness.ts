@@ -45,6 +45,8 @@ declare global {
       deleteSetting(key: string): Promise<void>;
       /** Replace one note row's blob with bytes that are not a valid ciphertext (a note that can no longer be read). */
       corruptNote(noteId: string, threadId: string): Promise<void>;
+      /** Replace one thread row's blob with bytes that are not a valid ciphertext (a thread that can no longer be read). */
+      corruptThread(threadId: string): Promise<void>;
       /** The owner's own move to the inbox / delete of ONE held note (the hold view's two actions): what the store answered. */
       releaseHeld(noteId: string): Promise<string>;
       deleteHeld(noteId: string): Promise<string>;
@@ -142,6 +144,14 @@ window.__fz = {
     for (const info of dbs) {
       const db: IDBDatabase = await new Promise((res, rej) => { const r = indexedDB.open(info.name!); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
       await new Promise<void>((res, rej) => { const tx = db.transaction('notes', 'readwrite'); tx.objectStore('notes').put({ note_id: noteId, thread_id: threadId, enc: { iv: 'AAAAAAAAAAAAAAAA', ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAAA' } }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+      db.close();
+    }
+  },
+  corruptThread: async (threadId) => {
+    const dbs = (await indexedDB.databases()).filter((d) => d.name && /notes/i.test(d.name));
+    for (const info of dbs) {
+      const db: IDBDatabase = await new Promise((res, rej) => { const r = indexedDB.open(info.name!); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      await new Promise<void>((res, rej) => { const tx = db.transaction('threads', 'readwrite'); tx.objectStore('threads').put({ thread_id: threadId, enc: { iv: 'AAAAAAAAAAAAAAAA', ciphertext: 'AAAAAAAAAAAAAAAAAAAAAAAA' } }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
       db.close();
     }
   },

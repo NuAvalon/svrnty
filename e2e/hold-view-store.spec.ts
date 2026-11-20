@@ -134,6 +134,15 @@ test('HS5 neither action touches a note that is not held, a note that is gone, o
   expect(await release(page, 'orphan')).toBe('unreadable');
   expect((await get(page, 'orphan'))?.held, 'it is still held').toBe(true);
   expect(await held(page, A)).toEqual(countBefore);
+  // a held note whose thread row cannot be read: the release cannot know whether the thread is held, so it is refused and nothing changes (the delete does not need the thread and still works)
+  await putThread(page, mkThread('TB', true));
+  await put(page, heldNote('tbad', 'TB'));
+  await page.evaluate(() => window.__fz.corruptThread('TB'));
+  const countBeforeTb = await held(page, A);
+  expect(await release(page, 'tbad'), 'a release with an unreadable thread is refused').toBe('unreadable');
+  expect((await get(page, 'tbad'))?.held, 'the note is still held').toBe(true);
+  expect(await held(page, A), 'and the count did not move').toEqual(countBeforeTb);
+  expect(await remove(page, 'tbad'), 'a delete does not read the thread').toBe('done');
 });
 
 test('HS6 one sender\'s held notes come back NEWEST FIRST by when they were held, case-insensitively, and only that sender\'s; the senders list counts them', async ({ page }) => {

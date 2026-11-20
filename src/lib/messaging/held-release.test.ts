@@ -4,6 +4,7 @@
 // Run: npx tsx --test src/lib/messaging/held-release.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { HOLD_AGE_LIMIT_DAYS, HOLD_EXPIRY_GRACE_DAYS, clearedHeldNote, heldAtMs, heldExpiry, heldSince, heldSweepAction, holdLimits, isHeldNote } from './held-note';
 
 const DAY = 86_400_000;
@@ -96,4 +97,34 @@ test('RL7 heldAtMs reads held_at ONLY (when this device held it), never the send
   // a sent_at that disagrees with held_at must not decide the order: a is the NEWER held note though its sender claims it is the older one
   const order = [b, a].sort((x, y) => heldSince(y) - heldSince(x)).map((n) => n.note_id);
   assert.deepEqual(order, ['a', 'b']);
+});
+
+// ---- SOURCE-SHAPE pins on store.ts (NOT behaviour tests: the interleavings they guard are not driven in a browser, and IndexedDB is not available to this runner). Each names the intent it protects. ----
+const STORE_SRC = readFileSync('src/lib/messaging/store.ts', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const fnBody = (head: string): string => {
+  const at = STORE_SRC.indexOf(head);
+  assert.ok(at >= 0, `found ${head}`);
+  const end = STORE_SRC.indexOf('\n}\n', at);
+  return STORE_SRC.slice(at, end);
+};
+
+test('RL8 SHAPE: the owner\'s release commits only if the note row, the thread row and the count row are all unchanged since they were read; the owner\'s delete, if the note row and the count row are (a moved row makes the commit answer false and the step reads again)', () => {
+  const rel = fnBody('async function commitCountedHeldRelease(');
+  for (const e of ["{ store: 'notes', key: note.note_id, enc: priorRow.enc }", "{ store: 'threads', key: thread.thread_id, enc: threadRow.enc }", "{ store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc }"]) assert.ok(rel.includes(e), `release compares ${e}`);
+  assert.ok(rel.includes('txCommitIfUnchanged(expects, puts)'), 'and commits through the compare-and-swap with those expectations');
+  const del = fnBody('async function commitCountedHeldDelete(');
+  for (const e of ["{ store: 'notes', key: noteId, enc: priorRow.enc }", "{ store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc }"]) assert.ok(del.includes(e), `delete compares ${e}`);
+  assert.ok(/txCommitIfUnchanged\(expects, /.test(del), 'and commits through the compare-and-swap with those expectations');
+});
+
+test('RL9 SHAPE: both owner actions go through the per-tab write queue like every other note write', () => {
+  assert.ok(STORE_SRC.includes("return serializeNoteWrite(() => ownerHeldStep(noteId, 'delete'));"), 'delete is queued');
+  assert.ok(STORE_SRC.includes("return serializeNoteWrite(() => ownerHeldStep(noteId, 'release'));"), 'release is queued');
+});
+
+test('RL10 SHAPE: the owner step says done only when its commit went through; a step that kept losing the race says so (lost-race), never done', () => {
+  const step = fnBody('async function ownerHeldStep(');
+  assert.equal((step.match(/return 'done'/g) ?? []).length, 1, 'exactly one way to say done');
+  assert.ok(/if \(committed\) return 'done';/.test(step), 'and it is guarded by the commit result');
+  assert.ok(/\n  return 'lost-race';$/.test(step), 'the last word of the step is lost-race');
 });
