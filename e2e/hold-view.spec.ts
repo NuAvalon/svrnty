@@ -151,6 +151,7 @@ for (const [vpName, viewport] of [['desktop', null], ['phone 390x844', { width: 
       await expect(view.getByTestId('held-intro')).toHaveText(INTRO);
       await expect(view.getByTestId('held-age-line')).toHaveText(AGE);
       await expect(view.getByTestId('held-cap-line')).toHaveText(CAP);
+      await expect(view.getByTestId('held-note-body'), 'the list has loaded before it is read (allInnerTexts does not wait)').toHaveCount(3);
       const bodies = await view.getByTestId('held-note-body').allInnerTexts();
       expect(bodies, 'newest first by when they were held').toEqual(['first held words', 'second held words', 'an old one']);
       await expect(view.getByTestId('held-note-arrived').first()).toHaveText(/^Arrived here .+/);
