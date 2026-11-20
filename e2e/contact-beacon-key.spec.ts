@@ -88,7 +88,7 @@ async function storedBeacon(page: Page, who: RegExp, testInfo: TestInfo, tag: st
 // The sentence for a same-generation DIFFERENT key: it names the EXISTING contact (from the person's own book), never the name the card carries.
 const CONFLICT = /A card for "Zedcontact" doesn't match a key you already have for them, so it wasn't applied\./;
 
-test('BEACON KEY: a legacy card stores none; the same identity with one BACK-FILLS it; a repeat changes nothing; a DIFFERENT key at the same generation is refused loudly; a HIGHER generation is deferred; a NEW contact gets the key at add', async ({ browser }, testInfo) => {
+test('BEACON KEY: a legacy card stores none; the same identity with one BACK-FILLS it; a repeat changes nothing; a DIFFERENT key at the same generation is refused loudly; a HIGHER generation REPLACES the key, release-first, and says so in the reviewed words; a NEW contact gets the key at add', async ({ browser }, testInfo) => {
   test.skip(!!process.env.E2E_PROD, 'needs WebAssembly (the curve check): a production build refuses it, see the next case');
   test.setTimeout(480_000);
   const KEY_A = await beaconPublicKey(BigInt('111111'));
@@ -104,8 +104,12 @@ test('BEACON KEY: a legacy card stores none; the same identity with one BACK-FIL
   expect(await storedBeacon(A, /zedcontact/i, testInfo, 'e2'), 'the same key again changes nothing').toEqual({ key: KEY_A, gen: G(3) });
   await pasteCard(A, await zed.signed({ key: KEY_B, gen: G(3) }, 'Someone Else'), CONFLICT, /Someone Else/);
   expect(await storedBeacon(A, /zedcontact/i, testInfo, 'e3'), 'a different key at the same generation leaves the held key alone').toEqual({ key: KEY_A, gen: G(3) });
-  await pasteCard(A, await zed.signed({ key: KEY_B, gen: G(4) }), /already have/i);
-  expect(await storedBeacon(A, /zedcontact/i, testInfo, 'e4'), 'a valid HIGHER generation is deferred: the held key is not replaced').toEqual({ key: KEY_A, gen: G(3) });
+  // A newer SIGNED card (the card carries another display name on purpose): the held key is REPLACED, release-first, and the line names the BOOK's contact, never the card's name.
+  // The pair was never confirmed (nothing writes the confirmed set in production yet), so only the first sentence appears, not "unconfirmed again".
+  await pasteCard(A, await zed.signed({ key: KEY_B, gen: G(4) }, 'Someone Else'), /A newer signed card from Zedcontact has changed the security details saved here for them\./, /Someone Else|unconfirmed/);
+  expect(await storedBeacon(A, /zedcontact/i, testInfo, 'e4'), 'a valid HIGHER generation replaces the held key and its generation').toEqual({ key: KEY_B, gen: G(4) });
+  await pasteCard(A, await zed.signed({ key: KEY_A, gen: G(3) }), /already have/i);
+  expect(await storedBeacon(A, /zedcontact/i, testInfo, 'e4b'), 'CONTROL: an OLDER generation afterwards is a rollback: kept as it is, nothing replaced back').toEqual({ key: KEY_B, gen: G(4) });
   const yan = await nodeIdentity('Yancontact');
   await pasteCard(A, await yan.signed({ key: KEY_B, gen: G(2) }), /added successfully|added/i);
   expect(await storedBeacon(A, /yancontact/i, testInfo, 'e5'), 'a NEW contact gets the key and its generation at add').toEqual({ key: KEY_B, gen: G(2) });
