@@ -70,6 +70,8 @@ export const REPAIR_CONFIRMATION = 'destroy every held one-time seed';
 export interface BeaconSecretsAdapter extends BeaconSecretsPort {
   /** Required here (optional on the port): the plan the client's Remove withdraws from. Drops nothing; never consults the latch. */
   planPairRows(pairId: string): Promise<ReadonlyArray<{ rowId: string; epoch: string; H_e: string; N: string }>>;
+  /** Required here (optional on the port): the hold's question. See BeaconSecretsPort.rowsAreUnderHeldKey. Never throws: any doubt answers false. */
+  rowsAreUnderHeldKey(pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>): Promise<boolean>;
   status(): 'ok' | 'stuck';
   /** The explicit repair for the stuck state. Destroys every held one-time seed; refuses without REPAIR_CONFIRMATION. */
   repair(confirmation: string): Promise<void>;
@@ -166,6 +168,25 @@ export function createBeaconSecrets(deps: BeaconSecretsDeps): BeaconSecretsAdapt
         if (held && held.expiresAtMs >= now()) out.push({ rowId: seedKey(H_e, N), epoch: e, H_e, N }); // only a row we can still SIGN for is a target
       }
       return out;
+    },
+
+    async rowsAreUnderHeldKey(pairId, rows) {
+      // Is EVERY listed row what the key held for the pair NOW produces for that row's epoch, and is its seed still held (unexpired, so it can still be withdrawn)?
+      // The row id IS seedKey(H_e, N), so the answer needs only the held key, the secret and the epoch. Not latch-gated. FAIL CLOSED: every doubt is false.
+      try {
+        const s = await secretsFor(pairId);
+        if (!s) return false;                                          // the held key cannot be read: nothing can be vouched for
+        const map = await guarded(() => deps.seeds.read());
+        for (const r of rows) {
+          const held = map[r.rowId];
+          if (!held || held.expiresAtMs < now()) return false;         // no seed to sign its withdraw with: cannot be told apart from an old row
+          const { H_e, N } = await slotOf(s.x, s.y, BigInt(r.epoch)); // a row with no epoch throws here and lands in the catch
+          if (seedKey(H_e, N) !== r.rowId) return false;               // deposited under another key
+        }
+        return true;
+      } catch {
+        return false;
+      }
     },
 
     status: () => (stuck ? 'stuck' : 'ok'),

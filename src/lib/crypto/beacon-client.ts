@@ -143,6 +143,13 @@ export interface BeaconSecretsPort {
    * record's rows are all there is.
    */
   planPairRows?(pairId: string): Promise<ReadonlyArray<{ rowId: string; epoch: string; H_e: string; N: string }>>;
+  /**
+   * OPTIONAL. true only if EVERY listed row was deposited under the key held for the pair NOW and its one-time seed is still held (so it can still be withdrawn).
+   * False for anything else, and that includes every doubt: the held key cannot be read, the recompute throws, the seed map cannot be read, a row has no epoch.
+   * The client holds back a deposit while a queued withdraw belongs to a row this does not vouch for (a row of an OLDER key can still be matched at the relay).
+   * Absent = the port cannot tell, so no deposit is held back by it (the production adapter always can).
+   */
+  rowsAreUnderHeldKey?(pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>): Promise<boolean>;
 }
 export interface BeaconProverPort {
   buildDeposit(keys: DepositKeys): Promise<{ body: string; signals: Signals }>;
@@ -400,6 +407,21 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     return r;
   };
 
+  /**
+   * THE HOLD (#956 S1b): true while a queued withdraw belongs to a row that is NOT under the key held for the pair now — a row of an older key can still be matched at
+   * the relay, and nothing may be deposited under the new key beside it. It is DERIVED from the queue and the rows' own ids (no stored field), and it is narrow on
+   * purpose: a queued withdraw of the SAME key (a Remove, then Trust again) holds nothing back. It FAILS CLOSED: any doubt holds. It reads the STORED record each
+   * time and is called immediately before the deposit leaves, never cached across an await. It ends on its own: a withdraw is confirmed, or the relay can no longer
+   * match the row's epoch (relayDead), so a relay that never answers holds for about a week plus the margin at most.
+   */
+  const heldByOlderKey = async (pairId: string): Promise<boolean> => {
+    if (!deps.secrets.rowsAreUnderHeldKey) return false;
+    const stored = await deps.store.get(pairId);
+    if (!stored || stored.pendingWithdraws.length === 0) return false;
+    const rows = stored.pendingWithdraws.map((w) => ({ rowId: w.rowId, epoch: stored.rows.find((r) => r.rowId === w.rowId)?.epoch ?? '' }));
+    try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, rows)); } catch { return true; }
+  };
+
   /** Deposit outcomes richer than the wire answer — mapped to TrustResult at the tap. */
   type DepositOutcome =
     | 'spent-epoch'            // (slot,N) spent for this epoch — owed never (G5)
@@ -487,6 +509,16 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       }
       try { await commit(rec); } catch { return 'unsaved'; }
       return 'latched';
+    }
+    if (await heldByOlderKey(rec.pairId)) {                           // the HOLD: a row of an older key may still be matched — nothing is deposited beside it
+      if (freshMint) {                                                // nothing has left: drop the fresh mint + release its seed, like the latch case above
+        dropRow(rec, row);
+        await deps.secrets.releaseRow(row.rowId);
+      } else {
+        queueWithdraw(rec, row.rowId, 0);                             // stored 'unknown': an earlier call may have sent it
+      }
+      try { await commit(rec); } catch { return 'unsaved'; }
+      return 'unsent';                                                // owed stays derived: the next renew tries again once the hold has ended
     }
     const a = await post('deposit', built.body);
     // L2c + L15d AFTER: re-read the latch AND the stored tap BEFORE recording or acting on the
