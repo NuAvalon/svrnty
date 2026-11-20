@@ -142,7 +142,7 @@ test('M11 copy == Hypatia svrnty_notifications_copy_v1 (9e1aef8d) + v1.1 named s
 
 test('M12 sw.js: the worker version is bumped and a notification tap goes to a FIXED same-origin URL (never the notification data)', () => {
   const sw = readFileSync(join(__dirname, '../../../public/sw.js'), 'utf8');
-  assert.match(sw, /const CACHE_NAME = 'svrnty-v4';/);
+  assert.match(sw, /const CACHE_NAME = 'svrnty-v5';/);   // bumped again for #959 (the allowed list is never handled); the version only has to move forward, see sw-allowed-list.test.ts
   assert.match(sw, /addEventListener\('notificationclick'/);
   assert.match(sw, /new URL\('\/', self\.location\.origin\)/);
   assert.doesNotMatch(sw, /notification\.data/);

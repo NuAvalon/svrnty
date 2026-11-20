@@ -725,3 +725,20 @@ test('#183 / S54 cond.1: psi_pq_session is cleared with psi_sk_A on completion, 
   const e = fakeStore([withKey({ psi_attempts: 2 })]); await runPsiCompletionPass(e.store, OWNER, STUB_DEPS, PQ_OPTIONS(), notReady);
   assert.equal('psi_pq_session' in e.writes[0].updates, false, 'control: a still-in-flight session keeps its key');
 });
+
+
+// ── #959: step 0 of the tick is the owner's allowed-set seed + revoke drain ────────────────────────────────
+test('the real loop runs the allowed-revoke step with the owner BEFORE the PSI work, on every tick, and a failure in it never stops the sync', async () => {
+  const { fn, calls } = spySync();
+  const { store } = fakeStore([]);
+  const order: string[] = [];
+  const handle = startKnowLayerSync(
+    { identity: { fingerprint: OWNER } },
+    DUMMY_OPTIONS,
+    { store, syncFn: (async (...a: Parameters<typeof fn>) => { order.push('sync'); return fn(...a); }) as typeof fn, intervalMs: 10_000, allowedRevoke: async (owner) => { order.push(`revoke:${owner}`); throw new Error('boom'); } },
+  );
+  await new Promise((r) => setTimeout(r, 30));
+  handle.stop();
+  assert.equal(order[0], `revoke:${OWNER}`, 'the revoke step ran first, with the owner');
+  assert.ok(order.includes('sync') && calls.length >= 1, 'and the PSI sync still ran although the revoke step threw');
+});

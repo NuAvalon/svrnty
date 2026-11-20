@@ -50,8 +50,8 @@ test('the poll\'s contact store yields: it provides a guard built on the same lo
 test('removing a contact takes the contact lock around its write, in both places that remove one', () => {
   const ui = src('../../components/ContactManagement.tsx');
   const del = body(ui, 'const handleDeleteContact', 'const handleToggleTrust');
-  // the removal itself runs INSIDE the contact lock (the consent read and the removal share one hold; RW1 pins the read), with no other lock call between them, and the lock closes right after it
-  assert.match(del, /await withSafetyWrite\(contactId, async \(\) => \{(?:(?!withSafetyWrite)[\s\S])*?await removeContactWithLatch\(fingerprint, contactId, removedFp\);\s*return consent;\s*\}\);/);
+  // the removal itself runs INSIDE the contact lock, and nothing else holds it (no consent is read here: the owner's allowed set decides the satellite revoke)
+  assert.match(del, /await withSafetyWrite\(contactId, \(\) => removeContactWithLatch\(fingerprint, contactId, removedFp\)\);/);
   assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? contactFailureMessage\(err, 'remove'\)\)/);
   const page = noComments(src('../../../app/page.tsx'));
   assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContactWithLatch\(identity\.identity\.fingerprint, edge\.id, edge\.peer_fingerprint\)\);/);

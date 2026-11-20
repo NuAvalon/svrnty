@@ -13,7 +13,7 @@
 // fallback). Truly-static assets (icons, manifest) stay cache-first. Bumping
 // CACHE_NAME forces every existing browser to install this worker, and the
 // activate handler then deletes the poisoned v1 cache.
-const CACHE_NAME = 'svrnty-v4'; // v4: notificationclick (phase 1 mail notifications); bump so browsers install this worker
+const CACHE_NAME = 'svrnty-v5'; // v5: nothing under /api/satellite/ is handled (below); v4: notificationclick (phase 1 mail notifications). Bump so browsers install this worker and activate purges the old cache
 
 // Only genuinely-static, rarely-changing assets are pre-cached. The HTML
 // document is deliberately NOT pre-cached — it must always come from the network
@@ -93,6 +93,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(networkFirst(request, /* fallbackToRoot */ true));
     return;
   }
+
+  // NOTHING under /api/satellite/ is handled here. Every satellite GET the proxy serves (the allowed-senders list, the trust and PSI answers, route, bind) is owner-authenticated private
+  // data, and an old cached copy served when the network fails would be read as a live answer: it would hide a row that is owed a DELETE, or a trust change that has happened. They must
+  // also never sit in plaintext in Cache Storage. Let the browser fetch them plainly: a failure stays a failure.
+  if (url.pathname.startsWith('/api/satellite/')) return;
 
   // Versioned build assets + API: network-first so a redeploy can never strand
   // a browser on dead chunk hashes; cached copy is an offline fallback only.

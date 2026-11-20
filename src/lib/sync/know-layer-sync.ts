@@ -37,6 +37,7 @@ import {
 } from '@/lib/identity/client-store';
 import { extractRawSign, signBind, signPsiAuthWrapped } from '@/lib/identity/raw-sign';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { runAllowedRevokeTick } from './reconcile-allowed-hook';
 import { isDecayed, type TrustEdge } from '@/lib/trust/types';
 import {
   syncMutualTrust,
@@ -626,7 +627,7 @@ async function fetchAndVerifySatelliteKey(
 export function startKnowLayerSync(
   identity: unknown,
   options: PSISyncOptions,
-  opts: { intervalMs?: number; store?: KnowOverlayStore; syncFn?: SyncMutualTrustFn } = {},
+  opts: { intervalMs?: number; store?: KnowOverlayStore; syncFn?: SyncMutualTrustFn; allowedRevoke?: (ownerFp: string) => Promise<void> } = {},
 ): KnowLayerSyncHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_KNOW_SYNC_INTERVAL_MS;
   const syncFn = opts.syncFn ?? syncMutualTrust;
@@ -641,6 +642,9 @@ export function startKnowLayerSync(
     try {
       const store = opts.store ?? defaultStore;
       const deps = buildKnowOverlayDeps(owner, store);
+      // 0. #959: seed the owner's allowed set (the first tick is the unlock) and send every DELETE that is owed to the satellite's allowed list. Independent of the PSI session work
+      //    below, so a failure here never stops it. The default is fail-soft and quiet.
+      try { await (opts.allowedRevoke ?? runAllowedRevokeTick)(owner); } catch (err) { console.error('[know-layer-sync] allowed revoke tick failed (will retry):', err); }
       // 1. Complete initiator sessions saved on prior ticks (responder answers async) + forward-revoke
       //    de-consented peers. THIS closes the initiator half that was never wired = the trust map.
       await runPsiCompletionPass(store, owner, deps, options);

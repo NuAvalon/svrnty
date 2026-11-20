@@ -1,5 +1,5 @@
-// A SOURCE-SHAPE pin (not a behaviour test: the behaviour is run in a real browser by e2e/remove-never-allowed.spec.ts and in the hook tests): the Remove handler reads the contact's consent BEFORE the record is
-// removed, and sends the satellite nothing unless that consent had a row. Run: npx tsx --test src/lib/sync/remove-never-allowed-wiring.test.ts
+// A SOURCE-SHAPE pin (not a behaviour test: the behaviour is run in a real browser by e2e/allowed-revoke.spec.ts and in the hook tests): the Remove handler reads NO consent: the owner's allowed set (#959)
+// decides whether the satellite may hold a row, so a contact that was never added sends the satellite nothing. Run: npx tsx --test src/lib/sync/remove-never-allowed-wiring.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -13,20 +13,16 @@ const body = (): string => {
   return SRC.slice(at, end);
 };
 
-test('RW1 the Remove handler reads the contact\'s record INSIDE the safety lock and IMMEDIATELY BEFORE the removal (a read outside the lock can go stale before the lock is taken, and then Remove skips a revoke it owes), and hands its consent to the removal reconcile', () => {
+test('RW1 the Remove handler reads NO consent and hands the removal reconcile only the owner and the peer: the allowed set, not a read made before the removal, decides whether a row may exist; the removal still runs inside the contact lock', () => {
   const b = body();
-  const lock = b.indexOf('withSafetyWrite(contactId, async () => {');
-  assert.ok(lock >= 0, 'the removal runs inside one safety-lock callback that returns the consent');
-  const cb = b.slice(lock, b.indexOf('});', lock));
-  const read = cb.indexOf('await getContact(contactId)');
-  const remove = cb.indexOf('await removeContactWithLatch(');
-  assert.ok(read >= 0 && remove >= 0, 'both calls are INSIDE that callback');
-  assert.ok(read < remove, 'the record is read before it is removed');
-  assert.match(cb.slice(read, remove), /consentFromRecord\(recordBefore\)/, 'the consent is derived from that record before the removal');
-  assert.match(cb, /return consent;/, 'and handed out of the lock');
-  assert.equal((b.match(/getContact\(contactId\)/g) ?? []).length, 1, 'the handler reads the record in exactly one place, so no read outside the lock');
-  assert.match(b, /const consentBefore = await withSafetyWrite\(/, 'the outer consentBefore is what the lock returned');
-  assert.match(b, /reconcileAllowedOnRemove\(\{[\s\S]*?\bconsentBefore,\s*\}\)/, 'and is handed to the removal reconcile');
+  assert.match(b, /await withSafetyWrite\(contactId, \(\) => removeContactWithLatch\(fingerprint, contactId, removedFp\)\);/, 'the removal runs inside the contact lock');
+  assert.doesNotMatch(b, /getContact\(/, 'the handler reads no record');
+  assert.doesNotMatch(b, /consentFromRecord|consentBefore/, 'and derives no consent');
+  const call = /reconcileAllowedOnRemove\(\{([^}]*)\}\)/.exec(b);
+  assert.ok(call, 'the removal reconcile is called');
+  assert.match(call![1], /ownerFp:\s*fingerprint/);
+  assert.match(call![1], /senderFp:\s*removedFp/);
+  assert.equal(call![1].split(',').filter((x) => x.trim()).length, 2, 'and is handed nothing else');
 });
 
 test('RW2 the Remove handler no longer uses the unconditional "peer gone" reconcile (that sends a DELETE for a person who never had a row)', () => {
@@ -37,4 +33,12 @@ test('RW2 the Remove handler no longer uses the unconditional "peer gone" reconc
   assert.ok((SRC.match(/reconcileAllowedOnConsentChange\s*\(\{/g) ?? []).length >= 3, 'control: the block / contact-gone / sharing handlers still call it');
   // and the old shape would have matched: the pattern can fail
   assert.match('void reconcileAllowedOnConsentChange({ ownerFp: fingerprint, senderFp: removedFp, consent: NO_CONSENT });', /reconcileAllowedOnConsentChange\s*\(/);
+});
+
+test('RW3 the contacts screen asks the satellite what it still lists, at app-open and BEFORE the PSI session work starts, whether or not that work manages to start', () => {
+  const effect = SRC.slice(SRC.indexOf('// KNOW-layer PSI: bind the raw sign key'));
+  const tick = effect.indexOf('void runAllowedRevokeTick(fingerprint);');
+  const psi = effect.indexOf('void startPsiDiscovery(');
+  assert.ok(tick > 0 && psi > 0, 'both are in the start-up effect');
+  assert.ok(tick < psi, 'the revoke check is not behind the PSI start');
 });
