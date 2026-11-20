@@ -3111,7 +3111,7 @@ const SHAPES: Array<[string, Shape]> = [
 ];
 const WITHDRAWN: Shape = (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : ok('withdrawn'));
 /** The client on the REAL secrets adapter and a clock the test moves. `route` answers every request; the deposit is accepted while `route` is null. */
-const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>) => Promise<boolean>; prover?: ReturnType<typeof makeProver>; secretsPatch?: Partial<BeaconSecretsPort> } = {}) => {
+const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: ReadonlyArray<{ rowId: string; epoch: string }>) => Promise<boolean>; prover?: ReturnType<typeof makeProver>; secretsPatch?: Partial<BeaconSecretsPort>; deps?: Partial<BeaconClientDeps> } = {}) => {
   const clock = { t: MID }; const calls: string[] = []; let route: Shape | null = null; let map: BeaconSeeds = {};
   let heldY: [bigint, bigint] = [BigInt(11), BigInt(22)];             // the key held for the contact: a test can replace it
   const seeds: SeedStore = { read: async () => ({ ...map }), update: async (m) => { map = m({ ...map }); return map; }, reset: async () => { map = {}; } };
@@ -3127,7 +3127,7 @@ const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: Readonl
   });
   let onRequest: ((url: string) => Promise<void>) | null = null;       // a hook that runs INSIDE a request, before it is answered
   const fetch: FakeFetch = async (url) => { calls.push(url); if (onRequest) await onRequest(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
-  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets, ...(over.prover ? { prover: over.prover } : {}) });
+  const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets, ...(over.prover ? { prover: over.prover } : {}), ...(over.deps ?? {}) });
   return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; }, setHeldKey: (p: [bigint, bigint]) => { heldY = p; }, onRequest: (fn: (url: string) => Promise<void>) => { onRequest = fn; }, secretsForKey };
 };
 
@@ -3445,4 +3445,63 @@ test('HK18 NO FALSE POSITIVES: healthy same-key rows are never queued by the sel
   const rec = await blind.store.get('pair-1');
   if (rec) { blind.setHeldKey(KEY_2); blind.setRoute(WITHDRAWN); blind.clock.t += 10_000; await blind.client.drainPendingWithdraws(); }
   assert.equal(((await blind.store.get('pair-1'))?.pendingWithdraws ?? []).length, 0, 'an unreadable held key tells nothing apart, so nothing is queued');
+});
+
+/**
+ * #956 S1b: an UNEXPECTED error (the language's own bug errors) in the hold or the self-heal is REPORTED and the pair stays HELD; an expected store/IO error stays quiet.
+ * The injection throws out of the heal itself (a stack check on its name), because a bare catch around it once hid a ReferenceError and turned the heal into a silent no-op.
+ */
+const failInHeal = (c: { secrets: BeaconSecretsPort }, make: () => Error) => {
+  const real = c.secrets.rowsAreUnderHeldKey;
+  Object.defineProperty(c.secrets, 'rowsAreUnderHeldKey', { configurable: true, get() { if (new Error().stack?.includes('queueStaleRows')) throw make(); return real; } });
+};
+const reporter = () => { const seen: Array<{ where: string; err: unknown }> = []; return { seen, onUnexpected: (where: string, err: unknown) => { seen.push({ where, err }); } }; };
+
+test('HK19 a TypeError out of the self-heal at a deposit: nothing is sent, the error is REPORTED, and the NEXT attempt is still held', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  failInHeal(c, () => new TypeError('injected bug'));
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held: nothing left the device');
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'the bug was reported, not swallowed');
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'and the next attempt still holds');
+});
+
+test('HK20 an EXPECTED (non-bug) error out of the self-heal is not reported, the pair stays held, and the next drain heals it once the error is gone', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  failInHeal(c, () => new Error('store busy'));
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held');
+  assert.equal(r.seen.length, 0, 'an ordinary store error is the heal\'s to retry quietly');
+  Object.defineProperty(c.secrets, 'rowsAreUnderHeldKey', { configurable: true, value: c.secrets.rowsAreUnderHeldKey, writable: true });
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000; await c.client.drainPendingWithdraws();
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'healed by the next drain');
+});
+
+test('HK21 a TypeError out of the self-heal at a DRAIN is reported and does not stop the drain: a queued withdraw still goes through', async () => {
+  const r = reporter();
+  const c = realClient({ deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1');
+  c.setRoute({ status: 503, body: '{}' } as never); await c.client.removeAtTap('pair-1'); c.setRoute(null);
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 1, 'PRECONDITION: one queued withdraw');
+  failInHeal(c, () => new TypeError('injected bug'));
+  c.setRoute(WITHDRAWN); c.clock.t += 10_000; await c.client.drainPendingWithdraws();
+  assert.ok(r.seen.some((x) => x.where === 'self-heal' && x.err instanceof TypeError), 'reported');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'and the drain still retired the queue');
+});
+
+test('HK22 a TypeError out of the HOLD\'s own question holds (nothing sent) and is reported as a hold error', async () => {
+  const r = reporter();
+  const c = realClient({ rowsAreUnderHeldKey: async () => { throw new TypeError('injected bug'); }, deps: { onUnexpected: r.onUnexpected } });
+  await c.client.trustAtTap('pair-1'); c.setHeldKey(KEY_2);
+  c.clock.t = IN_WINDOW_MS; c.calls.length = 0;
+  await c.client.renew('pair-1');
+  assert.equal(deposits(c), 0, 'held: a question that fails with a bug is a hold, never no hold');
+  assert.ok(r.seen.some((x) => x.where === 'hold' && x.err instanceof TypeError), 'reported as a hold error');
 });

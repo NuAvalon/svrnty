@@ -173,6 +173,11 @@ export interface BeaconClientDeps {
   requestTimeoutMs?: number;
   /** retry spacing for the durable pending-withdraw queue, attempt-indexed. */
   backoffMs?: (attempt: number) => number;
+  /**
+   * Told when the hold or the self-heal meets one of the language's own bug errors (TypeError, ReferenceError, SyntaxError, RangeError). Never needed for safety: the
+   * pair stays held either way. A store or IO failure is none of these and stays the heal's to retry quietly. This module prints nothing itself.
+   */
+  onUnexpected?: (where: 'hold' | 'self-heal', err: unknown) => void;
 }
 
 // ---- typed results: the ONLY shapes that cross the wire boundary ----
@@ -414,6 +419,12 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
    * time and is called immediately before the deposit leaves, never cached across an await. It ends on its own: a withdraw is confirmed, or the relay can no longer
    * match the row's epoch (relayDead), so a relay that never answers holds for about a week plus the margin at most.
    */
+  /** #956 S1b: a bug error is REPORTED, never swallowed (a bare catch once turned a ReferenceError into a silent no-op heal). Reporting itself can never throw into the caller. */
+  const reportUnexpected = (where: 'hold' | 'self-heal', e: unknown): void => {
+    if (!(e instanceof TypeError || e instanceof ReferenceError || e instanceof SyntaxError || e instanceof RangeError)) return;
+    try { deps.onUnexpected?.(where, e); } catch { /* a reporter that throws changes nothing */ }
+  };
+
   const heldByOlderKey = async (pairId: string): Promise<boolean> => {
     if (!deps.secrets.rowsAreUnderHeldKey) return false;
     const stored = await deps.store.get(pairId);
@@ -423,7 +434,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     for (const w of stored.pendingWithdraws) rows.set(w.rowId, { rowId: w.rowId, epoch: stored.rows.find((r) => r.rowId === w.rowId)?.epoch ?? '' });
     for (const r of stored.rows) if (!isSettled(r.state) && !relayDead(r.epoch, now())) rows.set(r.rowId, { rowId: r.rowId, epoch: r.epoch });
     if (rows.size === 0) return false;
-    try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, [...rows.values()])); } catch { return true; }
+    try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, [...rows.values()])); } catch (e) { reportUnexpected('hold', e); return true; }
   };
 
   /** A row in these states has no withdraw to send. */
@@ -444,7 +455,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     for (const row of stored.rows) {
       if (isSettled(row.state) || relayDead(row.epoch, now()) || stored.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
       let under = false;
-      try { under = await check.call(deps.secrets, pairId, [{ rowId: row.rowId, epoch: row.epoch }]); } catch { under = false; }
+      try { under = await check.call(deps.secrets, pairId, [{ rowId: row.rowId, epoch: row.epoch }]); } catch (e) { reportUnexpected('self-heal', e); under = false; }
       if (!under) { queueWithdrawNowAt(stored, row.rowId, now()); added = true; }
     }
     if (added) await commit(stored);
@@ -557,7 +568,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         queueWithdraw(rec, row.rowId, 0);                             // stored 'unknown': an earlier call may have sent it
       }
       try { await commit(rec); } catch { return 'unsaved'; }
-      try { await queueStaleRows(rec.pairId); } catch { /* the next drain tries again */ }
+      try { await queueStaleRows(rec.pairId); } catch (e) { reportUnexpected('self-heal', e); /* the next drain tries again */ }
       return 'unsent';                                                // owed stays derived: the next renew tries again once the hold has ended
     }
     const a = await post('deposit', built.body);
@@ -976,7 +987,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         // L6c: repair a half-done Remove before touching the pair's queue — same single commit,
         // then THIS drain retires the entries it queued.
         if (await repairHalfDoneRemove(stored.pairId)) { /* committed inside repair; rec reload below */ }
-        try { await queueStaleRows(stored.pairId); } catch { /* a failed self-heal must not stop the drain: it runs again next tick */ }
+        try { await queueStaleRows(stored.pairId); } catch (e) { reportUnexpected('self-heal', e); /* a failed self-heal must not stop the drain: it runs again next tick */ }
         const rec = (await deps.store.get(stored.pairId)) ?? stored;      // refresh after a repair
         let dirty = false;
         const resched = new Map<string, { attempts: number; nextAt: number }>();
