@@ -3153,3 +3153,38 @@ test('MG2 a standing row is kept until the relay can no longer match its epoch: 
   assert.equal((await c.store.get('pair-1'))!.rows.length, 0, 'AT the dead instant: dropped');
   assert.equal(c.seedCount(), 0, 'and the seed is released with it');
 });
+
+// ---------- Remove on a fast clock (its own commit: a seed is now released up to an hour later, a row lives an hour longer) ----------
+test('MG3 Remove on a device clock 1200 s FAST, inside the margin: the withdraw is SENT and confirmed, it is not skipped as if the epoch were closed', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.setRoute(WITHDRAWN); c.clock.t = EPOCH_END_MS + 601_000;      // past the old grace-only close; the relay's clock still reads before the epoch end
+  c.calls.length = 0; await c.client.removeAtTap('pair-1');
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'a withdraw request reached the relay (before this change the row was just dropped)');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'confirmed, so the entry left');
+  assert.equal(c.seedCount(), 0, 'and the seed went only after the confirmation');
+});
+
+for (const [label, shape] of SHAPES) {
+  test(`MG4 Remove on a device clock 1200 s FAST, ${label}: the withdraw is queued, retried and its seed kept, not dropped as if the epoch were closed`, async () => {
+    const c = realClient();
+    await c.client.trustAtTap('pair-1');
+    c.setRoute(shape); c.clock.t = EPOCH_END_MS + 601_000;
+    c.calls.length = 0; await c.client.removeAtTap('pair-1');
+    const rec = (await c.store.get('pair-1'))!;
+    assert.ok(c.calls.length > 0, 'an attempt was made');
+    assert.equal(rec.pendingWithdraws.length, 1, 'the entry is queued');
+    assert.equal(rec.rows.length, 1, 'the row is held');
+    assert.equal(c.seedCount(), 1, 'the seed that signs the withdraw is held');
+  });
+}
+
+test('MG5 Remove AT the dead instant keeps the old behaviour: the row is dropped and its seed released, no request is sent', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.setRoute(WITHDRAWN); c.clock.t = DEAD_MS;
+  c.calls.length = 0; await c.client.removeAtTap('pair-1');
+  assert.ok(!c.calls.some((u) => u.endsWith('/withdraw') || u.endsWith('/nonce')), 'nothing to withdraw: the relay can no longer match that epoch');
+  assert.equal(c.seedCount(), 0, 'the seed is released');
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0);
+});

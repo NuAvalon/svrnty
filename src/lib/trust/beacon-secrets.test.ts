@@ -320,3 +320,14 @@ test('SM3 BOUND (stated, not fixed): a device clock fast by MORE than the margin
   setNow(startOf(E + 1) + GRACE_MS + 7200 * 1000 - 1);   // 7200 s fast: the relay's clock still reads before its close
   assert.equal(await a.rowAuth(rowId), undefined, 'the margin covers a skew up to 3600 s; beyond it the device can still act early (a documented bound)');
 });
+
+test('MG6 planPairRows on a fast clock: a row of the previous epoch is still planned inside the margin (so a Remove withdraws it), and not at the dead instant', async () => {
+  const { a, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+  await a.newRow(PAIR_P, BigInt(E));                                   // an orphan: a seed with no pair record
+  const end = startOf(E + 1);
+  const ids = async (ms: number) => { setNow(ms); const plan = await a.planPairRows!(PAIR_P); return plan.map((r) => r.rowId); };
+  assert.deepEqual(await ids(end + 100_000), [rowOf(YP, E)], 'inside the relay\'s grace window: planned (this was already so)');
+  assert.deepEqual(await ids(end + GRACE_MS + 1_000), [rowOf(YP, E)], 'past the old grace-only close, inside the margin: planned (this was NOT planned before)');
+  assert.deepEqual(await ids(end + GRACE_MS + MARGIN_MS - 1), [rowOf(YP, E)], 'one millisecond before the dead instant: planned');
+  assert.deepEqual(await ids(end + GRACE_MS + MARGIN_MS), [], 'AT the dead instant: not planned: the relay can no longer match it');
+});

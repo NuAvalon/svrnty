@@ -209,6 +209,18 @@ export function visibleEpochsAt(ms: number): Set<string> {
   return out;
 }
 
+/**
+ * The epochs whose rows a Remove must still plan to withdraw: every visible epoch, plus the previous one until the relay can no longer match it
+ * (its end, the grace window and the skew margin: relayDead). A device clock ahead of the relay's would otherwise leave a row of an epoch the
+ * relay still accepts out of the plan. This is for what to WITHDRAW; what to poll and where to mint stay on visibleEpochsAt.
+ */
+export function epochsToPlanAt(ms: number): Set<string> {
+  const w: any = wire;
+  const out = visibleEpochsAt(ms), cur = Math.floor(ms / 1000 / w.EPOCH_SECONDS);
+  if (!relayDead(cur - 1, ms)) out.add(String(cur - 1));
+  return out;
+}
+
 export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const base = (deps.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const now = deps.now ?? (() => Date.now());
@@ -709,11 +721,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const removeCommitBody = async (rec: PairRecord): Promise<void> => {
     rec.firstMatchEpoch = null;                                       // G2 TOMBSTONE: wins the merge over any stale clock
     rec.tap = { gen: (rec.tap?.gen ?? 0) + 1, trust: false };         // L13: intent false under a new gen
-    const live = visibleEpochs(now());
     for (const row of rec.rows) {
       // 'unknown' rows withdraw too (L2c/L10): the seed is kept until confirmed or closed.
       if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-      if (!live.has(row.epoch)) {                                     // epoch closed: drop + release (L11)
+      if (relayDead(row.epoch, now())) {                              // the relay can no longer match the epoch (its clock + the skew margin): drop + release (L11)
         dropRow(rec, row);
         await deps.secrets.releaseRow(row.rowId);
         continue;
@@ -727,7 +738,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
     // relay with nothing to sign its withdraw.
     if (deps.secrets.planPairRows) {
       for (const t of await deps.secrets.planPairRows(rec.pairId)) {
-        if (!live.has(t.epoch)) continue;
+        if (relayDead(t.epoch, now())) continue;                    // a planned row the relay can no longer match is ignored (the margin applies here too)
         rec.rows.push({ rowId: t.rowId, epoch: t.epoch, H_e: t.H_e, N: t.N, state: 'unknown' });
       }
     }
@@ -745,7 +756,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
       let added = false;
       for (const row of rec.rows) {
         if (row.state === 'withdrawn' || row.state === 'spent' || row.state === 'unreachable') continue;
-        if (!live.has(row.epoch)) continue;
+        if (relayDead(row.epoch, now())) continue;                  // only a row the relay can still match is queued
         if (rec.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
         queueWithdrawNow(rec, row.rowId);
         added = true;
@@ -786,11 +797,10 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
 
   /** The Remove queue drain: a confirmed withdraw removes its entry (idempotent on the server). */
   const drainQueuedWithdraws = async (rec: PairRecord): Promise<void> => {
-    const live = visibleEpochs(now());
     const cur = epochAt(now());
     for (const w of [...rec.pendingWithdraws]) {
       const row = rec.rows.find((r) => r.rowId === w.rowId);
-      if (!row || (!live.has(row.epoch) && Number(row.epoch) <= cur - 1)) {
+      if (!row || relayDead(row.epoch, now())) {
         unqueueWithdraw(rec, w.rowId, row?.epoch ?? String(cur));
         if (row) await deps.secrets.releaseRow(row.rowId);
         continue;
