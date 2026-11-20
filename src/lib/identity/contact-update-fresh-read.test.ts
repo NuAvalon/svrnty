@@ -196,18 +196,26 @@ test('GUARD: the share-settings handler reconciles consent from the record read 
   assert.match(handler, /if \(!after\) \{[^]*NO_CONSENT[^]*return;/, 'a record that is gone still reconciles the mirror before returning');
 });
 
-test('GUARD: block, share-settings and remove reconcile from a record read back after the write, or from NO_CONSENT', () => {
+test('GUARD: block and share-settings reconcile from a record read back after the write, or from NO_CONSENT; remove reconciles from a record read BEFORE the removal', () => {
   const ui = src('../../components/ContactManagement.tsx')
     .split('\n')
     .filter((l) => !/^\s*\/\//.test(l))
     .join('\n');
   const reconciles = callsOf(ui, 'reconcileAllowedOnConsentChange');
-  assert.equal(reconciles.length >= 4, true, 'share settings (2), block, remove');
+  assert.equal(reconciles.length >= 3, true, 'share settings (2), block (remove goes through reconcileAllowedOnRemove, below)');
   for (const r of reconciles) {
     const consent = /consent:\s*([^\n]*)/.exec(r)?.[1] ?? '';
     assert.match(consent, /^(NO_CONSENT|consentFromRecord\((afterContact|afterBlock)\)|afterBlock \? consentFromRecord\(afterBlock\) : NO_CONSENT),?\s*\}?\)?;?$/, `a consent is built from something else: ${consent}`);
   }
   assert.doesNotMatch(ui, /consent:\s*\{/, 'no consent object literal is built in the component');
+  // REMOVE: its consent is the stored record's, read before the record is gone, never anything built from screen state; and it is the ONLY caller of the removal reconcile
+  const removes = callsOf(ui, 'reconcileAllowedOnRemove');
+  assert.equal(removes.length, 1, 'one caller of the removal reconcile');
+  assert.match(removes[0], /consentBefore,\s*\}\)/, 'it is handed consentBefore as it is');
+  assert.match(ui, /const recordBefore = await getContact\(contactId\);/, 'the record comes from the store');
+  assert.match(ui, /const consent = recordBefore \? consentFromRecord\(recordBefore\) : null;/, 'and the consent is derived from that record, or null when there is none');
+  assert.match(ui, /const consentBefore = await withSafetyWrite\(contactId, async \(\) => \{/, 'inside the lock that guards the removal');
+  assert.doesNotMatch(ui, /consentBefore:\s*\{/, 'no consent object literal is handed to it');
 });
 
 test('GUARD: the unlock sweep and break-trust build from the held record', () => {
