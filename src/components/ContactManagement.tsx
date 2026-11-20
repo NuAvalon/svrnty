@@ -66,7 +66,7 @@ import { replaceNotice } from '@/lib/trust/beacon-key-replace-copy';
 import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
-import { reconcileAllowedOnConsentChange, reconcileAllowedOnRemove } from '@/lib/sync/reconcile-allowed-hook';
+import { reconcileAllowedOnConsentChange, reconcileAllowedOnRemove, runAllowedRevokeTick } from '@/lib/sync/reconcile-allowed-hook';
 import { toggleTagPatch, renameTagPatch, removeTagPatch, addTagPatch } from '@/lib/contacts/tag-patches';
 import { shareSettingsPatch, consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
 import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
@@ -368,6 +368,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     // discovery off (prod: no satellite pin) makes no request to /api/satellite at all and advertises nothing.
     let stopped = false;
     let handle: { stop: () => void } | undefined;
+    // #959: ask the satellite what it still lists for this owner and send every DELETE that is owed, NOW and whether or not the PSI session work below manages to start (it needs the
+    // satellite pin). Quiet, gated, and a no-op while the identity is locked.
+    void runAllowedRevokeTick(fingerprint);
     void startPsiDiscovery(identity, { cancelled: () => stopped }).then((h) => {
       if (h) handle = h;
     });
@@ -544,21 +547,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
       // Remove records the removal FIRST (a restore rebuilds the latch from that list), then sets the beacon latch, and only then deletes the contact. A contact with no
       // canonical fingerprint has no pair to latch and is simply deleted (see removeWithLatch).
-      // The consent the satellite row was mirroring is read INSIDE the lock and immediately before the removal, so a poll-driven write that opens a row cannot land between the read and the removal and leave
-      // the person just removed on the satellite's list. A contact that never had a row has nothing to revoke, so Remove sends it nothing (see reconcileAllowedOnRemove). With no stored record there is no consent
-      // to read (null); a locked session already stops the whole Remove before anything is removed, as it did before this read existed.
-      const consentBefore = await withSafetyWrite(contactId, async () => {
-        const recordBefore = await getContact(contactId);
-        const consent = recordBefore ? consentFromRecord(recordBefore) : null;
-        await removeContactWithLatch(fingerprint, contactId, removedFp);
-        return consent;
-      });
+      // The satellite's row for this person is revoked from the owner's allowed set (see reconcileAllowedOnRemove): a contact that was never added sends nothing, and a revoke that
+      // does not go out is still owed at the next change or tick. No consent is read here: the set, not a read made before the removal, says whether a row may exist.
+      await withSafetyWrite(contactId, () => removeContactWithLatch(fingerprint, contactId, removedFp));
       if (removedFp) {
-        void reconcileAllowedOnRemove({
-          ownerFp: fingerprint,
-          senderFp: removedFp,
-          consentBefore,
-        });
+        void reconcileAllowedOnRemove({ ownerFp: fingerprint, senderFp: removedFp });
       }
       setShowDetailDialog(false);
       setShowEditDialog(false);
