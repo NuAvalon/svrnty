@@ -96,6 +96,17 @@ test('C7b GENERATION-BOUND: the stored generation must EQUAL the held key\'s, at
   assert.deepEqual(asked, [P1], 'asked for P1; not asked for a pair with no confirmed row');
 });
 
+test('C7d NEITHER SIDE KNOWN IS NOT EQUAL: an entry with no generation (an old record) and no held generation must not confirm (undefined === undefined), nor must either missing side alone', async () => {
+  const ask = (map: unknown, held: unknown) => createConfirmedPort(async () => map, (async () => held) as never).isConfirmed(P1);
+  assert.equal(await ask({ [P1]: {} }, undefined), false, 'no stored generation, no held generation');
+  assert.equal(await ask({ [P1]: {} }, null), false, 'no stored generation, a null held generation');
+  assert.equal(await ask({ [P1]: { generation: undefined } }, undefined), false, 'a stored generation of undefined, no held generation');
+  assert.equal(await ask({ [P1]: {} }, 5), false, 'no stored generation, a held generation');
+  assert.equal(await ask({ [P1]: { generation: 5 } }, undefined), false, 'a stored generation, no held generation');
+  // CONTROL: the same calls with both sides present and equal DO confirm, so each false above is the missing side and not the harness
+  assert.equal(await ask({ [P1]: { generation: 5 } }, 5), true);
+});
+
 test('C7c THE NEGATIVE (gate 15): confirmed at N, then the held key is replaced by N+1 -> NOT confirmed (nothing is asked of the wire) until a live confirm records N+1', async () => {
   let map = withConfirmed({}, P1, 5);
   let held = 5;
