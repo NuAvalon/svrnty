@@ -3119,9 +3119,10 @@ const realClient = (over: { rowsAreUnderHeldKey?: (pairId: string, rows: Readonl
     slotOf: async (_x, y, e) => ({ H_e: String(10_000 + Number(y[0]) * 1000 + Number(e)), N: String(20_000 + Number(y[0]) * 1000 + Number(e)) }),   // depends on the key, like the real derivation
   });
   const secrets = over.rowsAreUnderHeldKey ? { ...adapter, rowsAreUnderHeldKey: over.rowsAreUnderHeldKey } : adapter;
-  const fetch: FakeFetch = (url) => { calls.push(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
+  let onRequest: ((url: string) => Promise<void>) | null = null;       // a hook that runs INSIDE a request, before it is answered
+  const fetch: FakeFetch = async (url) => { calls.push(url); if (onRequest) await onRequest(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
   const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets, ...(over.prover ? { prover: over.prover } : {}) });
-  return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; }, setHeldKey: (p: [bigint, bigint]) => { heldY = p; } };
+  return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; }, setHeldKey: (p: [bigint, bigint]) => { heldY = p; }, onRequest: (fn: (url: string) => Promise<void>) => { onRequest = fn; } };
 };
 
 for (const [label, shape] of SHAPES) {
@@ -3330,4 +3331,43 @@ test('HK12 CONTROL for HK11: the same slow deposit with the key UNCHANGED does g
   await building; release(); await tap;
   assert.equal(deposits(c), 1);
   assert.equal((await c.store.get('pair-1'))!.rows.length, 1);
+});
+
+test('HK13 ORDER: the key is re-read AFTER the write-ahead commit. A replace that lands DURING that commit is seen and nothing is sent (re-reading before the commit would miss it)', async () => {
+  const c = realClient();
+  const cas = c.store.cas.bind(c.store);
+  c.store.cas = async (id, v, next) => {                              // the key is replaced right after the write-ahead row became durable
+    const ok = await cas(id, v, next);
+    if (ok && next.rows.some((r) => r.state === 'unknown')) c.setHeldKey(KEY_2);
+    return ok;
+  };
+  await c.client.trustAtTap('pair-1');
+  assert.equal(deposits(c), 0, 'the re-read after the commit saw the new key: nothing left');
+});
+
+test('HK14 a withdraw the relay REFUSES because the deposit has not landed yet keeps its entry queued; the deposit lands under the stale key and the NEXT drain withdraws it', async () => {
+  // A replace lands after the re-read and before the fetch: it queues the write-ahead row, and the drain can try that withdraw BEFORE the deposit reaches the relay.
+  // The relay has no such row yet and answers refused("auth"). The entry must stay queued: it leaves only on a confirmed withdraw (or when the relay can no longer match the epoch).
+  const c = realClient();
+  const baseFetch = c.f.fetch;
+  void baseFetch;
+  let gapDone = false;
+  const fetchGap = async (url: string) => {
+    if (url.endsWith('/deposit') && !gapDone) {
+      gapDone = true;
+      c.setHeldKey(KEY_2); await queueEveryRow(c);                    // the replace lands in the gap: it queues the write-ahead row
+      c.setRoute((u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : refused('auth')));   // the relay has no row yet
+      c.clock.t += 5_000; await c.client.drainPendingWithdraws();     // the drain tries first, and is refused
+      c.setRoute(null);
+    }
+  };
+  c.onRequest(fetchGap);
+  await c.client.trustAtTap('pair-1');
+  const rec = (await c.store.get('pair-1'))!;
+  assert.equal(rec.pendingWithdraws.length, 1, 'the refused withdraw did NOT drop the entry');
+  assert.equal(c.seedCount(), 1, 'and its seed is still held');
+  c.setRoute(WITHDRAWN); c.clock.t += 60_000;                         // the deposit has landed; the relay now has the row
+  await c.client.drainPendingWithdraws();
+  assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0, 'the next drain withdraws it');
+  assert.equal(c.seedCount(), 0, 'and releases the seed only after the confirmation');
 });
