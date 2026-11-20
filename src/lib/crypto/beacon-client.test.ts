@@ -3505,3 +3505,19 @@ test('HK22 a TypeError out of the HOLD\'s own question holds (nothing sent) and 
   assert.equal(deposits(c), 0, 'held: a question that fails with a bug is a hold, never no hold');
   assert.ok(r.seen.some((x) => x.where === 'hold' && x.err instanceof TypeError), 'reported as a hold error');
 });
+
+test('HK23 a reporter that itself THROWS changes nothing: the held deposit still returns unsent, the drain still retires the queue, and nothing is sent', async () => {
+  const boom = { onUnexpected: () => { throw new Error('reporter exploded'); } };
+  const held = realClient({ deps: boom });
+  await held.client.trustAtTap('pair-1'); held.setHeldKey(KEY_2);
+  failInHeal(held, () => new TypeError('injected bug'));
+  held.clock.t = IN_WINDOW_MS; held.calls.length = 0;
+  await held.client.renew('pair-1');                       // must not reject
+  assert.equal(deposits(held), 0, 'held');
+  const drained = realClient({ deps: boom });
+  await drained.client.trustAtTap('pair-1');
+  drained.setRoute({ status: 503, body: '{}' } as never); await drained.client.removeAtTap('pair-1'); drained.setRoute(null);
+  failInHeal(drained, () => new TypeError('injected bug'));
+  drained.setRoute(WITHDRAWN); drained.clock.t += 10_000; await drained.client.drainPendingWithdraws();   // must not reject
+  assert.equal((await drained.store.get('pair-1'))!.pendingWithdraws.length, 0, 'the drain still retired the queue');
+});
