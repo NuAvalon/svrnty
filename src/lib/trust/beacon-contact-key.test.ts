@@ -301,3 +301,20 @@ test('K21 the plaintext-backup contact restore writes ONLY through addContact (i
   assert.match(code, /ConstraintError[\s\S]{0,400}if \(existing\) return existing;/, 'a duplicate fingerprint returns the held record');
   assert.ok(add.length > 0);
 });
+
+test('KV2 an UNSIGNED card, a card whose signature does not match what it now says, a card signed by a DIFFERENT identity, and a card whose fingerprint does not belong to its key never yield a replace (CONTROL: the same newer key on a valid card does)', async () => {
+  const held = { beacon_public_key: KEY_A, beacon_key_generation: G(5) };
+  const verdictOf = async (c: IdentityCard) => {
+    const d = await classifyImportedCard(c, { knownBeacon: knownBeaconOf(held) });
+    return decideBeaconIntake(held, { beaconKey: d.beaconKey, beaconKeyDropped: d.beaconKeyDropped }, READABLE).verdict;
+  };
+  const newer = { beacon_public_key: KEY_B, beacon_key_generation: G(6) };
+  assert.equal(await verdictOf(await signed(newer)), 'replace', 'CONTROL: a valid signed card with a newer key');
+  assert.notEqual(await verdictOf(card(alice, newer)), 'replace', 'unsigned');
+  const tampered = JSON.parse(JSON.stringify(await signed({ beacon_public_key: KEY_A, beacon_key_generation: G(6) }))) as IdentityCard;
+  (tampered.identity as any).beacon_public_key = KEY_B; (tampered.identity as any).beacon_key_generation = G(7);   // changed after it was signed
+  assert.notEqual(await verdictOf(tampered), 'replace', 'altered after signing');
+  const bob = await makeCanonicalId('bob');
+  assert.notEqual(await verdictOf(await signIdentityCard(card(alice, newer), bob.privateKey, bob.passphrase)), 'replace', 'signed by a different identity');
+  assert.notEqual(await verdictOf(await signed({ ...newer, public_key: bob.publicKey })), 'replace', 'the fingerprint does not belong to the key the card carries');
+});

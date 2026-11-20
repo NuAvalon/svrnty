@@ -55,6 +55,8 @@ import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { authorityPinConflictMessage, gateAuthorityPinConflictMessage } from '@/lib/identity/authority-pin-copy';
 import { publicKeyOf as beaconPublicKeyOf } from '@/lib/identity/beacon-key-record';
 import { ownBeaconFrom, knownBeaconOf, decideBeaconIntake } from '@/lib/trust/beacon-contact-key';
+import { replaceContactBeaconKey } from '@/lib/trust/beacon-key-intake-real';
+import { replaceNotice } from '@/lib/trust/beacon-key-replace-copy';
 import { beaconKeyConflictMessage } from '@/lib/identity/beacon-key-copy';
 import { canonicalAuthorityPin } from '@/lib/identity/authority-pin';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
@@ -162,6 +164,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [noIdentity, setNoIdentity] = useState(false);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
   const [giverBlocked, setGiverBlocked] = useState(false);
+  // The line shown on THIS device's own done screen when a newer signed card from a known contact replaced what is saved for them (never on a view the other person sees).
+  const [keyNotice, setKeyNotice] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -301,6 +305,12 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             ...(peer.deviceMailbox ? { device_mailbox: peer.deviceMailbox } : {}),
             ...(peer.authorityPin && !existing.next_authority_commitment ? { next_authority_commitment: peer.authorityPin } : {}),
           });
+        }
+        if (beaconIntake.verdict === 'replace' && beaconIntake.replace) {
+          // A newer SIGNED card for a contact we hold a beacon key for (the verdict exists only under a valid signature; `existing` was looked up by the card's verified
+          // fingerprint). The new key is NEVER written by the back-fill above: `fields` is empty for a replace. It goes through the one release-first function.
+          // The words name the BOOK's contact (existing.name), never the name the card carries.
+          setKeyNotice(replaceNotice(await replaceContactBeaconKey(ownerFp, { contact: existing, next: beaconIntake.replace }), existing.name));
         }
         // Nothing here confirms a pair: a ceremony card is NOT bound to this session (the link is not single-use, serves the same card for its whole 7-day life to anyone
         // holding it, and carries no joiner nonce), so it is not evidence that the key is fresh. See beacon-confirmed.ts.
@@ -553,6 +563,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             <>
               <h2 style={headingStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).heading}</h2>
               <p style={subStyle}>{alreadyKnownCopy(peer?.name, giverBlocked).sub}</p>
+              {keyNotice && <p style={subStyle}>{keyNotice}</p>}
             </>
           ) : (
             <>
