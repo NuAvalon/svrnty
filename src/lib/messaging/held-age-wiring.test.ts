@@ -46,15 +46,18 @@ test('AW1 every bare delete of a note row is reached only for a NON-held note: t
   assert.ok(guard > 0 && ne.indexOf('note.retention') > guard, 'noteExpired answers false for a held note BEFORE it reads the note\'s retention (the signature names the type; the READ is note.retention)');
 });
 
-test('AW2 the ONLY delete handed to the commit is the counted one: one `deletes` argument, on notes only, in the same compare-and-swap as the count row, under the delete verdict', () => {
+test('AW2 the ONLY delete handed to the commit is the counted one, in ONE shared function used by the sweep and by the owner: one `deletes` argument, on notes only, in the same compare-and-swap as the count row', () => {
   assert.equal((STORE.match(/\[\{ store: 'notes', key: noteId \}\]/g) ?? []).length, 1, 'one place passes a note row to delete');
-  const step = cut(STORE, 'async function heldAgeStep(');
-  const del = step.slice(step.indexOf("if (action === 'delete') {"), step.indexOf('} else {'));
-  assert.match(del, /expects\.push\(\{ store: 'settings', key: HELD_COUNTS_KEY, enc: counter\.enc \}\);/, 'the count row is compared in the same transaction');
+  const del = cut(STORE, 'async function commitCountedHeldDelete(');
+  assert.match(del, /\{ store: 'settings', key: HELD_COUNTS_KEY, enc: counter\.enc \}/, 'the count row is compared in the same transaction');
   assert.match(del, /applyChange\(usable, heldInboundSender\(note\), null\)/, 'the count row drops by the deleted note');
   assert.match(del, /: \{ state: 'dirty' \};/, 'a count row that cannot be adjusted is written DIRTY, never a guessed number');
   assert.match(del, /txCommitIfUnchanged\(expects, \[\{ store: 'settings', value: countRow \}\], \[\{ store: 'notes', key: noteId \}\]\)/, 'count put and note delete in ONE commit');
-  assert.match(del, /if \(wroteDirty\)|wroteDirty = usable === null;/, 'and a dirty write schedules a rebuild');
+  assert.match(del, /if \(committed && usable === null\) scheduleHeldCountsReconcile\(\);/, 'and a dirty write schedules a rebuild');
+  // exactly two callers: the sweep (under its delete verdict) and the owner's delete
+  assert.equal((STORE.match(/\bcommitCountedHeldDelete\(/g) ?? []).length, 3, 'the definition and two callers');
+  assert.match(cut(STORE, 'async function heldAgeStep('), /if \(action === 'delete'\) \{\s*committed = await commitCountedHeldDelete\(noteId, priorRow, note\);/, 'the sweep deletes only under its delete verdict');
+  assert.match(cut(STORE, 'async function ownerHeldStep('), /if \(what === 'delete'\) \{\s*committed = await commitCountedHeldDelete\(noteId, priorRow, note\);/, 'the owner deletes through the same function');
   const commit = cut(STORE, 'async function txCommitIfUnchanged(');
   assert.match(commit, /deletes: Array<\{ store: 'notes'; key: string \}> = \[\]/, 'the commit can delete a NOTES row only: never a settings row, so never the count row');
   assert.equal((commit.match(/\.delete\(d\.key\)/g) ?? []).length, 1);
@@ -66,7 +69,7 @@ test('AW3 the sweep step reads its row INSIDE the retry loop, skips what it cann
   assert.ok(step.indexOf('for (let attempt') < step.indexOf("txGet<NoteRow>('notes', noteId)"), 'the row is read inside the loop: the decision is always made on the latest copy');
   assert.match(step, /catch \{\s*return 'unreadable';\s*\}/, 'a note that cannot be decrypted is skipped: unknown age means keep');
   assert.ok(step.indexOf("if (action === 'keep') return 'keep';") > 0 && step.indexOf("if (action === 'keep') return 'keep';") < step.indexOf('txCommitIfUnchanged('), 'keep returns before any write');
-  assert.equal((step.match(/txCommitIfUnchanged\(/g) ?? []).length, 2, 'two writes only: the stamp and the counted delete');
+  assert.equal((step.match(/txCommitIfUnchanged\(/g) ?? []).length, 1, 'one direct write (the stamp); the delete goes through the shared counted delete (AW2)');
   assert.match(step, /\{ store: 'notes', key: noteId, enc: priorRow\.enc \}/, 'the note row it read is the first thing compared');
   assert.match(step, /heldSweepAction\(note, nowMs, limits\?\.limitDays, limits\?\.graceDays\)/, 'the verdict is the one rule (held-note.ts), given the owner\'s clock');
   assert.match(step, /stampedHeldNote\(note, action, nowMs\)/, 'a stamp is that rule\'s own rewrite');

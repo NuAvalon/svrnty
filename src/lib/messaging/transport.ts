@@ -439,6 +439,13 @@ export async function acceptInboundNote(args: {
     args.onRewriteRefused?.();
     return prior;
   }
+  // THE HOLD IS THE OWNER'S: a held note leaves it only by the owner's own action (the hold view's move), never by the sender's timing. An ADMITTED sender (unblocked since) re-sending, in a fresh frame, a note this
+  // device already holds is a DUPLICATE: the stored held row is left exactly as it is (its stamps too), and the frame's ratchet advance is still committed, exactly as the refusal above does (session continuity is
+  // not content). No write at all (so the count row and the thread are untouched), no creation reported (so no receipt beyond what a duplicate gets), and no rewrite-refused signal: identical content is not an attack.
+  if (prior && !held && isHeldNote(prior)) {
+    if (staged) await staged.commit();
+    return prior;
+  }
   const sent_at = args.wire.sent_at || new Date().toISOString();
   const record: NoteRecord = {
     note_id: args.wire.note_id,

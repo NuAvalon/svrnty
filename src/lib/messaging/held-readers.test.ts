@@ -40,8 +40,8 @@ test('S1 the include-held readers are used ONLY where they are meant to be: exac
   // store.ts: the definition + the replay guard (listInboundSentAtFrom) + the cap count (countHeldFrom) + deleteThread (it must SEE the held notes to leave them,
   // and to keep the thread row they hang on). Nothing else reads a held note by name.
   // When the hold view and the evidence export are built they add THEIR file here, in their own commit, with a reason.
-  assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 6 });   // +1: sweepHeldAge walks every thread's held notes once to apply the hold's age limit, OFF the receive path, at unlock (held-note.ts says what it does). +1: reconcileHeldCounts walks every note once, OFF the receive path, to rebuild the held-count row (held-counts.ts)
-  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 5, 'src/lib/messaging/transport.ts': 7 });   // store.ts +1: sweepHeldAge, like the reconcile, lists the threads to reach their held notes; // transport = the accept path reading threads INCLUDING held ones, twice: (1) the claimed thread's participants (thread membership: a sender who is not in the thread they name never joins it), (2) finding the note's thread. 1 import + 2 per read in the injectable io field (name, type) + 2 in the ONE call (injected, default)
+  assert.deepEqual(occurrences('listNotesIncludingHeld'), { 'src/lib/messaging/store.ts': 8 });   // +2: listHeldFrom and listHeldSenders (the hold view's two readers: one sender's held notes, and who has any) walk every thread's held notes once, user-initiated and off the receive path. +1: sweepHeldAge walks every thread's held notes once to apply the hold's age limit, OFF the receive path, at unlock (held-note.ts says what it does). +1: reconcileHeldCounts walks every note once, OFF the receive path, to rebuild the held-count row (held-counts.ts)
+  assert.deepEqual(occurrences('listThreadsIncludingHeld'), { 'src/lib/messaging/store.ts': 7, 'src/lib/messaging/transport.ts': 7 });   // store.ts +2: listHeldFrom and listHeldSenders list the threads to reach their held notes. +1: sweepHeldAge, like the reconcile, lists the threads to reach their held notes; // transport = the accept path reading threads INCLUDING held ones, twice: (1) the claimed thread's participants (thread membership: a sender who is not in the thread they name never joins it), (2) finding the note's thread. 1 import + 2 per read in the injectable io field (name, type) + 2 in the ONE call (injected, default)
   // countHeldFrom is the FULL SCAN. It is defined in store.ts and called there ONLY as the fallback of countHeldFromFast; transport.ts names it for its import and the io seam's type (tests swap the
   // count), and held-counts.ts only in a comment. The scan is no longer on the receive path unless the count row cannot be used.
   assert.deepEqual(occurrences('countHeldFrom'), { 'src/lib/messaging/held-counts.ts': 1, 'src/lib/messaging/store.ts': 2, 'src/lib/messaging/transport.ts': 4 });
@@ -109,6 +109,7 @@ test('S7 the modules that import the messaging store (or its index) are exactly 
   }).sort();
   assert.deepEqual(importers, [
     'app/msg/page.tsx',
+    'src/components/held/held-port.ts', // the hold view's LOCAL port: the owner's own list, move-to-inbox and delete of held notes (four named functions, pinned in hold-view-wiring.test.ts HW2); the view itself imports no store and nothing that sends
     'src/components/notes/NotesInbox.tsx',
     'src/components/notes/notes-field.ts',
     'src/components/notes/seed-demo-notes.ts',
@@ -124,7 +125,7 @@ test('S7 the modules that import the messaging store (or its index) are exactly 
   ]);
 });
 
-test('S8 the held flag on a note or thread is written in exactly three places and never cleared by an assignment: no path can turn a held NOTE back into an ordinary one (a THREAD row loses the flag only through clearedHeld: S9)', () => {
+test('S8 the held flag on a note or thread is written in exactly three places and never cleared by an ASSIGNMENT or a `held: false` (NAME- and PLACE-based: it cannot see a record that is REBUILT without the flag, which is why the accept\'s duplicate rule is pinned by BEHAVIOUR in held-accept.test.ts HD1; a note leaves the hold only through clearedHeldNote in the owner\'s release, and a THREAD row loses the flag only through clearedHeld: S9)', () => {
   // `held: true` on a RECORD is written by transport.ts (the note and the thread it creates) and by deleteThread in store.ts. Other files use the word for unrelated
   // things (a mailbox hold in consume-mailbox and the lens reader, the seam result in live-book-poll) and are deliberately not counted.
   const writes = (f: string) => (text(f).match(/\bheld: true as const\b|\bheld: true \}\)/g) || []).length;
@@ -142,11 +143,16 @@ test('S8 the held flag on a note or thread is written in exactly three places an
   assert.deepEqual(clearers, []);
 });
 
-test('S9 a thread row loses its held flag in ONE place only: clearedHeld, called once from the accept path, on a thread and never on a note', () => {
+test('S9 a thread row loses its held flag in TWO places only, both through clearedHeld and both on a THREAD: the accept path (an admitted arrival) and the owner\'s release in the same commit as the note; never on a note (the note twin is clearedHeldNote)', () => {
   const callers = SOURCES.filter((f) => f !== 'src/lib/messaging/held-note.ts' && /\bclearedHeld\(/.test(text(f)));
-  assert.deepEqual(callers, ['src/lib/messaging/transport.ts']);
+  assert.deepEqual(callers, ['src/lib/messaging/store.ts', 'src/lib/messaging/transport.ts']);
   const t = text('src/lib/messaging/transport.ts');
   assert.equal((t.match(/\bclearedHeld\(/g) || []).length, 1);
   assert.match(t, /clearedHeld\(thread\)/, 'its argument is the THREAD row');
   assert.match(t, /!held && isHeldThread\(thread\)/, 'only for an ADMITTED arrival on a thread that is held');
+  const st = text('src/lib/messaging/store.ts');
+  assert.equal((st.match(/\bclearedHeld\(/g) || []).length, 1, 'one call in the store');
+  assert.match(st, /if \(isHeldThread\(thread\)\) puts\.push\(\{ store: 'threads', value: \{ thread_id: thread\.thread_id, enc: await encryptJson\(clearedHeld\(thread\)\) \} satisfies ThreadRow \}\);/, 'the owner\'s release un-holds the THREAD inside the same commit as the note');
+  assert.doesNotMatch(st + t, /clearedHeld\((note|n|rec|record|row|prior)\b/, 'never on a note: a note leaves the hold through clearedHeldNote, in the release commit only');
+  assert.equal(SOURCES.filter((f) => f !== 'src/lib/messaging/held-note.ts' && /\bclearedHeldNote\(/.test(text(f))).join(','), 'src/lib/messaging/store.ts', 'the note twin has ONE caller: the owner\'s release');
 });
