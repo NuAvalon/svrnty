@@ -13,7 +13,7 @@
 // fallback). Truly-static assets (icons, manifest) stay cache-first. Bumping
 // CACHE_NAME forces every existing browser to install this worker, and the
 // activate handler then deletes the poisoned v1 cache.
-const CACHE_NAME = 'svrnty-v4'; // v4: notificationclick (phase 1 mail notifications); bump so browsers install this worker
+const CACHE_NAME = 'svrnty-v5'; // v5: the satellite's allowed list is never handled (below); v4: notificationclick (phase 1 mail notifications). Bump so browsers install this worker and activate purges the old cache
 
 // Only genuinely-static, rarely-changing assets are pre-cached. The HTML
 // document is deliberately NOT pre-cached — it must always come from the network
@@ -93,6 +93,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(networkFirst(request, /* fallbackToRoot */ true));
     return;
   }
+
+  // The satellite's allowed-senders list is NEVER handled here. It is the truth a revoke is derived from, so an old cached copy (served when the network fails) would hide a row that is
+  // owed a DELETE; and it is the owner's list of who they allow, which must not sit in plaintext in Cache Storage. Let the browser fetch it plainly: a failure stays a failure.
+  if (url.pathname.startsWith('/api/satellite/allowed/')) return;
 
   // Versioned build assets + API: network-first so a redeploy can never strand
   // a browser on dead chunk hashes; cached copy is an offline fallback only.
