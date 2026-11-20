@@ -105,6 +105,11 @@ export function clearedHeldNote<T extends Flagged>(note: T): T {
   return Object.fromEntries(Object.entries(note).filter(([k]) => !HOLD_KEYS.includes(k))) as T;
 }
 
+/** When this device held the note, as a number to sort by: held_at when it parses, else the sender's own time, else 0 (a note with no usable time sorts last). The hold view lists newest first by this. */
+export function heldSince(note: Flagged & { held_at?: unknown; sent_at?: unknown }): number {
+  return timeMs(note.held_at) ?? timeMs(note.sent_at) ?? 0;
+}
+
 /** What the hold view says about ONE held note's age: nothing, or that the sweep has marked it and the earliest moment it can be removed. */
 export type HeldExpiry = { expiring: false } | { expiring: true; removableAfterMs: number };
 

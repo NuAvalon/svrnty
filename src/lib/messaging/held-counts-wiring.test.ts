@@ -44,9 +44,9 @@ test('W1 the row is named only by held-counts.ts, store.ts and the allowed-prefi
 
 test('W2 no note row is put except through writeNote, and a note row is deleted at exactly two known sites: a new one must update the count in the same transaction', () => {
   assert.equal((code.match(/txPut\('notes'/g) ?? []).length, 0, 'no direct put into the notes store');
-  assert.equal((code.match(/store: 'notes', value:/g) ?? []).length, 2, 'writeNote is the one place a note is put that can change a count; the other is heldAgeStep\'s STAMP, which rewrites the same held row (same sender, still held), so no count moves');
+  assert.equal((code.match(/store: 'notes', value:/g) ?? []).length, 3, 'writeNote is the one place a NEW or changed note is put; the others are heldAgeStep\'s STAMP (same held row, same sender, so no count moves) and the owner\'s RELEASE, which puts the ordinary note in the SAME commit as the count row dropping by one (commitCountedHeldRelease)');
   assert.equal((code.match(/objectStore\('notes'\)\.put\(/g) ?? []).length, 0, 'no raw put on the notes store object');
-  assert.equal((code.match(/txCommitIfUnchanged\(/g) ?? []).length, 5, 'the commit helper is defined once and called four times: by writeNote, by the reconcile, and twice by heldAgeStep (its stamp, and its COUNTED delete); a fifth caller is a new write path');
+  assert.equal((code.match(/txCommitIfUnchanged\(/g) ?? []).length, 6, 'the commit helper is defined once and called five times: by writeNote, by the reconcile, by heldAgeStep\'s stamp, by the shared COUNTED delete and by the owner\'s COUNTED release; a sixth caller is a new write path');
   // The two delete sites: the read function's expiry of an ORDINARY note (a held note never expires on the sender's retention: pin S3), and deleteThread, which keeps every held note.
   assert.equal((code.match(/txDelete\('notes'/g) ?? []).length, 2, 'a third delete of a note row (the hold view, the 30-day expiry, an unfreeze) must go through the count row in the SAME transaction, then raise this number');
   assert.match(fn('async function deleteThread('), /if \(!isHeldNote\(n\)\) await txDelete\('notes'/, 'deleteThread deletes only non-held notes, so it changes no count');

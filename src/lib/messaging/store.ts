@@ -3,7 +3,7 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
-import { heldSweepAction, isHeldNote, noteExpired, stampedHeldNote, visibleThreads, type HeldSweepAction } from './held-note';
+import { clearedHeld, clearedHeldNote, heldSince, heldSweepAction, isHeldNote, isHeldThread, noteExpired, stampedHeldNote, visibleThreads, type HeldSweepAction } from './held-note';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { DbUpgradeBlocked } from '@/lib/db-upgrade-blocked';
@@ -585,6 +585,23 @@ export type HeldAgeStepResult = HeldSweepAction | 'gone' | 'unreadable' | 'lost-
 export type HeldAgeSweep = { deleted: number; stamped: number; cleared: number; kept: number; skipped: number };
 
 /**
+ * The ONE counted delete of a held note, shared by the age sweep and the owner's own delete: the note row goes and the count row drops by one in the SAME compare-and-swap (and a count row that cannot be
+ * adjusted is written DIRTY, so the next arrival counts by the scan and a rebuild is scheduled). The caller has just read and decrypted `priorRow`; this only compares and writes, so a row that moved meanwhile
+ * makes it answer false and the caller reads again. A held row is NEVER removed by a bare delete, which would leave the count high and refuse a person's evidence early. The row's thread row is left alone:
+ * held notes are found by walking threads, so removing a thread row that a held note may still point at could strand that note (the empty held thread stays, hidden).
+ */
+async function commitCountedHeldDelete(noteId: string, priorRow: NoteRow, note: NoteRecord): Promise<boolean> {
+  const counter = await readHeldCountsRow();
+  const expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }> = [{ store: 'notes', key: noteId, enc: priorRow.enc }, { store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc }];
+  const usable = counter.read !== 'absent' && counter.read !== null && counter.read.state === 'ok' ? counter.read.counts : null;
+  const next: HeldCountsRead = usable ? { state: 'ok', counts: applyChange(usable, heldInboundSender(note), null) } : { state: 'dirty' };
+  const countRow = { key: HELD_COUNTS_KEY, enc: await encryptJson(sealedShape(next)) } satisfies SettingsRow;
+  const committed = await txCommitIfUnchanged(expects, [{ store: 'settings', value: countRow }], [{ store: 'notes', key: noteId }]);
+  if (committed && usable === null) scheduleHeldCountsReconcile();
+  return committed;
+}
+
+/**
  * ONE held note, one step of the age sweep (held-note.ts: heldSweepAction decides, on the OWNER'S clock). The row is read HERE, inside the retry loop, so the decision is always made on the latest copy.
  * A stamp rewrites the note row only (its sender and held-ness do not change, so the count does not), compare-and-swap against the blob that was read. A DELETE is the counted twin of writeNote: the note
  * row goes and the count row drops by one in the SAME compare-and-swap (and a count row that cannot be adjusted is written DIRTY, so the next arrival counts by the scan and a rebuild is scheduled): a held
@@ -602,31 +619,116 @@ async function heldAgeStep(noteId: string, nowMs: number, limits?: HeldAgeLimits
     }
     const action = heldSweepAction(note, nowMs, limits?.limitDays, limits?.graceDays);
     if (action === 'keep') return 'keep';
-    const expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }> = [{ store: 'notes', key: noteId, enc: priorRow.enc }];
     let committed: boolean;
-    let wroteDirty = false;
     if (action === 'delete') {
-      const counter = await readHeldCountsRow();
-      expects.push({ store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc });
-      const usable = counter.read !== 'absent' && counter.read !== null && counter.read.state === 'ok' ? counter.read.counts : null;
-      const next: HeldCountsRead = usable ? { state: 'ok', counts: applyChange(usable, heldInboundSender(note), null) } : { state: 'dirty' };
-      wroteDirty = usable === null;
-      const countRow = { key: HELD_COUNTS_KEY, enc: await encryptJson(sealedShape(next)) } satisfies SettingsRow;
-      committed = await txCommitIfUnchanged(expects, [{ store: 'settings', value: countRow }], [{ store: 'notes', key: noteId }]);
+      committed = await commitCountedHeldDelete(noteId, priorRow, note);
     } else {
       const enc = await encryptJson(stampedHeldNote(note, action, nowMs));
-      committed = await txCommitIfUnchanged(expects, [{ store: 'notes', value: { note_id: note.note_id, thread_id: note.thread_id, enc } satisfies NoteRow }]);
+      committed = await txCommitIfUnchanged([{ store: 'notes', key: noteId, enc: priorRow.enc }], [{ store: 'notes', value: { note_id: note.note_id, thread_id: note.thread_id, enc } satisfies NoteRow }]);
     }
-    if (committed) {
-      if (wroteDirty) scheduleHeldCountsReconcile();
-      return action;
-    }
+    if (committed) return action;
     await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 4 * (attempt + 1))));   // another tab (or a write) moved a row: back off a little, then decide again on the new copy
   }
   return 'lost-race';
 }
 
 let _sweepRun: Promise<HeldAgeSweep> | null = null;
+
+export type HeldMoveResult = 'done' | 'gone' | 'not-held' | 'unreadable' | 'lost-race';
+
+/**
+ * The counted RELEASE of one held note (the owner moves it to the inbox): the note row becomes an ordinary note (held, held_at and expiry_seen_at all go together), the count row drops by one, and the
+ * note's thread row stops being held, ALL in one compare-and-swap. In one, because the alternatives are both unsafe: un-holding the thread first would show an empty conversation in Chat while the note is still
+ * hidden, and un-holding it after would leave an ordinary note inside a hidden thread that nothing lists. The thread row loses only its held flag (last_activity_at is not touched), and other held notes in
+ * it stay hidden because each note carries its own flag. Nothing here is a creation and nothing is sent.
+ */
+async function commitCountedHeldRelease(priorRow: NoteRow, note: NoteRecord, threadRow: ThreadRow, thread: NoteThread): Promise<boolean> {
+  const counter = await readHeldCountsRow();
+  const expects: Array<{ store: string; key: string; enc: EncryptedBlob | null }> = [
+    { store: 'notes', key: note.note_id, enc: priorRow.enc },
+    { store: 'threads', key: thread.thread_id, enc: threadRow.enc },
+    { store: 'settings', key: HELD_COUNTS_KEY, enc: counter.enc },
+  ];
+  const usable = counter.read !== 'absent' && counter.read !== null && counter.read.state === 'ok' ? counter.read.counts : null;
+  const next: HeldCountsRead = usable ? { state: 'ok', counts: applyChange(usable, heldInboundSender(note), null) } : { state: 'dirty' };
+  const puts: Array<{ store: string; value: unknown }> = [
+    { store: 'notes', value: { note_id: note.note_id, thread_id: note.thread_id, enc: await encryptJson(clearedHeldNote(note)) } satisfies NoteRow },
+    { store: 'settings', value: { key: HELD_COUNTS_KEY, enc: await encryptJson(sealedShape(next)) } satisfies SettingsRow },
+  ];
+  if (isHeldThread(thread)) puts.push({ store: 'threads', value: { thread_id: thread.thread_id, enc: await encryptJson(clearedHeld(thread)) } satisfies ThreadRow });
+  const committed = await txCommitIfUnchanged(expects, puts);
+  if (committed && usable === null) scheduleHeldCountsReconcile();
+  return committed;
+}
+
+/**
+ * The OWNER'S own delete or release of ONE held note (the hold view). The row is read inside the retry loop; a note that is not held exactly true is refused ('not-held'), so this can never remove or
+ * rewrite an ordinary note; one that cannot be decrypted is left alone ('unreadable'). Both moves are counted (above) and go through the per-tab write queue like every other note write.
+ */
+async function ownerHeldStep(noteId: string, what: 'delete' | 'release'): Promise<HeldMoveResult> {
+  for (let attempt = 0; attempt < NOTE_WRITE_ATTEMPTS; attempt++) {
+    const priorRow = await txGet<NoteRow>('notes', noteId);
+    if (!priorRow) return 'gone';
+    let note: NoteRecord;
+    try {
+      note = await decryptJson<NoteRecord>(priorRow.enc);
+    } catch {
+      return 'unreadable';
+    }
+    if (!isHeldNote(note)) return 'not-held';
+    let committed: boolean;
+    if (what === 'delete') {
+      committed = await commitCountedHeldDelete(noteId, priorRow, note);
+    } else {
+      const threadRow = await txGet<ThreadRow>('threads', note.thread_id);
+      if (!threadRow) return 'unreadable';
+      let thread: NoteThread;
+      try {
+        thread = await decryptJson<NoteThread>(threadRow.enc);
+      } catch {
+        return 'unreadable';
+      }
+      committed = await commitCountedHeldRelease(priorRow, note, threadRow, thread);
+    }
+    if (committed) return 'done';
+    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 4 * (attempt + 1))));   // another tab (or a write) moved a row: back off a little, then decide again on the new copy
+  }
+  return 'lost-race';
+}
+
+/** The owner deletes ONE held note (counted). Never an ordinary note: that answers 'not-held' and changes nothing. */
+export function deleteHeldNote(noteId: string): Promise<HeldMoveResult> {
+  return serializeNoteWrite(() => ownerHeldStep(noteId, 'delete'));
+}
+
+/** The owner moves ONE held note to the inbox (counted; it stays a rewrite of an existing row, never a creation). Never an ordinary note: that answers 'not-held' and changes nothing. */
+export function releaseHeldNote(noteId: string): Promise<HeldMoveResult> {
+  return serializeNoteWrite(() => ownerHeldStep(noteId, 'release'));
+}
+
+/** The held notes from ONE sender, newest first (by when this device held them). User-initiated, off the receive path: it walks every thread's held notes once. Throws while locked. */
+export async function listHeldFrom(fingerprint: string): Promise<NoteRecord[]> {
+  requireUnlocked();
+  const want = fingerprint.toLowerCase();
+  const out: NoteRecord[] = [];
+  for (const t of await listThreadsIncludingHeld()) {
+    for (const n of await listNotesIncludingHeld(t.thread_id)) if (heldInboundSender(n) === want) out.push(n);
+  }
+  return out.sort((a, b) => heldSince(b) - heldSince(a) || (a.note_id < b.note_id ? -1 : 1));
+}
+
+/** Every sender that has held notes on this device, with how many. For the hold view only (the number is shown inside it, never on the way in). Throws while locked. */
+export async function listHeldSenders(): Promise<Array<{ from_fingerprint: string; count: number }>> {
+  requireUnlocked();
+  const counts = new Map<string, number>();
+  for (const t of await listThreadsIncludingHeld()) {
+    for (const n of await listNotesIncludingHeld(t.thread_id)) {
+      const who = heldInboundSender(n);
+      if (who !== null) counts.set(who, (counts.get(who) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].map(([from_fingerprint, count]) => ({ from_fingerprint, count })).sort((a, b) => (a.from_fingerprint < b.from_fingerprint ? -1 : 1));
+}
 
 /**
  * Apply the hold's age limit to every held note, on the owner's clock, OFF the receive path (at unlock, after the count row is put right). One run at a time. Each note goes through the same per-tab
