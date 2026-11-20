@@ -51,8 +51,17 @@ const modPow = (b: bigint, e: bigint, m: bigint): bigint => {
 const INV8 = modPow(EIGHT, L - big('2'), L);
 
 // ---- lazy libraries: literal dynamic imports so the bundler can split them into a chunk that only the trust path loads ----
-let libs: Promise<{ bj: any; poseidon: any }> | null = null;
-const loadCurve = () => (libs ??= import('circomlibjs').then(async (m: any) => ({ bj: await m.buildBabyjub(), poseidon: await m.buildPoseidon() })));
+/** Memoize a lazy load for the session, but only while it succeeds: concurrent callers share one attempt, and a REJECTED load is forgotten so the
+ * next call retries (a chunk that failed once, offline or mid-deploy, must not break every later deposit until a reload). */
+export function retryAfterReject<T>(load: () => Promise<T>): () => Promise<T> {
+  let p: Promise<T> | null = null;
+  return () => {
+    if (p) return p;
+    const cur: Promise<T> = load().catch((e) => { if (p === cur) p = null; throw e; });
+    return (p = cur);
+  };
+}
+const loadCurve = retryAfterReject(() => import('circomlibjs').then(async (m: any) => ({ bj: await m.buildBabyjub(), poseidon: await m.buildPoseidon() })));
 
 // ---- randomness: the platform CSPRNG only ----
 /** Random bytes from the platform CSPRNG (crypto.getRandomValues). The ONLY default randomness source in the beacon modules. */
@@ -107,6 +116,7 @@ async function deriveWitness(k: DepositKeys): Promise<DerivedDeposit> {
   if (typeof k.x !== 'bigint' || k.x < big('1') || k.x >= L) throw new ProverRefused('x-range');
   if (typeof k.epoch !== 'bigint' || k.epoch < big('0') || k.epoch >= R) throw new ProverRefused('epoch-range');
   if (!(k.oneTimePk instanceof Uint8Array) || k.oneTimePk.length !== 32) throw new ProverRefused('pk-length');
+  if (!Array.isArray(k.counterpartY) || k.counterpartY.length !== 2) throw new ProverRefused('y-off-curve');
   const [Yx, Yy] = k.counterpartY;
   if (typeof Yx !== 'bigint' || typeof Yy !== 'bigint' || Yx < big('0') || Yy < big('0') || Yx >= R || Yy >= R) throw new ProverRefused('y-off-curve');
 
