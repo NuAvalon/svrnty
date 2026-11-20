@@ -1,5 +1,5 @@
-// The service worker must NEVER handle the satellite's allowed-senders list (#959). The worker answers every /api/ GET network-first WITH cache write-through and falls back to the cached copy
-// when the network fails. For this one endpoint that is wrong twice: a stale cached list would hide a row that is owed a DELETE (a failed GET must read as UNKNOWN, never as an old answer),
+// The service worker must NEVER handle anything under /api/satellite/ (#959): the allowed-senders list above all, but every satellite GET is owner-authenticated private data. The worker answers every /api/ GET network-first WITH cache write-through and falls back to the cached copy
+// when the network fails. For these endpoints that is wrong twice: a stale cached list would hide a row that is owed a DELETE (a failed GET must read as UNKNOWN, never as an old answer),
 // and the owner's allowed list (who they allow) would sit in plaintext in Cache Storage. This test RUNS the worker's fetch handler against stubs, so it fails if the exclusion is removed.
 // Run: node --import tsx --test src/lib/sync/sw-allowed-list.test.ts
 import { test } from 'node:test';
@@ -32,8 +32,10 @@ async function fire(url: string, method = 'GET') {
   return { handled, cached: w.puts };
 }
 
-test('SW1 a GET of the allowed-senders list is NOT handled by the worker: not intercepted, not cached, never answered from an old copy', async () => {
-  for (const url of ['https://app.test/api/satellite/allowed/' + 'ab'.repeat(32), 'https://app.test/api/satellite/allowed/' + 'ab'.repeat(32) + '?x=1', 'https://app.test/api/satellite/allowed/' + 'ab'.repeat(32) + '/inbound']) {
+test('SW1 a GET of anything under /api/satellite/ is NOT handled by the worker: not intercepted, not cached, never answered from an old copy (the allowed list, trust, PSI, route, bind)', async () => {
+  const fp = 'ab'.repeat(32);
+  for (const url of [`https://app.test/api/satellite/allowed/${fp}`, `https://app.test/api/satellite/allowed/${fp}?x=1`, `https://app.test/api/satellite/allowed/${fp}/inbound`,
+    'https://app.test/api/satellite/psi/initiate', 'https://app.test/api/satellite/trust/commit', 'https://app.test/api/satellite/route/x', 'https://app.test/api/satellite/bind/x', 'https://app.test/api/satellite/inbox/' + fp]) {
     const r = await fire(url);
     assert.equal(r.handled, false, `the worker must leave ${url} to the browser`);
     assert.deepEqual(r.cached, [], 'and nothing is written to the cache');
@@ -41,8 +43,8 @@ test('SW1 a GET of the allowed-senders list is NOT handled by the worker: not in
 });
 
 test('SW2 CONTROL: the worker still handles other /api/ GETs and build assets network-first, so SW1 is looking at a real exclusion and not a worker that handles nothing', async () => {
-  const api = await fire('https://app.test/api/satellite/inbox/' + 'ab'.repeat(32));
-  assert.equal(api.handled, true, 'another /api/ GET is still handled');
+  assert.equal((await fire('https://app.test/api/version')).handled, true, 'another /api/ GET is still handled');
+  assert.equal((await fire('https://app.test/api/satellite')).handled, true, 'the exclusion is the prefix with its trailing slash, not a bare path that merely starts alike');
   assert.equal((await fire('https://app.test/_next/static/chunk.js')).handled, true);
   assert.equal((await fire('https://app.test/api/satellite/allowed/' + 'ab'.repeat(32), 'POST')).handled, false, 'non-GET requests were never handled');
 });
