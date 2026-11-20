@@ -327,6 +327,7 @@ for (const [vpName, viewport] of [['desktop', null], ['phone 390x844', { width: 
         const b = await view.getByTestId(id).boundingBox();
         expect(b && b.x >= 0 && b.x + b.width <= m.iw + 1, `${id} is on screen`).toBe(true);
       }
+      await view.scrollIntoViewIfNeeded();
       await testInfo.attach(`hold-view-${vpName.split(' ')[0]}.png`, { body: await page.screenshot({ fullPage: false }), contentType: 'image/png' });
     });
   });
