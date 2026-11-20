@@ -4,6 +4,7 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, decryptKey, readPrivateKey } from 'openpgp';
 import { reconcileAllowedOnConsentChange, reconcileAllowedOnRemove, runAllowedRevokeTick } from './reconcile-allowed-hook';
+import { lastListRead, resetLastListRead } from './last-list-read';
 import { resetRevokeState, type AllowedRevokeDeps } from './allowed-revoke';
 import type { PeerConsent } from './allowed-sync';
 
@@ -263,4 +264,38 @@ test('ARH9 a peer that falls beyond the drain\'s cap is reported as owed (ok:fal
   assert.deepEqual(res, { action: 'delete', ok: false });
   assert.equal(relay.count('DELETE'), 25);
   assert.ok(relay.relay.has(senderFp), 'still listed, so still owed');
+});
+
+// ---- the last read of the list, kept for the owner's panel ----
+test('RHL5 a tick that READS the list records it (the list as the relay gave it, and when); the panel reads this and makes no request of its own', async () => {
+  resetLastListRead();
+  const t = tick({ list: [senderFp, OTHER] }, book({ [senderFp]: FULL_INVARIANT, [OTHER]: FULL_INVARIANT }));
+  const before = Date.now();
+  await t.run();
+  const last = lastListRead(ownerFp);
+  assert.ok(last, 'recorded');
+  assert.equal(last!.result.status, 'ok');
+  assert.deepEqual(last!.result.status === 'ok' ? [...last!.result.fps].sort() : [], [OTHER, senderFp].sort());
+  assert.ok(last!.at >= before && last!.at <= Date.now(), 'with the time of the read');
+  assert.equal(t.relay.count('GET'), 1, 'recording made no request of its own');
+});
+
+test('RHL6 a read that FAILS records "unknown" and a 410 records "gone": the panel never shows an old list as if it were current', async () => {
+  resetLastListRead();
+  const bad = tick({ list: [senderFp], getStatus: 500 }, book());
+  await bad.run();
+  assert.equal(lastListRead(ownerFp)?.result.status, 'unknown');
+  resetLastListRead();
+  const gone = tick({ list: [senderFp], getStatus: 410 }, book());
+  await gone.run();
+  assert.equal(lastListRead(ownerFp)?.result.status, 'gone');
+});
+
+test('RHL7 NEG: a dark gate and a locked identity make no request and record NOTHING', async () => {
+  resetLastListRead();
+  const dark = tick({ list: [senderFp] }, book(), { gate: () => false });
+  await dark.run();
+  const locked = tick({ list: [senderFp] }, book(), { loadKeyImpl: async () => null as never });
+  await locked.run();
+  assert.equal(lastListRead(ownerFp), undefined);
 });
