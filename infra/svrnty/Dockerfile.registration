@@ -5,7 +5,6 @@ WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn pydantic cryptography segno
 
 COPY registration.py .
-COPY landing.html .
 COPY profile.html .
 COPY about.html .
 COPY crypto_utils.py .

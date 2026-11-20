@@ -965,11 +965,9 @@ async def add_contact_page(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page():
-    """Serve the svrnty signup landing page."""
-    landing_path = Path(__file__).parent / "landing.html"
-    if landing_path.exists():
-        return HTMLResponse(content=landing_path.read_text())
-    return HTMLResponse(content="<h1>svrnty</h1><p>Landing page not found.</p>")
+    """A plain notice. This service has no signup page: identities are created in the svrnty app, on the device.
+    (The old in-browser signup page was removed: it generated keys with code fetched from a CDN, on an older suite.)"""
+    return HTMLResponse(content="<h1>svrnty registration service</h1><p>Create your identity in the svrnty app.</p>")
 
 
 @app.get("/about", response_class=HTMLResponse)
