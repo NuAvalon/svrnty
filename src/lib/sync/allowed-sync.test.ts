@@ -330,3 +330,11 @@ test('ALS3 410 is the ONE exception: the relay keeps no list (#540), so nothing 
   const empty = replyingFetch(() => json(200, { owner_fingerprint: OWNER, allowed: [], count: 0 }));
   assert.deepEqual(await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl: empty.fetchImpl, nowUnixSeconds: FIXED_UNIX }), { status: 'ok', fps: [] });
 });
+
+test('ALS4 the list request carries cache: "no-store" itself, so a failure cannot be answered from a browser or proxy cache as a stale 200 whatever a deploy\'s defaults or headers are', async () => {
+  let init: RequestInit | undefined;
+  const fetchImpl = (async (_i: RequestInfo | URL, i?: RequestInit) => { init = i; return json(200, { allowed: [] }); }) as typeof fetch;
+  await listAllowedSenders({ ownerFp: OWNER, senderFp: '', seed: SEED, fetchImpl, nowUnixSeconds: FIXED_UNIX });
+  assert.equal(init?.method, 'GET');
+  assert.equal(init?.cache, 'no-store');
+});

@@ -150,6 +150,7 @@ export async function listAllowedSenders(args: AllowedOpArgs): Promise<AllowedLi
   try {
     const res = await f(`${base}/${encodeURIComponent(args.ownerFp)}`, {
       method: 'GET',
+      cache: 'no-store',                                   // a failure must not be answered from any cache as a stale 200, whatever a deploy's defaults or headers say
       headers: { 'X-Signature': wire(signPsiAuth(args.seed, args.ownerFp, unix), unix) },
     });
     if (res.status === 410) return { status: 'gone' };
