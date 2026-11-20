@@ -253,3 +253,13 @@ test('ARH8 the peer\'s outcome is found whatever the case of its fingerprint: an
   assert.deepEqual(res, { action: 'delete', ok: true });
   assert.equal(relay.count('DELETE'), 1);
 });
+
+test('ARH9 a peer that falls beyond the drain\'s cap is reported as owed (ok:false), not as "never allowed": it is still listed and goes out on the next drain', async () => {
+  common();
+  const others = Array.from({ length: 25 }, (_, i) => i.toString(16).padStart(64, '0'));
+  const relay = relayFetch({ list: [...others, senderFp] });            // the peer is listed LAST, so it falls past the cap of 25
+  const res = await reconcileAllowedOnConsentChange({ ownerFp, senderFp, allowedRevoke: book(), consent: BLOCKED, gate: () => true, loadKeyImpl: loadKeyOk, fetchImpl: relay.fetchImpl });
+  assert.deepEqual(res, { action: 'delete', ok: false });
+  assert.equal(relay.count('DELETE'), 25);
+  assert.ok(relay.relay.has(senderFp), 'still listed, so still owed');
+});

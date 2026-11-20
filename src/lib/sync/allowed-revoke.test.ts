@@ -2,6 +2,8 @@
 // Run: node --import tsx --test src/lib/sync/allowed-revoke.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { drainAllowedRevokes, requestDrain, resetRevokeState, REVOKE_BACKOFF_MIN_MS, REVOKE_BACKOFF_MAX_MS, REVOKE_SPACING_MS, DRAIN_BATCH_MS, DRAIN_MIN_GAP_MS, REVOKE_MAX_PER_DRAIN, type AllowedRevokeDeps } from './allowed-revoke';
 import type { AllowedListResult, PeerConsent } from './allowed-sync';
 
@@ -239,6 +241,11 @@ test('AR16 (Flint) the book and the relay are compared CASE-INSENSITIVELY, and t
   await allowed.drain();
   assert.deepEqual(allowed.sent, [], 'an allowed contact is not revoked because of a difference in case');
   resetRevokeState();
+  resetRevokeState();
+  const upperBook = rig({ relay: [P], book: { [UP(P)]: BLOCKED } });
+  await upperBook.drain();
+  assert.deepEqual(upperBook.sent, [P], 'a book that holds the fingerprint in upper case still matches the relay\'s lower case');
+  resetRevokeState();
   const own = rig({ relay: [P], book: {} });
   await own.drain(new Map([[UP(P), ALLOWED]]));
   assert.deepEqual(own.sent, [], 'the consent a call just made matches the listed fingerprint whatever its case');
@@ -268,4 +275,9 @@ test('AR18 CAP (Flint): at most REVOKE_MAX_PER_DRAIN revokes per drain, the rest
   assert.equal([...first.outcomes.values()].filter((o) => o === 'deferred').length, 5);
   await r.drain();
   assert.equal(r.state.relay.size, 0, 'the next drain sent them');
+});
+
+test('ARR1 (source shape) the REAL book asks the contact book\'s integrity flag, so a book flagged corrupt reaches the drain as incomplete (nothing else exercises the real wiring)', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/sync/allowed-revoke-real.ts'), 'utf8');
+  assert.match(src, /bookComplete:\s*async \(ownerFp\)\s*=>\s*\(await getContactBookIntegrity\(ownerFp\)\)\s*===\s*'ok'/);
 });
