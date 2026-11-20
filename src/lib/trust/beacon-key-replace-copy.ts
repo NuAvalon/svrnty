@@ -18,6 +18,8 @@ export const KEY_REPLACED_UNCONFIRMED = 'Because of this update, {name} is uncon
 export const KEY_REPLACE_REFUSED = "{name}'s newer card couldn't be saved, so the security details saved for them are unchanged. Trying again later may work.";
 /** Row 338d of the held-messages copy (11, af49636912aec2d2): the approved words for a contact with no name. Reused here, not new copy; the copy owner confirms the reuse. */
 export const KEY_REPLACE_NO_NAME = 'this person';
+/** Row 347 (11, 75a49069894300cf): the same words with a capital T, for the refused line ONLY, because that line STARTS with the name. A real book name is never capitalised: that would change the person's own name. */
+export const KEY_REPLACE_NO_NAME_INITIAL = 'This person';
 
 /**
  * Put each value in once. A value that looks like a placeholder, or like a replacement pattern, is inserted as it is. A hole (no value for a placeholder)
@@ -36,8 +38,9 @@ export function fill(template: string, values: Record<string, string | number>):
 
 /** The line a screen shows for an outcome. `bookName` is the name in the person's own book for the contact. */
 export function replaceNotice(outcome: KeyReplaceOutcome, bookName: string): string {
-  const name = bookName.trim() === '' ? KEY_REPLACE_NO_NAME : bookName;
-  if (outcome.kind === 'refused') return fill(KEY_REPLACE_REFUSED, { name });
+  const nameless = bookName.trim() === '';
+  if (outcome.kind === 'refused') return fill(KEY_REPLACE_REFUSED, { name: nameless ? KEY_REPLACE_NO_NAME_INITIAL : bookName });   // starts with the name: a nameless contact gets the capital
+  const name = nameless ? KEY_REPLACE_NO_NAME : bookName;
   return outcome.wasConfirmed
     ? `${fill(KEY_REPLACED, { name })} ${fill(KEY_REPLACED_UNCONFIRMED, { name })}`
     : fill(KEY_REPLACED, { name });

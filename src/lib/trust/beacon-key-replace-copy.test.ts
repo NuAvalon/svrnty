@@ -13,10 +13,11 @@ const ROWS: Array<[string, string, number, string]> = [
   ['344b unconfirmed again', copy.KEY_REPLACED_UNCONFIRMED, 52, '9061fecf8e057145'],
   ['345c refused', copy.KEY_REPLACE_REFUSED, 121, '4682ab5e73fd7a85'],
   ['338d nameless (reused from the held-messages copy)', copy.KEY_REPLACE_NO_NAME, 11, 'af49636912aec2d2'],
+  ['347 nameless, capitalised, for the refused line only', copy.KEY_REPLACE_NO_NAME_INITIAL, 11, '75a49069894300cf'],
 ];
 
 test('KC1 every template is the copy owner\'s bytes (length + sha256 prefix) and plain ASCII with straight apostrophes', () => {
-  assert.equal(ROWS.length, 4);
+  assert.equal(ROWS.length, 5);
   for (const [name, text, len, sha] of ROWS) {
     assert.equal(text.length, len, `${name}: length`);
     assert.equal(h(text), sha, `${name}: sha256 prefix`);
@@ -35,6 +36,11 @@ test('KC3 {name} is the BOOK\'s name exactly as given: a name that looks like a 
   assert.equal(copy.replaceNotice({ kind: 'refused' }, '{name} $& $1'), "{name} $& $1's newer card couldn't be saved, so the security details saved for them are unchanged. Trying again later may work.");
   assert.ok(copy.replaceNotice({ kind: 'replaced', wasConfirmed: false }, '').includes('from this person has changed'));
   assert.ok(copy.replaceNotice({ kind: 'replaced', wasConfirmed: false }, '   ').includes('from this person has changed'), 'a name of only spaces is nameless too');
+  // the refused line STARTS with the name, so a nameless contact gets the capital there, and ONLY there; a real book name is never capitalised
+  assert.ok(copy.replaceNotice({ kind: 'refused' }, '').startsWith("This person's newer card couldn't be saved"), 'refused + nameless starts with a capital');
+  assert.ok(copy.replaceNotice({ kind: 'refused' }, '   ').startsWith("This person's"), 'and so does a name of only spaces');
+  assert.ok(copy.replaceNotice({ kind: 'refused' }, 'ada').startsWith("ada's newer card"), 'a real name is inserted exactly as it is: never capitalised');
+  assert.ok(copy.replaceNotice({ kind: 'replaced', wasConfirmed: true }, '').includes('Because of this update, this person is unconfirmed again.'), 'mid-sentence the lower-case words stay');
 });
 
 test('KC4 what the rows FORBID: no line says key, generation, withdrawn, safe, verified, compromised, or points to a fix; the refused line never says nothing changed', () => {
