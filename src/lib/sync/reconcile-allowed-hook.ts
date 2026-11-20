@@ -25,7 +25,7 @@ import { decryptKey, readPrivateKey } from 'openpgp';
 import { loadKey as defaultLoadKey } from '@/lib/identity/client-store';
 import { extractRawSign } from '@/lib/identity/raw-sign';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
-import { reconcileAllowedForPeer, type PeerConsent } from './allowed-sync';
+import { allowedRowShouldExist, reconcileAllowedForPeer, type PeerConsent } from './allowed-sync';
 
 export interface ReconcileAllowedHookArgs {
   /** Owner's own identity fingerprint (the allowed_senders table owner). */
@@ -43,7 +43,7 @@ export interface ReconcileAllowedHookArgs {
 
 export type ReconcileAllowedResult =
   | { action: 'add' | 'delete'; ok: boolean }
-  | { skipped: 'dark' | 'no-peer' | 'locked' | 'error' };
+  | { skipped: 'dark' | 'no-peer' | 'locked' | 'error' | 'never-allowed' };
 
 /**
  * Reconcile the satellite allowed_senders row for one peer to the owner's POST-change consent.
@@ -83,4 +83,30 @@ export async function reconcileAllowedOnConsentChange(
     }
     return { skipped: 'error' };
   }
+}
+
+/** The consent of a contact that is gone: nothing is open, so no row should exist. */
+const GONE: PeerConsent = { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false };
+
+/**
+ * Contact REMOVE: revoke the satellite row only when there can BE one.
+ *
+ * The row exists only while the owner's consent invariant held (allowedRowShouldExist), so `consentBefore` is the consent read from the stored record BEFORE the removal. A contact that never had a row
+ * (every freshly imported, never-exchanged one) has nothing on the satellite to revoke, and a DELETE for it would only tell the satellite's operator that fingerprint: so nothing is sent. A contact whose
+ * consent is unknown (`null`/`undefined`: there is no stored record to read) is treated the same way, because "unknown" is not a reason to name a person to a server. (A locked session never gets here: the removal itself needs the session and refuses first.)
+ *
+ * Everything else is exactly reconcileAllowedOnConsentChange with the all-false "peer gone" consent: gated, fail-soft, never throws.
+ */
+export async function reconcileAllowedOnRemove(
+  args: Omit<ReconcileAllowedHookArgs, 'consent'> & { consentBefore: PeerConsent | null | undefined },
+): Promise<ReconcileAllowedResult> {
+  if (!args.consentBefore || !allowedRowShouldExist(args.consentBefore)) return { skipped: 'never-allowed' };
+  return reconcileAllowedOnConsentChange({
+    ownerFp: args.ownerFp,
+    senderFp: args.senderFp,
+    consent: GONE,
+    loadKeyImpl: args.loadKeyImpl,
+    fetchImpl: args.fetchImpl,
+    gate: args.gate,
+  });
 }

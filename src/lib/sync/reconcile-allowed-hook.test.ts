@@ -3,7 +3,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, decryptKey, readPrivateKey } from 'openpgp';
-import { reconcileAllowedOnConsentChange } from './reconcile-allowed-hook';
+import { reconcileAllowedOnConsentChange, reconcileAllowedOnRemove } from './reconcile-allowed-hook';
 
 const passphrase = 'reconcile-hook-test-pass';
 const ownerFp = 'ab'.repeat(32);
@@ -162,4 +162,69 @@ test('FAIL-SOFT: satellite non-2xx → reconcile returns ok:false (handler still
     ownerFp, senderFp, consent: FULL_INVARIANT, gate: () => true, loadKeyImpl: loadKeyOk, fetchImpl,
   });
   assert.deepEqual(res, { action: 'add', ok: false });
+});
+
+// ---- #941: Remove of a contact that never had a satellite row sends the satellite nothing ----
+// The row exists iff allowedRowShouldExist(consent) = open_visibility && !blocked && !per_contact_private ('trusted' is NOT a term). `consentBefore` is the consent read from the stored record BEFORE the removal.
+
+const rm = (consentBefore: Parameters<typeof reconcileAllowedOnRemove>[0]['consentBefore'], extra: Partial<Parameters<typeof reconcileAllowedOnRemove>[0]> = {}) => {
+  const rec = recordingFetch();
+  let loads = 0;
+  const loadKeyCounting = async () => { loads++; return { privateKey, passphrase }; };
+  const run = () => reconcileAllowedOnRemove({ ownerFp, senderFp, consentBefore, gate: () => true, loadKeyImpl: loadKeyCounting, fetchImpl: rec.fetchImpl, ...extra });
+  return { ...rec, run, loads: () => loads };
+};
+
+test('RM1 a contact that never had a row (the fresh-import default: nothing open, not blocked) -> Remove sends NOTHING: 0 requests, the key is not even loaded', async () => {
+  const t = rm({ trusted: false, openVisibility: false, blocked: false, perContactPrivate: false });
+  assert.deepEqual(await t.run(), { skipped: 'never-allowed' });
+  assert.equal(t.calls.length, 0, 'no request names this person to the satellite');
+  assert.equal(t.loads(), 0, 'and nothing was unlocked for it');
+});
+
+test('RM2 a contact that HAD a row (open_visibility on, not blocked, not private) -> Remove sends EXACTLY ONE DELETE for that pair', async () => {
+  const t = rm(FULL_INVARIANT);
+  assert.deepEqual(await t.run(), { action: 'delete', ok: true });
+  assert.equal(t.calls.length, 1);
+  assert.equal(t.calls[0].method, 'DELETE');
+  assert.ok(t.calls[0].url.endsWith(`/api/satellite/allowed/${ownerFp}/${senderFp}`), t.calls[0].url);
+});
+
+test('RM3 the threshold, from both sides: every state with NO row sends nothing, and the nearest state WITH a row sends one DELETE', async () => {
+  const noRow = [
+    ['trusted but open_visibility off (a private trusted contact)', { trusted: true, openVisibility: false, blocked: false, perContactPrivate: false }],
+    ['open_visibility on but BLOCKED (block already deleted the row)', { trusted: true, openVisibility: true, blocked: true, perContactPrivate: false }],
+    ['open_visibility on but per-contact PRIVATE', { trusted: true, openVisibility: true, blocked: false, perContactPrivate: true }],
+    ['open_visibility on, blocked AND private', { trusted: false, openVisibility: true, blocked: true, perContactPrivate: true }],
+  ] as const;
+  for (const [name, c] of noRow) {
+    const t = rm(c);
+    assert.deepEqual(await t.run(), { skipped: 'never-allowed' }, name);
+    assert.equal(t.calls.length, 0, `${name}: 0 requests`);
+  }
+  // one step across the line in each direction still has a row: open_visibility on, NOT trusted (trusted is not a term of the invariant), not blocked, not private
+  const t = rm({ trusted: false, openVisibility: true, blocked: false, perContactPrivate: false });
+  assert.deepEqual(await t.run(), { action: 'delete', ok: true });
+  assert.equal(t.calls.length, 1, 'a contact that is open but not trusted HAD a row: one DELETE');
+});
+
+test('RM4 an unknown consent (the record could not be read: null / undefined) is not a reason to name a person to a server: nothing is sent', async () => {
+  for (const unknown of [null, undefined]) {
+    const t = rm(unknown);
+    assert.deepEqual(await t.run(), { skipped: 'never-allowed' });
+    assert.equal(t.calls.length, 0);
+  }
+});
+
+test('RM5 what the hook already did is kept: a dark gate sends nothing, a locked identity skips fail-soft, a non-2xx is ok:false and never throws', async () => {
+  const dark = rm(FULL_INVARIANT, { gate: () => false });
+  assert.deepEqual(await dark.run(), { skipped: 'dark' });
+  assert.equal(dark.calls.length, 0);
+  const locked = rm(FULL_INVARIANT, { loadKeyImpl: async () => null as never });
+  assert.deepEqual(await locked.run(), { skipped: 'locked' });
+  assert.equal(locked.calls.length, 0);
+  const bad = reconcileAllowedOnRemove({ ownerFp, senderFp, consentBefore: FULL_INVARIANT, gate: () => true, loadKeyImpl: loadKeyOk, fetchImpl: (async () => new Response('{}', { status: 500 })) as unknown as typeof fetch });
+  assert.deepEqual(await bad, { action: 'delete', ok: false });
+  const noPeer = rm(FULL_INVARIANT, { senderFp: '' });
+  assert.deepEqual(await noPeer.run(), { skipped: 'no-peer' });
 });
