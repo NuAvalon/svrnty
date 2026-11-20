@@ -68,14 +68,28 @@ export function decideConfirm(
   return NO;
 }
 
-/** The port the client asks. Any doubt (a read that fails, a row that is not a valid map) answers FALSE: nothing is confirmed on a guess. */
-export function createConfirmedPort(read: () => Promise<unknown>): PairConfirmedPort {
+/**
+ * The generation of the beacon key this device HOLDS for the contact behind `pairId`, or undefined when there is no such contact or it holds no well-formed key.
+ * The confirmed port asks it at every question, so a key replaced since the confirm is seen at once.
+ */
+export type HeldGenerationOf = (pairId: string) => Promise<number | undefined>;
+
+/**
+ * The port the client asks. A pair is confirmed only while the confirm was made for the key this device holds NOW: the stored entry's generation must equal the held key's generation.
+ * A pair confirmed at generation N is therefore NOT confirmed after the held key is replaced by generation N+1 (nor after any other change of the held generation), and stays unconfirmed
+ * until a live confirm records the new generation. Any doubt (a read that fails, a row that is not a valid map, no held key, a generation that is not a positive integer, a resolver that
+ * throws) answers FALSE: nothing is confirmed on a guess.
+ */
+export function createConfirmedPort(read: () => Promise<unknown>, heldGenerationOf: HeldGenerationOf): PairConfirmedPort {
   return {
     async isConfirmed(pairId: string): Promise<boolean> {
       try {
         const m = await read();
         if (!isBeaconConfirmed(m)) return false;
-        return Object.prototype.hasOwnProperty.call(m, pairId);
+        if (!Object.prototype.hasOwnProperty.call(m, pairId)) return false;
+        const held = await heldGenerationOf(pairId);
+        if (typeof held !== 'number' || !Number.isSafeInteger(held) || held <= 0) return false;
+        return m[pairId].generation === held;
       } catch {
         return false;
       }
