@@ -162,3 +162,8 @@ test('IK14 the composer hands the reporter to the replacement: a bug in the swee
   assert.equal(seen.length, 1);
   assert.equal(seen[0].where, 'replace-sweep');
 });
+
+test('IK15 a reporter that THROWS changes nothing in the composer: a bug out of a port is still a refusal, and does not reject', async () => {
+  const x = ports({ decodeKey: (() => { throw new ReferenceError('injected bug'); }) as KeyIntakePorts['decodeKey'], onUnexpected: () => { throw new Error('reporter exploded'); } });
+  assert.deepEqual(await replaceContactBeaconKeyWith(x.p, TARGET), { kind: 'refused' });
+});
