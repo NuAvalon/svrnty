@@ -331,3 +331,11 @@ test('MG6 planPairRows on a fast clock: a row of the previous epoch is still pla
   assert.deepEqual(await ids(end + GRACE_MS + MARGIN_MS - 1), [rowOf(YP, E)], 'one millisecond before the dead instant: planned');
   assert.deepEqual(await ids(end + GRACE_MS + MARGIN_MS), [], 'AT the dead instant: not planned: the relay can no longer match it');
 });
+
+test('SM4 MINTING keeps the plain rule: a row is never minted into an epoch the relay no longer accepts, even inside the margin', async () => {
+  const { a, setNow } = setup({ counterpartY: async () => YP, slotOf: fakeSlot, secretX: async () => X });
+  const end = startOf(E + 1);
+  setNow(end + GRACE_MS - 1_000); await a.newRow(PAIR_P, BigInt(E));  // one second before the relay closes epoch E: still accepted
+  setNow(end + GRACE_MS + 60_000);                                     // a minute after: the relay refuses a deposit into it, so nothing may be minted for it
+  await assert.rejects(() => a.newRow(PAIR_Q, BigInt(E)), /epoch-not-live/);
+});

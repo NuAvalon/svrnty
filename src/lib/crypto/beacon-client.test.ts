@@ -3116,7 +3116,7 @@ const realClient = () => {
   });
   const fetch: FakeFetch = (url) => { calls.push(url); return reply(route ? route(url) : { status: 200, body: '{"status":"accepted"}' }); };
   const h = harness({ now: () => clock.t, backoffMs: undefined, fetch, secrets });
-  return { ...h, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; } };
+  return { ...h, secrets, clock, calls, seedCount: () => Object.keys(map).length, setRoute: (r: Shape | null) => { route = r; } };
 };
 
 for (const [label, shape] of SHAPES) {
@@ -3187,4 +3187,29 @@ test('MG5 Remove AT the dead instant keeps the old behaviour: the row is dropped
   assert.ok(!c.calls.some((u) => u.endsWith('/withdraw') || u.endsWith('/nonce')), 'nothing to withdraw: the relay can no longer match that epoch');
   assert.equal(c.seedCount(), 0, 'the seed is released');
   assert.equal((await c.store.get('pair-1'))!.pendingWithdraws.length, 0);
+});
+
+test('MG7 an ORPHAN row (a seed with no saved record) of an epoch the relay may still match is withdrawn by a Remove on a device clock 1200 s FAST', async () => {
+  const c = realClient();
+  await c.secrets.newRow('pair-1', BigInt(EPOCH));                 // a crash between minting the seed and saving the record: the seed exists, the record does not
+  assert.equal(c.seedCount(), 1);
+  c.setRoute(WITHDRAWN); c.clock.t = EPOCH_END_MS + 601_000;       // past the old grace-only close, inside the margin
+  c.calls.length = 0; await c.client.removeAtTap('pair-1');
+  assert.ok(c.calls.some((u) => u.endsWith('/withdraw')), 'the orphan row was planned and its withdraw sent');
+  assert.equal(c.seedCount(), 0, 'and its seed was released after the confirmation');
+});
+
+const POLL_MATCH: Shape = (u) => (u.endsWith('/nonce') ? nonceOk(NONCE_A) : ok('match'));
+test('MG8 the READ side keeps the plain rule: a match one minute after the relay closed its epoch reports "none", and that epoch is no longer polled, even though the row is still held inside the margin', async () => {
+  const c = realClient();
+  await c.client.trustAtTap('pair-1');
+  c.setRoute(POLL_MATCH); await c.client.pollNow('pair-1');
+  assert.equal(await c.client.matchState('pair-1'), 'match', 'a match while the epoch is open');
+  c.clock.t = EPOCH_END_MS + GRACE_SECONDS * 1000 - 1_000;          // one second before the relay closes epoch EPOCH
+  assert.equal(await c.client.matchState('pair-1'), 'match', 'still a match inside the relay\'s own grace window');
+  c.clock.t = EPOCH_END_MS + GRACE_SECONDS * 1000 + 60_000;         // one minute after the relay closed it
+  assert.equal((await c.store.get('pair-1'))!.rows.length, 1, 'control: the row is still held (the margin keeps it), so the answer below is the rule, not a dropped row');
+  assert.equal(await c.client.matchState('pair-1'), 'none', 'the relay cannot match it any more: claiming a live match would say more than is true');
+  c.calls.length = 0; await c.client.pollNow('pair-1');
+  assert.equal(c.calls.length, 0, 'and polling a closed epoch is wasted calls');
 });
