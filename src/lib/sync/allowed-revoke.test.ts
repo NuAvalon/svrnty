@@ -206,3 +206,22 @@ test('AR14 a request that arrives while a drain is RUNNING joins the NEXT batch 
   const out2 = await requestDrain(OWNER, delayThrows.io, delayThrows.deps);
   assert.equal(out2.listed, 'unknown', 'a broken timer still answers');
 });
+
+test('AR15 a request that arrives while a drain is RUNNING waits for it: two drains for one owner never overlap, and the late request is still answered by its own batch', async () => {
+  resetRevokeState();
+  const r = rig({ relay: [P], book: { [P]: BLOCKED } });
+  batching(r);                                                        // instant timers: only the running drain can hold the second batch back
+  let active = 0, maxActive = 0; let release!: () => void; const gate = new Promise<void>((res) => { release = res; });
+  let entered!: () => void; const inside = new Promise<void>((res) => { entered = res; });
+  const realList = r.io.list;
+  r.io.list = async () => { active++; maxActive = Math.max(maxActive, active); entered(); if (active === 1) await gate; const out = await realList(); active--; return out; };
+  const first = requestDrain(OWNER, r.io, r.deps);
+  await inside;                                                       // the first drain is now running and held open
+  const second = requestDrain(OWNER, r.io, r.deps);                   // arrives while it runs
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(active, 1, 'the second batch did not start while the first was running');
+  release();
+  await Promise.all([first, second]);
+  assert.equal(maxActive, 1, 'never two drains at once');
+  assert.equal(r.lists(), 2, 'and the late request got a batch of its own');
+});
