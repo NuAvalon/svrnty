@@ -1,5 +1,5 @@
 // Run: npx tsx --test src/components/held/hold-view-copy.test.ts
-// The words on the hold view are the copy owner's, byte for byte (ledger rows 335a-335i4 and 316a): pinned by length and sha256 prefix, and by what the rows forbid and require.
+// The words on the hold view are the copy owner's, byte for byte (ledger rows 335a-335i4, 316a and 338a-338d): pinned by length and sha256 prefix, and by what the rows forbid and require.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -7,7 +7,7 @@ import * as copy from './hold-view-copy';
 
 const h = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 16);
 
-// [row, template, length, sha256 prefix]: the ledger's own numbers (rows 335 and 316a), checked against the file before this was written.
+// [row, template, length, sha256 prefix]: the ledger's own numbers (rows 335 and 316a), checked against the file before this was written. Rows 338a-338d: the strings as the copy owner approved them verbatim (11-20); their hashes were computed from the file after that ruling, the ledger's own numbers for them were not seen.
 const ROWS: Array<[string, string, number, string]> = [
   ['335a/335b1 title + entry', copy.HOLD_VIEW_TITLE, 13, '7ddea045e35a1c25'],
   ['335b2 intro', copy.HOLD_VIEW_INTRO, 100, '90f3a9deed15742a'],
@@ -29,10 +29,14 @@ const ROWS: Array<[string, string, number, string]> = [
   ['335i2 failed move one', copy.HOLD_VIEW_FAILED_MOVE_ONE, 38, '5ec60e7754f94249'],
   ['335i3 failed delete all', copy.HOLD_VIEW_FAILED_DELETE_ALL, 47, '4abc03eb8cde6dd3'],
   ['335i4 failed move all', copy.HOLD_VIEW_FAILED_MOVE_ALL, 45, 'b0302797d650f352'],
+  ['338a load failed', copy.HOLD_VIEW_LOAD_FAILED, 33, '7e97cdbbe7fe09ee'],
+  ['338b moved one, sender not frozen', copy.HOLD_VIEW_MOVED_ONE_NOT_FROZEN, 20, '660853e2c67a1b46'],
+  ['338c moved all, sender not frozen', copy.HOLD_VIEW_MOVED_ALL_NOT_FROZEN, 30, '11908326c0a8f4ac'],
+  ['338d nameless sender label', copy.HOLD_VIEW_NO_NAME, 11, 'af49636912aec2d2'],
 ];
 
 test('HVC1 every template is the copy owner\'s bytes (length + sha256 prefix) and plain ASCII with straight apostrophes', () => {
-  assert.equal(ROWS.length, 20);
+  assert.equal(ROWS.length, 24);
   for (const [name, text, len, sha] of ROWS) {
     assert.equal(text.length, len, `${name}: length`);
     assert.equal(h(text), sha, `${name}: sha256 prefix`);

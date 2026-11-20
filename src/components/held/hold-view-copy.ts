@@ -45,19 +45,19 @@ export const HOLD_VIEW_FAILED_DELETE_ALL = "Some notes weren't deleted. {k} are 
 export const HOLD_VIEW_FAILED_MOVE_ALL = "Some notes weren't moved. {k} are still here.";
 
 /**
- * NOT YET REVIEWED: there is no ledger row for this line yet (asked of the copy owner). It is shown when the held notes cannot be read at all (a locked or unreadable store). It must NEVER be replaced by the
- * empty state ("No held messages."), which would claim nothing is held for a store that could not be read. It is the one string here that is not pinned by a hash; replace it with the reviewed row when it exists.
+ * Ledger row 338a (copy owner, 11-20): approved verbatim. It is shown when the held notes cannot be read at all (a locked or unreadable store). It must NEVER be replaced by the empty state ("No held messages."),
+ * which would claim nothing is held for a store that could not be read.
  */
 export const HOLD_VIEW_LOAD_FAILED = "Couldn't open your held messages.";
 
 /**
- * NOT YET REVIEWED (asked of the copy owner; no ledger row yet): the move results for a sender who is NOT frozen (removed, or unblocked), where "{name} is still frozen" (335g3, 335g4) would be FALSE. They are
- * the reviewed sentences with that second sentence left off, so nothing is claimed that is not true. Replace with the reviewed rows when they exist; like HOLD_VIEW_LOAD_FAILED they are not hash-pinned.
+ * Ledger rows 338b and 338c (copy owner, 11-20): approved verbatim. The move results for a sender who is NOT frozen (removed, or unblocked), where "{name} is still frozen" (335g3, 335g4) would be FALSE: the reviewed
+ * sentences with that second sentence left off, so nothing is claimed that is not true.
  */
 export const HOLD_VIEW_MOVED_ONE_NOT_FROZEN = 'Moved to your inbox.';
 export const HOLD_VIEW_MOVED_ALL_NOT_FROZEN = 'Moved {n} notes to your inbox.';
 
-/** What a contact with no name is called in the sentences above (a removed contact has no page and may have no name). */
+/** Ledger row 338d (copy owner, 11-20): approved. What a contact with no name is called in the sentences above (a removed contact has no page and may have no name). */
 export const HOLD_VIEW_NO_NAME = 'this person';
 
 /**

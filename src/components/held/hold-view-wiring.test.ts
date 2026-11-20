@@ -130,8 +130,16 @@ test('HW8 NOT IN THIS VIEW: no reply, no export (their own items, with their own
   for (const f of ['HeldMessagesView.tsx', 'HeldMessagesSection.tsx', 'hold-view-model.ts']) assert.doesNotMatch(code(`${DIR}/${f}`), /\breply\b|\bexport\b(?! (type|function|const|default|\{))|evidence|download|share/i, f);
 });
 
-test('HW9 the unreviewed lines are the ONLY copy not pinned by a hash, and they are marked as such in the copy module', () => {
+test('HW9 NO LINE IS LEFT UNREVIEWED: no "not yet reviewed" marker remains, and every exported copy constant is pinned by a hash in the copy test (three named aliases / literal pins excepted, each checked)', () => {
   const c = read(`${DIR}/hold-view-copy.ts`);
-  assert.equal((c.match(/NOT YET REVIEWED/g) ?? []).length, 2, 'two marked blocks: the load failure, and the move results for a sender who is not frozen');
-  for (const name of ['HOLD_VIEW_LOAD_FAILED', 'HOLD_VIEW_MOVED_ONE_NOT_FROZEN', 'HOLD_VIEW_MOVED_ALL_NOT_FROZEN']) assert.match(c, new RegExp(`export const ${name} =`), name);
+  const t = read(`${DIR}/hold-view-copy.test.ts`);
+  assert.doesNotMatch(c, /NOT YET REVIEWED/i, 'a line the copy owner has not ruled on must carry the marker; none does');
+  const exported = [...c.matchAll(/^export const (HOLD_VIEW_[A-Z_]+) =/gm)].map((m) => m[1]);
+  assert.ok(exported.length >= 26, `the module's constants are found (control: ${exported.length})`);
+  const EXCEPT = ['HOLD_VIEW_ENTRY', 'HOLD_VIEW_CONFIRM_DELETE', 'HOLD_VIEW_CONFIRM_CANCEL'];
+  assert.ok(c.includes('export const HOLD_VIEW_ENTRY = HOLD_VIEW_TITLE;'), 'ENTRY is an alias of the pinned title');
+  assert.ok(c.includes('export const HOLD_VIEW_CONFIRM_DELETE = HOLD_VIEW_DELETE_ONE;'), 'the confirm button is an alias of the pinned Delete');
+  assert.ok(t.includes("copy.HOLD_VIEW_CONFIRM_CANCEL, 'Cancel'"), 'Cancel is pinned by value in the copy test');
+  for (const n of exported.filter((x) => !EXCEPT.includes(x))) assert.ok(t.includes(`, copy.${n},`), `${n} is a hash-pinned row in the copy test`);
+  assert.equal(t.includes(', copy.HOLD_VIEW_NOT_A_REAL_LINE,'), false, 'control: a line that is not there is not found');
 });
