@@ -128,3 +128,13 @@ test('RL10 SHAPE: the owner step says done only when its commit went through; a 
   assert.ok(/if \(committed\) return 'done';/.test(step), 'and it is guarded by the commit result');
   assert.ok(/\n  return 'lost-race';$/.test(step), 'the last word of the step is lost-race');
 });
+
+test('RL11 SHAPE: the owner\'s move and delete are never a creation and send no receipt: nothing on their path calls a note-creating write, a receipt, a transport or a relay function (and the pattern is shown to see a creating write)', () => {
+  const FORBIDDEN = /putNoteReportingCreated|\bwriteNote\s*\(|\bputNote\s*\(|receipt|Receipt|transport|relay|mailbox|ratchet|\bsend\w*\s*\(|\bdeposit\w*\s*\(/;
+  // CONTROL: the creating write itself matches, so a clean result below means something
+  assert.match(fnBody('export async function putNoteReportingCreated('), /\bwriteNote\s*\(/, 'the creating write calls writeNote');
+  assert.match(fnBody('export async function putNoteReportingCreated('), FORBIDDEN, 'and the pattern sees it');
+  for (const head of ['async function commitCountedHeldRelease(', 'async function commitCountedHeldDelete(', 'async function ownerHeldStep(', 'export function releaseHeldNote(', 'export function deleteHeldNote(']) {
+    assert.doesNotMatch(fnBody(head), FORBIDDEN, `${head} stays clear of creation, receipts and the network`);
+  }
+});
