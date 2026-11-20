@@ -13,6 +13,15 @@
 // then withdraws rows of the key this device still holds, and nothing is deposited under a stale key. The worst case is a match missed until the next renew; it is
 // not a leak. The queue is therefore NEVER rolled back once the key write was attempted: undoing it after the key moved would strand the old rows at the relay.
 //
+// BOUNDS, stated so nobody has to rediscover them:
+//   - The HOLD that keeps the new key from depositing beside the old one (beacon-client.ts, heldByOlderKey) ends when each old row's withdraw is confirmed or the
+//     relay can no longer match its epoch (the epoch's end, the grace window and the one-hour skew margin), so against a relay that never answers it lasts up to
+//     about one week plus that hour. It does not end on a timer of its own and it is not a new stored field.
+//   - What this change prevents is the two generations being MATCHABLE at the same time. It does NOT hide that they are adjacent: across epochs, timing can still
+//     correlate the old generation's last rows with the new generation's first ones, because the new key's first deposit lands at a later epoch than the old key's
+//     last. An observer of the relay may infer that one pair's rows stopped under one key and began under another.
+//   - A device clock fast by more than the relay's one-hour skew margin can still act early on a row or a seed (beacon-relay-margin.ts).
+//   - A replacement leaves the pair UNCONFIRMED: the confirmation belongs to the key it was made for. Until the in-person confirm exists nothing can restore it.
 // It is a TIGHTENING (a local write that sends nothing), so it runs whatever the wire switch says, like a Remove's local latch: it takes no switch and no client.
 // The contact record and the pair record use different compare-and-swap protocols, so this ORDER is the only crash-safe way to move from one to the other.
 import { commitRecord } from '../crypto/beacon-pair-record';
