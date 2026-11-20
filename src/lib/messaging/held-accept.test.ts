@@ -13,7 +13,7 @@ import { mintHeadlessAgent } from '../identity/headless-mint';
 import { memIO } from './ratchet-test-io';
 import { signNoteWire } from './note-auth';
 import { acceptInboundNote } from './transport';
-import { HOLD_CAP_PER_SENDER } from './held-note';
+import { HOLD_CAP_PER_SENDER, heldSweepAction } from './held-note';
 import { NOTE_WIRE_TYPE } from './domains';
 import { sealDirectNote, openDirectNoteStagedTyped } from './direct-session';
 import type { NoteRecord, NoteThread, NoteWireV0 } from './types';
@@ -37,7 +37,9 @@ async function world() {
   const heldCounts = new Map<string, number>();
   const countFlags = { throws: false };
   const flags = { failPut: false };
+  const clock = { ms: null as number | null };   // the OWNER'S clock for the hold's stamps: null = the real one
   const io = {
+    nowMs: () => clock.ms ?? Date.now(),
     putNote: async (n: NoteRecord) => { calls.putNote++; if (flags.failPut) throw new Error('store down'); notes.set(n.note_id, n); },
     putThread: async (t: NoteThread) => { calls.putThread++; threads.set(t.thread_id, t); },
     // the REAL listThreads skips held threads; only the include-held reader returns them (the old mock returned everything from one reader, which hid F1)
@@ -46,8 +48,8 @@ async function world() {
     getNote: async (nid: string) => notes.get(nid) ?? null,
     countHeldFrom: async (fp: string) => { calls.countHeld.push(fp); if (countFlags.throws) throw new Error('count unreadable'); return heldCounts.get(fp) ?? 0; },
   };
-  const wireFor = (note_id: string, body: string, thread_id = 'thr'): Promise<NoteWireV0> =>
-    signNoteWire({ type: NOTE_WIRE_TYPE, note_id, thread_id, from_fingerprint: id.fingerprint, sent_at: new Date().toISOString(), body, participant_kind: 'human' },
+  const wireFor = (note_id: string, body: string, thread_id = 'thr', sent_at: string = new Date().toISOString(), extra: Record<string, unknown> = {}): Promise<NoteWireV0> =>
+    signNoteWire({ type: NOTE_WIRE_TYPE, note_id, thread_id, from_fingerprint: id.fingerprint, sent_at, body, participant_kind: 'human', ...extra } as never,
       id.public_key, sender.secret_material.classicalPrivateKey, sender.secret_material.classicalKpass, id.pq_kem_public_key, id.pq_sig_public_key);
   const frame = async (text: string) => (await sealDirectNote(ME, text, them, peerOf(me), theirIO.io))!;
   const accept = async (wire: NoteWireV0, o: { admitted?: boolean; frozen?: boolean } = {}) => {
@@ -63,7 +65,7 @@ async function world() {
     } catch (e) { threw = e; }
     return { r, reasons, created, threw };
   };
-  return { id, me, peerOf: peerOf(them), myIO, notes, threads, calls, flags, heldCounts, countFlags, wireFor, frame, accept };
+  return { id, me, peerOf: peerOf(them), myIO, notes, threads, calls, flags, heldCounts, countFlags, clock, wireFor, frame, accept };
 }
 
 test('H1 a FROZEN contact\'s note is stored, marked held, with the right body: not dropped, no drop reason', async () => {
@@ -364,5 +366,73 @@ test('HW2 the store throws exactly this when its retries run out (so HW1 stands 
   const store = readFileSync(new URL('./store.ts', import.meta.url), 'utf8');
   assert.match(store, /throw new Error\('note write kept losing the race: retry'\)/);
   assert.match(store, /const NOTE_WRITE_ATTEMPTS = 8;/);
+});
+
+// ── the hold's age stamps (held_at, expiry_seen_at): from the OWNER'S clock only, never from the wire ─────────────────────────────────────────────────────────────────────────────────
+const T0 = Date.parse('2026-06-01T12:00:00.000Z');
+const DAYMS = 86_400_000;
+
+test('HG1 a note is held with held_at = the OWNER\'S clock at that moment, and no expiry stamp (the sweep makes that)', async () => {
+  const w = await world();
+  w.clock.ms = T0;
+  const out = await w.accept(await w.wireFor('g1', await w.frame('held now')), { frozen: true });
+  assert.equal(out.r?.held, true);
+  assert.equal(out.r?.held_at, new Date(T0).toISOString());
+  assert.equal('expiry_seen_at' in out.r!, false);
+  assert.equal(w.notes.get('g1')?.held_at, new Date(T0).toISOString(), 'and the STORED row carries it');
+});
+
+test('HG2 a wire that carries held_at, held and expiry_seen_at (sender-chosen, signed) sets NONE of them: the record has the local stamp, and does not expire at the next sweep', async () => {
+  const w = await world();
+  w.clock.ms = T0;
+  const hostile = { held_at: '2000-01-01T00:00:00.000Z', held: true, expiry_seen_at: '2000-01-02T00:00:00.000Z' };
+  const wire = await w.wireFor('g2', await w.frame('a hostile wire'), 'thr', '2000-01-01T00:00:00.000Z', hostile);
+  assert.equal((wire as unknown as Record<string, unknown>).held_at, '2000-01-01T00:00:00.000Z', 'the wire the accept sees really carries the sender\'s stamps (so this test is not vacuous)');
+  const out = await w.accept(wire, { frozen: true });
+  assert.ok(out.r, `accepted (reasons ${JSON.stringify(out.reasons)})`);
+  assert.equal(out.r!.held_at, new Date(T0).toISOString(), 'held_at is the owner\'s clock, not the wire\'s');
+  assert.equal('expiry_seen_at' in out.r!, false, 'the sender\'s expiry stamp was not copied');
+  assert.equal(heldSweepAction(out.r!, T0 + DAYMS), 'keep', 'a note the sender back-dated to 2000 does not expire at the next sweep');
+  assert.equal(out.r!.sent_at, '2000-01-01T00:00:00.000Z', 'control: the sender\'s sent_at WAS taken as before (it is just not what the age runs from)');
+});
+
+test('HG3 an ADMITTED sender\'s note carries none of the three keys at all, even when the wire names them: an ordinary note is never given a hold stamp', async () => {
+  const w = await world();
+  const wire = await w.wireFor('g3', await w.frame('an ordinary note'), 'thr', new Date().toISOString(), { held_at: '2000-01-01T00:00:00.000Z', held: true, expiry_seen_at: '2000-01-02T00:00:00.000Z' });
+  const out = await w.accept(wire, { admitted: true });
+  assert.ok(out.r);
+  for (const k of ['held', 'held_at', 'expiry_seen_at']) assert.equal(k in out.r!, false, `no ${k} key on an ordinary note`);
+  for (const k of ['held', 'held_at', 'expiry_seen_at']) assert.equal(k in w.notes.get('g3')!, false, `and none on the stored row (${k})`);
+});
+
+test('HG4 a REDELIVERY of a note already held keeps the stamps it has: sending it again does not restart its age or its grace', async () => {
+  const w = await world();
+  const sent = '2026-05-30T00:00:00.000Z';
+  w.clock.ms = T0;
+  const a = await w.accept(await w.wireFor('g4', await w.frame('same words'), 'thr', sent), { frozen: true });
+  assert.equal(a.r?.held_at, new Date(T0).toISOString());
+  // the sweep (a later unlock) stamped it, and then the sender sends the same note again in a new frame, ten days later
+  w.notes.set('g4', { ...w.notes.get('g4')!, expiry_seen_at: new Date(T0 + 2 * DAYMS).toISOString() });
+  w.clock.ms = T0 + 10 * DAYMS;
+  const b = await w.accept(await w.wireFor('g4', await w.frame('same words'), 'thr', sent), { frozen: true });
+  assert.ok(b.r, `accepted (reasons ${JSON.stringify(b.reasons)}, threw ${String(b.threw)})`);
+  assert.equal(b.r!.held_at, new Date(T0).toISOString(), 'held_at is still when it was FIRST held');
+  assert.equal(b.r!.expiry_seen_at, new Date(T0 + 2 * DAYMS).toISOString(), 'and the sweep\'s mark is kept');
+  assert.equal(w.notes.get('g4')?.held_at, new Date(T0).toISOString());
+});
+
+test('HG5 a note held BEFORE the field existed (no held_at) and then redelivered starts its clock now, and forgets a stale expiry stamp', async () => {
+  const w = await world();
+  const sent = '2026-05-30T00:00:00.000Z';
+  w.clock.ms = T0;
+  await w.accept(await w.wireFor('g5', await w.frame('legacy words'), 'thr', sent), { frozen: true });
+  const legacy = { ...w.notes.get('g5')!, expiry_seen_at: new Date(T0 - DAYMS).toISOString() };
+  delete (legacy as { held_at?: string }).held_at;
+  w.notes.set('g5', legacy);
+  w.clock.ms = T0 + 5 * DAYMS;
+  const b = await w.accept(await w.wireFor('g5', await w.frame('legacy words'), 'thr', sent), { frozen: true });
+  assert.ok(b.r, `accepted (reasons ${JSON.stringify(b.reasons)}, threw ${String(b.threw)})`);
+  assert.equal(b.r!.held_at, new Date(T0 + 5 * DAYMS).toISOString());
+  assert.equal('expiry_seen_at' in b.r!, false);
 });
 

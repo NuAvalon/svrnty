@@ -44,9 +44,9 @@ test('W1 the row is named only by held-counts.ts, store.ts and the allowed-prefi
 
 test('W2 no note row is put except through writeNote, and a note row is deleted at exactly two known sites: a new one must update the count in the same transaction', () => {
   assert.equal((code.match(/txPut\('notes'/g) ?? []).length, 0, 'no direct put into the notes store');
-  assert.equal((code.match(/store: 'notes', value:/g) ?? []).length, 1, 'writeNote is the one place a note row is put');
+  assert.equal((code.match(/store: 'notes', value:/g) ?? []).length, 2, 'writeNote is the one place a note is put that can change a count; the other is heldAgeStep\'s STAMP, which rewrites the same held row (same sender, still held), so no count moves');
   assert.equal((code.match(/objectStore\('notes'\)\.put\(/g) ?? []).length, 0, 'no raw put on the notes store object');
-  assert.equal((code.match(/txCommitIfUnchanged\(/g) ?? []).length, 3, 'the commit helper is defined once and called twice: by writeNote and by the reconcile; a third caller is a new write path');
+  assert.equal((code.match(/txCommitIfUnchanged\(/g) ?? []).length, 5, 'the commit helper is defined once and called four times: by writeNote, by the reconcile, and twice by heldAgeStep (its stamp, and its COUNTED delete); a fifth caller is a new write path');
   // The two delete sites: the read function's expiry of an ORDINARY note (a held note never expires on the sender's retention: pin S3), and deleteThread, which keeps every held note.
   assert.equal((code.match(/txDelete\('notes'/g) ?? []).length, 2, 'a third delete of a note row (the hold view, the 30-day expiry, an unfreeze) must go through the count row in the SAME transaction, then raise this number');
   assert.match(fn('async function deleteThread('), /if \(!isHeldNote\(n\)\) await txDelete\('notes'/, 'deleteThread deletes only non-held notes, so it changes no count');
@@ -86,8 +86,12 @@ test('W5 the reconcile reads the row\'s blob BEFORE it walks the notes and write
 
 test('W6 unlocking schedules a reconcile unless a caller opts out, and a dirty rewrite schedules one too', () => {
   const i = fn('export async function initNotesStore(');
-  assert.match(i, /if \(opts\?\.reconcile !== false\) scheduleHeldCountsReconcile\(\);/);
-  assert.ok(i.indexOf('_notesOwner = ownerFingerprint;') < i.indexOf('scheduleHeldCountsReconcile()'), 'only after the key is assigned');
+  assert.match(i, /if \(opts\?\.reconcile !== false\) scheduleHeldMaintenance\(\);/);
+  assert.ok(i.indexOf('_notesOwner = ownerFingerprint;') < i.indexOf('scheduleHeldMaintenance()'), 'only after the key is assigned');
+  const mi = code.indexOf('function scheduleHeldMaintenance(');   // a short function: fn() would refuse it as 'not a real body', so it is cut here, and checked to exist
+  assert.ok(mi >= 0, 'scheduleHeldMaintenance exists');
+  const m = code.slice(mi, code.indexOf('\n}\n', mi));
+  assert.ok(m.indexOf('reconcileHeldCounts()') >= 0 && m.indexOf('reconcileHeldCounts()') < m.indexOf('sweepHeldAge()'), 'the count row is put right FIRST, then the age limit is applied (its counted deletes adjust a row that is right)');
   assert.match(fn('async function writeNote('), /if \(wroteDirty\) scheduleHeldCountsReconcile\(\);/);
 });
 

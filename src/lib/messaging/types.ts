@@ -69,6 +69,12 @@ export interface NoteRecord {
   /** INBOUND only: present (and true) when the sender was FROZEN (in the book and blocked) as this note arrived, so it is kept as evidence and hidden from every
    *  default reader. Inside the sealed payload only: no plaintext column, index or key name carries it, and an ordinary note has no such key at all. */
   held?: true;
+  /** HELD notes only, written in ONE place (acceptInboundNote's held branch) from the OWNER'S clock: when this note was first held (ISO). The hold's age limit runs from THIS and from nothing the sender
+   *  controls (not sent_at, not retention). Absent on a note held before this field existed (the sweep stamps it, never deletes on sight). Inside the sealed payload only. */
+  held_at?: string;
+  /** HELD notes only, written by the age sweep from the owner's clock: when the sweep FIRST saw this note past the limit. Deletion needs this stamp AND a grace after it (held-note.ts), so a device
+   *  clock that jumps forward and stays there gives days to notice, not an instant loss. Cleared when the clock says the note is no longer past the limit. */
+  expiry_seen_at?: string;
 }
 
 /**

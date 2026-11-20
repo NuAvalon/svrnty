@@ -1,6 +1,6 @@
 // Browser-side harness for the REAL notes store (the encrypted IndexedDB one), bundled by esbuild and injected into a page. It exposes the store's own functions
 // and a RAW row reader, so a spec can check both behaviour (which reader returns a held note) and what is at rest (which plaintext keys a held row has).
-import { initNotesStore, readHeldCount, countHeldFromFast, reconcileHeldCounts, putThread, putNoteReportingCreated, listThreads, listNotesForThread, listThreadsIncludingHeld, listNotesIncludingHeld, countHeldFrom, deleteThread, getNote, listInboundSentAtFrom } from '../../src/lib/messaging/store';
+import { initNotesStore, sweepHeldAge, readHeldCount, countHeldFromFast, reconcileHeldCounts, putThread, putNoteReportingCreated, listThreads, listNotesForThread, listThreadsIncludingHeld, listNotesIncludingHeld, countHeldFrom, deleteThread, getNote, listInboundSentAtFrom } from '../../src/lib/messaging/store';
 import type { NoteRecord, NoteThread } from '../../src/lib/messaging/types';
 import { initSessionKey, loadKey, updateContact } from '../../src/lib/identity/client-store';
 import { blockPatch } from '../../src/lib/contacts/metadata-patches';
@@ -45,6 +45,8 @@ declare global {
       deleteSetting(key: string): Promise<void>;
       /** Replace one note row's blob with bytes that are not a valid ciphertext (a note that can no longer be read). */
       corruptNote(noteId: string, threadId: string): Promise<void>;
+      /** Apply the hold's age limit NOW, on the clock the spec gives (production passes none): what was deleted, stamped, cleared, kept or skipped. `limits` is for the off-switch case. */
+      sweep(nowMs: number, limits?: { limitDays?: number; graceDays?: number }): Promise<{ deleted: number; stamped: number; cleared: number; kept: number; skipped: number }>;
     };
   }
 }
@@ -124,6 +126,7 @@ window.__fz = {
       db.close();
     }
   },
+  sweep: (nowMs, limits) => sweepHeldAge(nowMs, limits),
   corruptNote: async (noteId, threadId) => {
     const dbs = (await indexedDB.databases()).filter((d) => d.name && /notes/i.test(d.name));
     for (const info of dbs) {
