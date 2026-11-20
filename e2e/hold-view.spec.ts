@@ -98,6 +98,16 @@ async function openHeldView(page: Page) {
   return view;
 }
 
+/** Identity tab -> Actions -> Lenses & vault: the panel that holds the "Held messages" entry. */
+async function openLensesSection(page: Page) {
+  await page.getByRole('tab', { name: 'Identity', exact: true }).click();
+  await page.getByTestId('card-actions-toggle').click();
+  await page.getByRole('menuitem', { name: 'Lenses & vault' }).click();
+  const section = page.getByTestId('held-section');
+  await expect(section).toBeVisible({ timeout: 15_000 });
+  return section;
+}
+
 const INTRO = 'These arrived while you had Bob frozen. Opening, moving or deleting them sends nothing to Bob.';
 const AGE = 'Notes held here longer than 30 days are marked expiring, then removed at least 7 days later.';
 const CAP = "We keep up to 500 notes from each person you've frozen. After that, new notes from them aren't kept, and they stop getting delivery receipts, so they could notice.";
@@ -241,6 +251,83 @@ for (const [vpName, viewport] of [['desktop', null], ['phone 390x844', { width: 
       seen.length = 0;
       await page.evaluate(() => fetch('/api/relay/envelope', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then(() => null, () => null));
       await expect.poll(() => seen.filter((r) => r.method === 'POST').length, { timeout: 10_000 }).toBeGreaterThan(0);
+    });
+
+    test('U7 Lenses & vault: the entry has no count and no digit even with notes; closed lists nothing; open lists the senders who are NOT frozen ("this person" + a code tag), not Bob while frozen; moving says exactly "Moved to your inbox." and never "still frozen"', async ({ page }) => {
+      const s = await setup(page, { blocked: true });
+      const STRANGER = 'c0ffee11'.repeat(8);
+      await seedHeld(page, s.bobFp, 'T-bob', [{ id: 'h1', body: 'bob held' }]);
+      await seedHeld(page, STRANGER, 'T-stranger', [{ id: 's1', body: 'stranger one' }, { id: 's2', body: 'stranger two', heldAgoDays: 2 }]);
+      const section = await openLensesSection(page);
+      const entry = section.getByTestId('held-section-entry');
+      await expect(entry).toHaveText('Held messages');
+      expect(await entry.innerText(), 'no digit on the entry even though notes are held').not.toMatch(/\d/);
+      await expect(section.getByTestId('held-section-groups'), 'closed: nothing is listed and nothing was read').toHaveCount(0);
+      await entry.click();
+      const groups = section.getByTestId('held-section-groups');
+      await expect(groups).toBeVisible({ timeout: 15_000 });
+      const tag = STRANGER.slice(0, 8);
+      await expect(section.getByTestId(`held-section-sender-${tag}`)).toHaveText(`this person ${tag}`);
+      await expect(section.getByTestId(`held-section-sender-${s.bobFp.slice(0, 8)}`), 'Bob is frozen: his notes are reached on his own page, not here').toHaveCount(0);
+      // CONTROL: unblock Bob and he is listed (the list is decided by "not frozen", not by who the sender is)
+      await page.evaluate(([id]) => window.__fz.setBlocked(id as string, false), [s.bobId]);
+      await entry.click();
+      await entry.click();
+      await expect(section.getByTestId(`held-section-sender-${s.bobFp.slice(0, 8)}`)).toBeVisible({ timeout: 15_000 });
+      // the view for a sender with no name
+      await section.getByTestId(`held-section-sender-${tag}`).click();
+      const view = section.getByTestId('held-view');
+      await expect(view).toBeVisible({ timeout: 15_000 });
+      await expect(view.getByTestId('held-intro')).toContainText('These arrived while you had this person frozen.');
+      await view.getByTestId('held-note-s1').getByTestId('held-move-one').click();
+      await expect(view.getByTestId('held-status')).toHaveText('Moved to your inbox.');
+      expect(await view.getByTestId('held-status').innerText()).not.toMatch(/still frozen/i);
+      await expect(view.getByTestId('held-note-s1')).toHaveCount(0);
+      await expect(view.getByTestId('held-note-s2')).toBeVisible();
+      expect(await held(page, STRANGER)).toEqual({ count: 1 });
+      await expectRowEqualsScan(page, STRANGER, 'after the move from the section');
+    });
+
+    test('U8 REMOVE the frozen contact through its real card menu: the held notes stay stored and are then reached from Lenses & vault', async ({ page }) => {
+      const s = await setup(page, { blocked: true });
+      await seedHeld(page, s.bobFp, 'T-bob', [{ id: 'h1', body: 'kept one' }, { id: 'h2', body: 'kept two', heldAgoDays: 2 }]);
+      const { menu } = await openBlockedBobMenu(page);
+      await menu.getByRole('menuitem', { name: 'Remove', exact: true }).click();
+      const confirm = page.getByTestId('trust-action-confirm');
+      await expect(confirm).toBeVisible();
+      await confirm.getByTestId('trust-action-confirm-btn').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.locator('[data-testid="contact-row"]').filter({ hasText: 'Bob' }), 'Bob is really gone from the book').toHaveCount(0);
+      expect(await held(page, s.bobFp), 'removing the contact deletes no held note').toEqual({ count: 2 });
+      expect(await allNoteIds(page, 'T-bob')).toEqual(['h1', 'h2']);
+      await expectRowEqualsScan(page, s.bobFp, 'after the contact was removed');
+      const section = await openLensesSection(page);
+      await section.getByTestId('held-section-entry').click();
+      const tag = s.bobFp.slice(0, 8);
+      await section.getByTestId(`held-section-sender-${tag}`).click();
+      const view = section.getByTestId('held-view');
+      await expect(view.getByTestId('held-note-h1')).toBeVisible({ timeout: 15_000 });
+      await expect(view.getByTestId('held-note-h2')).toBeVisible();
+      expect(await view.innerText(), 'the view for a removed contact names no one and promises nothing about a freeze').not.toMatch(/still frozen/i);
+    });
+
+    test('U9 the view fits the screen: the page never scrolls sideways and the view lies inside the viewport (screenshot attached)', async ({ page }, testInfo) => {
+      const s = await setup(page, { blocked: true });
+      await seedHeld(page, s.bobFp, 'T-bob', [{ id: 'h1', body: 'a long held message '.repeat(12), heldAgoDays: 1 }, { id: 'h2', body: 'unbroken'.repeat(14), heldAgoDays: 3 }, { id: 'h3', body: 'old', heldAgoDays: 40, marked: true }]);
+      const view = await openHeldView(page);
+      await expect(view.getByTestId('held-note-h3')).toBeVisible();
+      const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth, bw: document.body.scrollWidth }));
+      expect(m.sw, `the page scrolls sideways (scrollWidth ${m.sw} > innerWidth ${m.iw})`).toBeLessThanOrEqual(m.iw);
+      expect(m.bw, 'the body scrolls sideways').toBeLessThanOrEqual(m.iw);
+      const box = await view.boundingBox();
+      expect(box, 'the view has a box').not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width, 'the view reaches past the right edge').toBeLessThanOrEqual(m.iw + 1);
+      for (const id of ['held-move-all', 'held-delete-all']) {
+        const b = await view.getByTestId(id).boundingBox();
+        expect(b && b.x >= 0 && b.x + b.width <= m.iw + 1, `${id} is on screen`).toBe(true);
+      }
+      await testInfo.attach(`hold-view-${vpName.split(' ')[0]}.png`, { body: await page.screenshot({ fullPage: false }), contentType: 'image/png' });
     });
   });
 }
