@@ -22,7 +22,7 @@
 // answer, before it is applied. A latched pair is skipped by every scheduled action. matchState is fail-closed.
 import * as wire from './beacon-wire.mjs';
 import { relayDead } from './beacon-relay-margin';
-import { commitRecord, dropRowAt, mergeRecAt } from './beacon-pair-record';
+import { commitRecord, dropRowAt, mergeRecAt, queueWithdrawNowAt } from './beacon-pair-record';
 import { queueUnqueuedLiveRows, queueWithdraws, type ReleaseQueueDeps } from './beacon-release-queue';
 import { buildDeposit, signAuth, scheduleRedeposit, type DepositKeys, type Point, type Signals } from './beacon-prover';
 
@@ -417,9 +417,37 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
   const heldByOlderKey = async (pairId: string): Promise<boolean> => {
     if (!deps.secrets.rowsAreUnderHeldKey) return false;
     const stored = await deps.store.get(pairId);
-    if (!stored || stored.pendingWithdraws.length === 0) return false;
-    const rows = stored.pendingWithdraws.map((w) => ({ rowId: w.rowId, epoch: stored.rows.find((r) => r.rowId === w.rowId)?.epoch ?? '' }));
-    try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, rows)); } catch { return true; }
+    if (!stored) return false;
+    // every queued withdraw, AND every live unsettled row of the record even if it has no queue entry: a row a deposit sent in the gap of a replacement has none
+    const rows = new Map<string, { rowId: string; epoch: string }>();
+    for (const w of stored.pendingWithdraws) rows.set(w.rowId, { rowId: w.rowId, epoch: stored.rows.find((r) => r.rowId === w.rowId)?.epoch ?? '' });
+    for (const r of stored.rows) if (!isSettled(r.state) && !relayDead(r.epoch, now())) rows.set(r.rowId, { rowId: r.rowId, epoch: r.epoch });
+    if (rows.size === 0) return false;
+    try { return !(await deps.secrets.rowsAreUnderHeldKey(pairId, [...rows.values()])); } catch { return true; }
+  };
+
+  /** A row in these states has no withdraw to send. */
+  const isSettled = (state: RowRecord['state']): boolean => state === 'withdrawn' || state === 'spent' || state === 'unreachable';
+
+  /**
+   * #956 S1b SELF-HEAL: queue every live unsettled row that is NOT under the key held now and has no queue entry. A replacement queues the rows it knows of and sweeps once
+   * more after its key write, but a crash between the key write and that sweep (or a sweep that throws) would leave a row under the old key that nothing withdraws and the
+   * queue-only hold never sees. This runs at a held deposit and at every drain, so the next tick of either queues it, and the hold then applies. It queues nothing when the
+   * held key cannot be read (nothing can be told apart then) or the pair is removed (a Remove has already queued its rows).
+   */
+  const queueStaleRows = async (pairId: string): Promise<void> => {
+    const check = deps.secrets.rowsAreUnderHeldKey;
+    if (!check) return;
+    const stored = await deps.store.get(pairId);
+    if (!stored || !(await deps.secrets.depositSecrets(pairId))) return;
+    let added = false;
+    for (const row of stored.rows) {
+      if (isSettled(row.state) || relayDead(row.epoch, now()) || stored.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
+      let under = false;
+      try { under = await check.call(deps.secrets, pairId, [{ rowId: row.rowId, epoch: row.epoch }]); } catch { under = false; }
+      if (!under) { queueWithdrawNowAt(stored, row.rowId, now()); added = true; }
+    }
+    if (added) await commit(stored);
   };
 
   /**
@@ -529,6 +557,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         queueWithdraw(rec, row.rowId, 0);                             // stored 'unknown': an earlier call may have sent it
       }
       try { await commit(rec); } catch { return 'unsaved'; }
+      try { await queueStaleRows(rec.pairId); } catch { /* the next drain tries again */ }
       return 'unsent';                                                // owed stays derived: the next renew tries again once the hold has ended
     }
     const a = await post('deposit', built.body);
@@ -947,6 +976,7 @@ export function createBeaconClient(deps: BeaconClientDeps): BeaconClient {
         // L6c: repair a half-done Remove before touching the pair's queue — same single commit,
         // then THIS drain retires the entries it queued.
         if (await repairHalfDoneRemove(stored.pairId)) { /* committed inside repair; rec reload below */ }
+        try { await queueStaleRows(stored.pairId); } catch { /* a failed self-heal must not stop the drain: it runs again next tick */ }
         const rec = (await deps.store.get(stored.pairId)) ?? stored;      // refresh after a repair
         let dirty = false;
         const resched = new Map<string, { attempts: number; nextAt: number }>();

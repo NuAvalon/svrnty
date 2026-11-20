@@ -7,7 +7,11 @@
 //   2. PLAN and queue the withdraw of every row of the pair, while the old key still names them. If the plan cannot be made, the replace is REFUSED: nothing was
 //      queued, nothing was released, the key is unchanged (beacon-release-queue.ts plans first, so a throw touches nothing);
 //   3. COMMIT the queue, then queue anything a concurrent deposit landed meanwhile. "Released" means the queue is COMMITTED, not drained;
-//   4. only then write the new key, as a compare-and-set on the old key and generation, so a concurrent change aborts it.
+//   4. only then write the new key, as a compare-and-set on the old key and generation, so a concurrent change aborts it;
+//   5. and AFTER the key write, sweep once more: steps 3 and 4 are several awaits apart, the old key is still held in between, and a deposit that is SENT inside
+//      that gap passes every check (it is under the held key) yet has no queue entry. Only rows under the OLD key are queued (the adapter handed in here answers for the
+//      old key), because a deposit under the new key may legitimately exist by then. A throw here does NOT make the outcome 'refused': the key HAS changed, so
+//      'refused' (the saved details are unchanged) would be false. The row it missed is queued by the self-heal on the next drain or deposit attempt.
 //
 // THE IN-BETWEEN STATE is named and safe: a crash after step 3, or a step 4 that aborts or fails, leaves the queue COMMITTED and the key UNCHANGED. The drain
 // then withdraws rows of the key this device still holds, and nothing is deposited under a stale key. The worst case is a match missed until the next renew; it is
@@ -30,6 +34,8 @@ import type { PairConfirmedPort, PairRecord } from '../crypto/beacon-client';
 
 export interface HeldKey { publicKey: string; generation: number }
 
+/** NOTE on `secrets`: its held key must be the OLD key for the whole replacement, including after the key write (the composer builds it from the old point), because the
+ *  post-write sweep asks it which rows are under the old key. */
 export interface KeyReplaceDeps extends ReleaseQueueDeps {
   /** the pair this contact's key belongs to */
   pairId: string;
@@ -70,5 +76,16 @@ export async function replaceHeldBeaconKey(deps: KeyReplaceDeps, held: HeldKey, 
   // 4. only now the key. From here the queue is never undone, whatever happens.
   let applied = false;
   try { applied = await deps.writeKey(held, next); } catch { applied = false; }
-  return applied ? { kind: 'replaced', wasConfirmed } : { kind: 'refused' };
+  if (!applied) return { kind: 'refused' };
+
+  // 5. THE KEY HAS CHANGED. Queue any row under the OLD key that a deposit landed between the last sweep and the key write. Never turns the outcome into 'refused'.
+  try {
+    const cur = await deps.store.get(deps.pairId);
+    if (cur) {
+      const underOld = async (row: { rowId: string; epoch: string }) =>
+        deps.secrets.rowsAreUnderHeldKey ? deps.secrets.rowsAreUnderHeldKey(deps.pairId, [{ rowId: row.rowId, epoch: row.epoch }]) : true;
+      await queueUnqueuedLiveRows(cur, deps, () => true, underOld);
+    }
+  } catch { /* the key changed: stay 'replaced'; the self-heal queues the row on the next drain or deposit attempt */ }
+  return { kind: 'replaced', wasConfirmed };
 }

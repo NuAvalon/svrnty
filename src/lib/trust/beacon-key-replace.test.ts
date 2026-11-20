@@ -28,7 +28,7 @@ const row = (id: string, epoch: number, state: RowRecord['state'] = 'standing'):
 const seed = (store: ReturnType<typeof memStore>, rows: RowRecord[]) => store.data.set(PAIR, { pairId: PAIR, observedMatch: false, spentEpochs: [], refusedEpochs: [], rows, pendingWithdraws: [], version: 1 });
 
 /** Everything observable: the order of the events, and what the store held at the instant the key was written. */
-const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'throw'; plan?: 'throw' } = {}) => {
+const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'throw'; plan?: 'throw'; gapRows?: RowRecord[]; underOld?: (rowId: string) => boolean; postWriteReadThrows?: boolean } = {}) => {
   const store = memStore(); const log: string[] = []; const released: string[] = [];
   let atKeyWrite: { pending: string[]; rows: string[] } | null = null;
   const over = opts;                                                  // the rig's own switches, kept apart from the dependencies they configure
@@ -37,6 +37,7 @@ const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'thro
     secrets: {
       releaseRow: async (id) => { released.push(id); },
       planPairRows: async () => { log.push('plan'); if (over.plan === 'throw') throw new Error('the old key cannot be named'); return []; },
+      ...(over.underOld ? { rowsAreUnderHeldKey: async (_p: string, rows: ReadonlyArray<{ rowId: string }>) => rows.every((r) => over.underOld!(r.rowId)) } : {}),
     },
     confirmed: { isConfirmed: async () => { log.push('confirmed?'); if (over.confirmed === 'throw') throw new Error('locked'); return over.confirmed === true; } },
     writeKey: async (expected, next) => {
@@ -44,6 +45,10 @@ const rig = (opts: { keyApplies?: boolean | 'throw'; confirmed?: boolean | 'thro
       const r = store.data.get(PAIR);
       atKeyWrite = { pending: (r?.pendingWithdraws ?? []).map((w) => w.rowId).sort(), rows: (r?.rows ?? []).map((x) => x.rowId).sort() };
       assert.deepEqual(expected, OLD); assert.deepEqual(next, NEW);
+      if (over.gapRows) {                                            // rows a deposit landed between the last sweep and the key write
+        const g = store.data.get(PAIR)!; g.rows.push(...over.gapRows); g.version = (g.version ?? 0) + 1;
+      }
+      if (over.postWriteReadThrows) store.get = async () => { throw new Error('the store cannot be read now'); };
       if (over.keyApplies === 'throw') throw new Error('storage failed');
       return over.keyApplies !== false;
     },
@@ -127,4 +132,15 @@ test('KR9 NO NETWORK, NO SWITCH, NO CLIENT: the module imports only the queue, t
   const imports = [...src.matchAll(/^import\s+(type\s+)?[^;]*from\s+'([^']+)'/gm)].map((m) => `${m[1] ? 'type ' : ''}${m[2]}`);
   assert.deepEqual(imports.sort(), ['../crypto/beacon-pair-record', '../crypto/beacon-release-queue', 'type ../crypto/beacon-client'].sort());
   assert.doesNotMatch(src, /pendingWithdraws\s*=|\.put\(|unqueue|delete\s/, 'nothing here undoes the queue: it is never rolled back once the key write was attempted');
+});
+
+test('KR10 the key HAS changed: if the sweep after the key write throws, the outcome is still REPLACED (never refused, which would say the saved details are unchanged)', async () => {
+  const r = rig({ postWriteReadThrows: true }); seed(r.store, [row('a', E)]);
+  assert.deepEqual(await replaceHeldBeaconKey(r.deps, OLD, NEW), { kind: 'replaced', wasConfirmed: false });
+});
+
+test('KR11 the sweep after the key write queues a row a deposit landed in the gap, if it is under the OLD key, and leaves a row under the NEW key alone', async () => {
+  const r = rig({ gapRows: [row('gapOld', E), row('gapNew', E)], underOld: (id) => id !== 'gapNew' }); seed(r.store, [row('a', E)]);
+  assert.deepEqual(await replaceHeldBeaconKey(r.deps, OLD, NEW), { kind: 'replaced', wasConfirmed: false });
+  assert.deepEqual(r.store.data.get(PAIR)!.pendingWithdraws.map((w) => w.rowId).sort(), ['a', 'gapOld'], 'the old-key row from the gap is queued; the new-key row is not');
 });

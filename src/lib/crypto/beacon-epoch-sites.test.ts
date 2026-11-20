@@ -35,6 +35,8 @@ const MARGIN: Site[] = [
   { name: 'drainQueuedWithdraws', file: 'client', signature: /const drainQueuedWithdraws = async/ },
   { name: 'drainPendingWithdraws', file: 'client', signature: /async drainPendingWithdraws\(/ },
   { name: 'planPairRows', file: 'secrets', signature: /async planPairRows\(/ },
+  { name: 'heldByOlderKey', file: 'client', signature: /const heldByOlderKey = async/ },
+  { name: 'queueStaleRows', file: 'client', signature: /const queueStaleRows = async/ },
   { name: 'queueWithdraws', file: 'queue', signature: /export async function queueWithdraws\(/ },
   { name: 'queueUnqueuedLiveRows', file: 'queue', signature: /export async function queueUnqueuedLiveRows\(/ },
 ];

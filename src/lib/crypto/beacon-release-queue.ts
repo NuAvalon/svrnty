@@ -15,7 +15,7 @@ import { commitRecord, dropRowAt, queueWithdrawNowAt } from './beacon-pair-recor
 import type { BeaconSecretsPort, BeaconStorePort, PairRecord } from './beacon-client';
 
 export interface ReleaseQueueDeps {
-  secrets: Pick<BeaconSecretsPort, 'releaseRow' | 'planPairRows'>;
+  secrets: Pick<BeaconSecretsPort, 'releaseRow' | 'planPairRows' | 'rowsAreUnderHeldKey'>;
   store: BeaconStorePort;
   now: () => number;
 }
@@ -50,10 +50,11 @@ export async function queueWithdraws(rec: PairRecord, d: ReleaseQueueDeps): Prom
  * L6d: retire every live row of the MERGED record. The caller's own commit merges in rows a concurrent deposit wrote — they have no queue entry, and the drain
  * walks only the queue. Bounded passes (the 8-swap rule): queue every live unqueued row of the merged record, commit again if any were added, repeat until a pass
  * adds nothing. `stillMine` is asked before every pass with the STORED record: it says whether the pair is still in the state this caller put it in (a Remove: the
- * tap is still trust-false at the generation it wrote; a newer tap owns the pair and its rows are never queued).
+ * tap is still trust-false at the generation it wrote; a newer tap owns the pair and its rows are never queued). `only`, when given, is asked about each
+ * unqueued live row and only a row it answers true for is queued (a key replacement uses it to queue only rows under the OLD key).
  */
 export async function queueUnqueuedLiveRows(
-  rec: PairRecord, d: ReleaseQueueDeps, stillMine: (stored: PairRecord | undefined) => boolean,
+  rec: PairRecord, d: ReleaseQueueDeps, stillMine: (stored: PairRecord | undefined) => boolean, only?: (row: PairRecord['rows'][number]) => Promise<boolean>,
 ): Promise<void> {
   for (let i = 0; i < 8; i++) {
     const cur = await d.store.get(rec.pairId);
@@ -63,6 +64,7 @@ export async function queueUnqueuedLiveRows(
       if (settled(row.state)) continue;
       if (relayDead(row.epoch, d.now())) continue;                  // only a row the relay can still match is queued
       if (rec.pendingWithdraws.some((w) => w.rowId === row.rowId)) continue;
+      if (only && !(await only(row))) continue;
       queueWithdrawNowAt(rec, row.rowId, d.now());
       added = true;
     }
