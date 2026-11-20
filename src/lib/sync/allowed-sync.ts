@@ -20,7 +20,7 @@
 // re-verifies vs the stored bound sig_pubkey + requires a bound identity. Fail-closed on any miss.
 
 import { toBase64 } from '@/lib/crypto/kdf';
-import { signAllowedAdd, signAllowedRemove } from '@/lib/identity/raw-sign';
+import { signAllowedAdd, signAllowedRemove, signPsiAuth } from '@/lib/identity/raw-sign';
 
 /** Same-origin proxy base (#189). POST {base}/{owner} add · DELETE {base}/{owner}/{sender} revoke. */
 const ALLOWED_BASE = '/api/satellite/allowed';
@@ -112,18 +112,71 @@ export async function removeAllowedSender(args: AllowedOpArgs): Promise<boolean>
   }
 }
 
+/** What one consent change asks of the satellite's list: put the peer on it, take the peer off it, or nothing at all. */
+export type AllowedRowDecision = 'add' | 'delete' | 'none';
+
 /**
- * Reconcile the satellite allowed_senders row to the client consent invariant, BY CONSTRUCTION:
- * ADD when (trusted ∧ open_vis ∧ !blocked), DELETE otherwise. Call from every handler that can change
- * the invariant (trust-toggle, block-toggle, go-private/open_visibility-toggle) with the POST-change
- * consent — the row then mirrors the reveal set regardless of WHICH axis moved. Both ops are satellite-
- * idempotent, so a no-op transition is harmless. Returns the action taken + its ok (fail-closed).
+ * THE ONE RULE (#959). A DELETE is sent only for a peer that HAS a row at the satellite (`rowAtRelay`: the relay's own list names it, see listAllowedSenders) and whose
+ * consent no longer allows one. A peer that never had a row sends NOTHING: a DELETE for it tells the satellite's operator that fingerprint and revokes nothing. The answer comes
+ * from the RELAY'S STATE, not from the consent before the change or any local record, so a DELETE that never went out (the app closed, the request failed) is still owed at the next change
+ * or tick, and so is a row for a contact that was removed or blocked long ago.
+ * ADD is unchanged: whenever the consent allows a row (idempotent at the satellite).
+ */
+export function allowedRowDecision(rowAtRelay: boolean, after: PeerConsent): AllowedRowDecision {
+  if (allowedRowShouldExist(after)) return 'add';
+  if (rowAtRelay) return 'delete';
+  return 'none';
+}
+
+/** What the relay's own list said: the list, "the relay keeps no list" (410), or nothing usable. */
+export type AllowedListResult = { status: 'ok'; fps: string[] } | { status: 'gone' } | { status: 'unknown' };
+
+/** a bound so a hostile or damaged answer cannot make the drain do unbounded work */
+const MAX_LISTED = 50_000;
+
+/**
+ * The satellite's own list of who it allows for this owner (GET /api/satellite/allowed/{owner}; Ed25519 psi-auth tag in X-Signature, the same wire as the DELETE; the relay returns
+ * fingerprints only). It is the truth about which rows exist, so what is OWED a DELETE is this list minus the peers whose consent allows a row now.
+ *
+ * Retire this with #540; the revoke check moves client-side with it.
+ *
+ * A FAILURE IS NEVER AN EMPTY LIST: a 403, a 5xx, a network error, a body that is not a list of non-empty strings, all answer 'unknown', which the caller treats as "try again next tick" and
+ * which touches no state. 410 is the ONE exception ('gone': once the relay stops keeping the list there is nothing owed). A real empty list is { status: 'ok', fps: [] }.
+ */
+export async function listAllowedSenders(args: AllowedOpArgs): Promise<AllowedListResult> {
+  const f = args.fetchImpl ?? fetch;
+  const base = args.base ?? ALLOWED_BASE;
+  const unix = nowUnix(args);
+  try {
+    const res = await f(`${base}/${encodeURIComponent(args.ownerFp)}`, {
+      method: 'GET',
+      headers: { 'X-Signature': wire(signPsiAuth(args.seed, args.ownerFp, unix), unix) },
+    });
+    if (res.status === 410) return { status: 'gone' };
+    if (!res.ok) return { status: 'unknown' };
+    const body: unknown = await res.json();
+    const list = body && typeof body === 'object' ? (body as { allowed?: unknown }).allowed : undefined;
+    if (!Array.isArray(list) || list.length > MAX_LISTED || !list.every((x) => typeof x === 'string' && x.length > 0)) return { status: 'unknown' };
+    return { status: 'ok', fps: list as string[] };
+  } catch (err) {
+    // unknown (retry next tick), but NEVER silently: a bug in this request must not look like a quiet relay
+    if (typeof console !== 'undefined') console.warn('[psi] allowed list request failed (will retry):', err);
+    return { status: 'unknown' };
+  }
+}
+
+/**
+ * Reconcile the satellite allowed_senders row to the client consent invariant, BY CONSTRUCTION, from the consent AFTER the change and whether the peer may have a row (see
+ * allowedRowDecision). Call from every handler that can change the invariant (trust-toggle, block-toggle, go-private/open_visibility-toggle, import-merge, contact removal) with
+ * the POST-change consent — the row then mirrors the reveal set regardless of WHICH axis moved. This is the ONLY function that reaches removeAllowedSender (pinned by a source
+ * test). Returns the action taken + its ok (fail-closed), or { action: 'none' } when nothing was to be sent.
  */
 export async function reconcileAllowedForPeer(
-  args: AllowedOpArgs & { consent: PeerConsent },
-): Promise<{ action: 'add' | 'delete'; ok: boolean }> {
-  if (allowedRowShouldExist(args.consent)) {
-    return { action: 'add', ok: await addAllowedSender(args) };
+  args: AllowedOpArgs & { consent: PeerConsent; rowAtRelay: boolean },
+): Promise<{ action: 'add' | 'delete'; ok: boolean } | { action: 'none' }> {
+  switch (allowedRowDecision(args.rowAtRelay, args.consent)) {
+    case 'add': return { action: 'add', ok: await addAllowedSender(args) };
+    case 'delete': return { action: 'delete', ok: await removeAllowedSender(args) };
+    default: return { action: 'none' };
   }
-  return { action: 'delete', ok: await removeAllowedSender(args) };
 }
