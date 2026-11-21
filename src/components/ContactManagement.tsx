@@ -570,10 +570,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setLoading(true);
       setError(null);
-      // Route through the single trust-transition chokepoint: local write (+trust_history +#111) +
-      // blind satellite commit/revoke + PSI reconcile + EMIT-ONLY deposit — so this surface and the
-      // trust-MAP surface (app/page.tsx) can't drift (Flint floor-verify #173014). EMIT-ONLY: nothing
-      // local flips reciprocal; the peer's verified receive does.
+      // Route through the single trust-transition chokepoint: a local write (+trust_history) and, on dev
+      // builds only, the PSI reveal-set reconcile, which talks to the server. On production builds a Trust
+      // tap makes no request. It never marks a contact mutual: no local write sets the other side. So this
+      // surface and the trust map (app/page.tsx) can't drift.
       await applyTrustTransition(
         {
           fingerprint,
@@ -612,6 +612,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // (in-person / other-channel) — NOT a flag-flip/force-true. This is the missing card leg:
       // once verified, confirmTarget.ownerVerified flips true → card-Trust (PR#149) applies.
       await updateContact(contact.id, (fresh) => ownerVerifyHeldPatch(fresh, method));
+      // The Trust confirmation is built from selectedContact, which holds the contact as it was when its row was clicked: read the record back
+      // so the confirmation that follows this Verify sees the stamp that was just saved.
+      const after = await getContact(contact.id);
+      if (after) setSelectedContact((cur) => (cur && cur.id === after.id ? recordToContact(after) : cur));
       await loadContacts();
     } catch (err) {
       setError(contactFailureMessage(err, 'verify'));
