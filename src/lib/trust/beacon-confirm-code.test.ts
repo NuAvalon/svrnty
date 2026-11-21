@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { confirmCode, codesMatch, decideConfirmFromCompare, CONFIRM_DOMAIN, NONCE_BYTES, type KeyView } from './beacon-confirm-code';
+import { confirmCode, codesMatch, decideConfirmFromCompare, otherRole, CONFIRM_DOMAIN, NONCE_BYTES, type ConfirmRole, type KeyView } from './beacon-confirm-code';
 
 const bytes = (n: number, fill: number): Uint8Array => new Uint8Array(n).fill(fill);
 const A: KeyView = { pub: bytes(32, 0x11), gen: 1_800_000_001 };
@@ -15,27 +15,33 @@ const NONCE = Uint8Array.from({ length: NONCE_BYTES }, (_, i) => i + 1);
 // An independent reading of the specification (node:crypto, plain BigInt), so the module is not only checked against itself.
 const lp = (b: Uint8Array): Buffer => { const h = Buffer.alloc(4); h.writeUInt32BE(b.length); return Buffer.concat([h, b]); };
 const pairBytes = (k: KeyView): Buffer => { const g = Buffer.alloc(8); g.writeBigUInt64BE(BigInt(k.gen)); return Buffer.concat([Buffer.from(k.pub), g]); };
-function reference(own: KeyView, held: KeyView, nonce: Uint8Array, domain = CONFIRM_DOMAIN): string {
+function reference(own: KeyView, held: KeyView, nonce: Uint8Array, role: string, domain = CONFIRM_DOMAIN): string {
   const pairs = [pairBytes(own), pairBytes(held)].sort(Buffer.compare);
-  const d = createHash('sha256').update(Buffer.concat([lp(Buffer.from(domain)), lp(pairs[0]), lp(pairs[1]), lp(nonce)])).digest();
+  const d = createHash('sha256').update(Buffer.concat([lp(Buffer.from(domain)), lp(Buffer.from(role)), lp(pairs[0]), lp(pairs[1]), lp(nonce)])).digest();
   return (d.readBigUInt64BE(0) % BigInt(1_000_000)).toString().padStart(6, '0');
 }
-const code = (own: KeyView, held: KeyView, nonce = NONCE): string => {
-  const r = confirmCode(own, held, nonce);
+const code = (own: KeyView, held: KeyView, nonce = NONCE, role: ConfirmRole = 'starter'): string => {
+  const r = confirmCode(own, held, nonce, role);
   assert.equal(r.ok, true, JSON.stringify(r));
   return (r as { ok: true; code: string }).code;
 };
 
 // ---------- the code ----------
-test('CC1 the code is exactly the specified derivation: it equals an independent reference, and one fixed vector is pinned', () => {
-  assert.equal(code(A, B), reference(A, B, NONCE));
-  assert.equal(code(B, A), reference(B, A, NONCE));
-  assert.match(code(A, B), /^[0-9]{6}$/);
-  assert.equal(code(A, B), '409689');
+test('CC1 the code is exactly the specified derivation: it equals an independent reference, and the fixed vectors of both roles are pinned', () => {
+  for (const role of ['starter', 'scanner'] as const) {
+    assert.equal(code(A, B, NONCE, role), reference(A, B, NONCE, role), role);
+    assert.equal(code(B, A, NONCE, role), reference(B, A, NONCE, role), role);
+    assert.match(code(A, B, NONCE, role), /^[0-9]{6}$/);
+  }
+  assert.equal(code(A, B, NONCE, 'starter'), '327698');   // also computed with plain Python (hashlib), outside this repo
+  assert.equal(code(A, B, NONCE, 'scanner'), '043254');
 });
 
-test('CC2 role independence: the phone that holds (own A, held B) and the phone that holds (own B, held A) show the SAME code', () => {
-  assert.equal(code(A, B), code(B, A));
+test('CC2 the code is role-independent in KEY ORDER and role-dependent in DIRECTION: the two phones agree on each role\'s code, and the two roles\' codes differ', () => {
+  for (const role of ['starter', 'scanner'] as const) assert.equal(code(A, B, NONCE, role), code(B, A, NONCE, role), `both phones compute the same ${role} code`);
+  assert.notEqual(code(A, B, NONCE, 'starter'), code(A, B, NONCE, 'scanner'), 'the code shown by one phone is not the code the same phone must be given');
+  assert.equal(otherRole('starter'), 'scanner');
+  assert.equal(otherRole('scanner'), 'starter');
 });
 
 test('CC3 every input matters: either key, either generation and the nonce each change the code (a stale or substituted key on either side gives a mismatch)', () => {
@@ -48,12 +54,14 @@ test('CC3 every input matters: either key, either generation and the nonce each 
   assert.notEqual(code(bump(A), B), base, 'own generation');
   assert.notEqual(code(A, bump(B)), base, 'held generation');
   assert.notEqual(code(A, B, other), base, 'nonce');
-  assert.notEqual(reference(A, B, NONCE, CONFIRM_DOMAIN + 'x'), base, 'the domain tag is part of the input');
+  assert.notEqual(reference(A, B, NONCE, 'starter', CONFIRM_DOMAIN + 'x'), base, 'the domain tag is part of the input');
+  assert.notEqual(code(A, B, NONCE, 'scanner'), base, 'the role');
+  assert.match(CONFIRM_DOMAIN, /:v2$/, 'the tag moved with the directional code: a v1 code is never a v2 code');
 });
 
 test('CC4 the two sides disagree when one holds a STALE key for the other: A holds B\'s old key, B holds A\'s current key', () => {
   const bOld: KeyView = { pub: bytes(32, 0x23), gen: 1_700_000_000 };
-  assert.notEqual(code(A, bOld), code(B, A), 'A shows a code over {A, bOld}; B shows one over {B, A}');
+  for (const role of ['starter', 'scanner'] as const) assert.notEqual(code(A, bOld, NONCE, role), code(B, A, NONCE, role), `A computes a code over {A, bOld}; B one over {B, A} (${role})`);
 });
 
 test('CC5 the code is always 6 digits, zero-padded', () => {
@@ -71,7 +79,7 @@ test('CC5 the code is always 6 digits, zero-padded', () => {
 test('CC6a generations above 2^32 are encoded in full: the high half is part of the code and the code equals the reference', () => {
   const big = (g: number): KeyView => ({ pub: B.pub, gen: g });
   const TWO32 = 4294967296;
-  for (const g of [TWO32 + 7, 2 * TWO32, 1099511627783, Number.MAX_SAFE_INTEGER]) assert.equal(code(A, big(g)), reference(A, big(g), NONCE), `generation ${g}`);
+  for (const g of [TWO32 + 7, 2 * TWO32, 1099511627783, Number.MAX_SAFE_INTEGER]) for (const role of ['starter', 'scanner'] as const) assert.equal(code(A, big(g), NONCE, role), reference(A, big(g), NONCE, role), `generation ${g} ${role}`);
   assert.notEqual(code(A, big(7)), code(A, big(TWO32 + 7)), 'generations that differ only in the high 32 bits must not collide');
   assert.notEqual(code(A, big(TWO32 + 7)), code(A, big(2 * TWO32 + 7)));
 });
@@ -87,18 +95,21 @@ test('CC7 refusals: a malformed own key, held key or nonce, and a REFLECTED key 
     { pub: bytes(32, 1), gen: 0 }, { pub: bytes(32, 1), gen: -1 }, { pub: bytes(32, 1), gen: 1.5 }, { pub: bytes(32, 1), gen: NaN },
     { pub: bytes(32, 1), gen: Number.MAX_SAFE_INTEGER + 1 }, { pub: bytes(32, 1), gen: '5' }];
   for (const k of badKeys) {
-    assert.deepEqual(confirmCode(k, B, NONCE), { ok: false, reason: 'own-key' }, `own ${JSON.stringify(k)}`);
-    assert.deepEqual(confirmCode(A, k, NONCE), { ok: false, reason: 'held-key' }, `held ${JSON.stringify(k)}`);
+    assert.deepEqual(confirmCode(k, B, NONCE, 'starter'), { ok: false, reason: 'own-key' }, `own ${JSON.stringify(k)}`);
+    assert.deepEqual(confirmCode(A, k, NONCE, 'starter'), { ok: false, reason: 'held-key' }, `held ${JSON.stringify(k)}`);
   }
   const badNonces: any[] = [undefined, null, 'abc', bytes(15, 1), bytes(17, 1), bytes(0, 0), [1, 2, 3]];
-  for (const n of badNonces) assert.deepEqual(confirmCode(A, B, n), { ok: false, reason: 'nonce' }, `nonce ${JSON.stringify(n)}`);
-  assert.deepEqual(confirmCode(A, { pub: A.pub.slice(), gen: A.gen + 5 }, NONCE), { ok: false, reason: 'reflected' }, 'the same key under another generation is still a reflection');
-  assert.deepEqual(confirmCode(A, A, NONCE), { ok: false, reason: 'reflected' });
+  for (const n of badNonces) assert.deepEqual(confirmCode(A, B, n, 'starter'), { ok: false, reason: 'nonce' }, `nonce ${JSON.stringify(n)}`);
+  const badRoles: any[] = [undefined, null, '', 'x', 'STARTER', 'Starter', 'starter ', ' scanner', 'both', 1, {}, ['starter']];
+  for (const r of badRoles) assert.deepEqual(confirmCode(A, B, NONCE, r), { ok: false, reason: 'role' }, `role ${JSON.stringify(r)}`);
+  assert.deepEqual(confirmCode(A, { pub: A.pub.slice(), gen: A.gen + 5 }, NONCE, 'scanner'), { ok: false, reason: 'reflected' }, 'the same key under another generation is still a reflection');
+  assert.deepEqual(confirmCode(A, A, NONCE, 'starter'), { ok: false, reason: 'reflected' });
 });
 
-test('CC8 a reflected key is refused BEFORE the other checks cannot hide it: a reflection with a bad nonce reports the nonce, a reflection with good inputs reports the reflection', () => {
-  assert.deepEqual(confirmCode(A, A, bytes(3, 1)), { ok: false, reason: 'nonce' });
-  assert.deepEqual(confirmCode(A, A, NONCE), { ok: false, reason: 'reflected' });
+test('CC8 the order of refusals: own key, held key, nonce, role, then a reflection: a reflection with a bad nonce or role reports that, a reflection with good inputs reports the reflection', () => {
+  assert.deepEqual(confirmCode(A, A, bytes(3, 1), 'starter'), { ok: false, reason: 'nonce' });
+  assert.deepEqual(confirmCode(A, A, NONCE, 'bad' as any), { ok: false, reason: 'role' });
+  assert.deepEqual(confirmCode(A, A, NONCE, 'starter'), { ok: false, reason: 'reflected' });
 });
 
 // ---------- the typed entry ----------
@@ -108,7 +119,7 @@ test('CC9 codesMatch: only two identical 6-digit strings match; whitespace, lett
   for (const typed of [' 048213', '048213 ', '04 8213', '48213', '0482130', 'abcdef', '', '048-213', '٠٤٨٢١٣', undefined, null, 48213, 48213.0] as any[]) {
     assert.equal(codesMatch(typed, '048213'), false, `typed ${JSON.stringify(typed)}`);
   }
-  assert.equal(codesMatch('048213', 'abcdef'), false, 'a computed value that is not a 6-digit code never matches itself');
+  assert.equal(codesMatch('048213', 'abcdef'), false, 'a computed value that is not a 6-digit code is not a match, even against itself');
   assert.equal(codesMatch('abcdef', 'abcdef'), false);
 });
 
@@ -143,4 +154,15 @@ test('CD4 anything malformed, or an entry that is not exactly "match", is refuse
   for (const e of ['MATCH', 'matched', '', undefined, null, true, 1] as any[]) {
     assert.equal(decideConfirmFromCompare(e, S, keys(A, B)).confirm, false, `entry ${JSON.stringify(e)}`);
   }
+});
+
+test('CC10 a phone that is given its OWN role\'s code (the code on its own screen) gets a code that differs from the one the other phone expects: typing the code on your own screen does not match, except by the same one-in-a-million chance', () => {
+  const shownByStarter = code(A, B, NONCE, 'starter');          // phone A (starter) shows this
+  const expectedByScanner = code(B, A, NONCE, 'starter');       // phone B (scanner) expects the STARTER's code: it is what is on A's screen
+  const shownByScanner = code(B, A, NONCE, 'scanner');          // phone B shows this
+  const expectedByStarter = code(A, B, NONCE, 'scanner');       // phone A expects the SCANNER's code: it is what is on B's screen
+  assert.equal(codesMatch(shownByStarter, expectedByScanner), true, 'the code read off the other phone matches');
+  assert.equal(codesMatch(shownByScanner, expectedByStarter), true);
+  assert.equal(codesMatch(shownByStarter, expectedByStarter), false, 'phone A typing the code on ITS OWN screen is a mismatch');
+  assert.equal(codesMatch(shownByScanner, expectedByScanner), false, 'phone B typing the code on ITS OWN screen is a mismatch');
 });

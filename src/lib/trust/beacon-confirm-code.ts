@@ -2,9 +2,11 @@
 // and the one rule that turns a matching entry into a confirm. Pure: no store, no network, no clock, no randomness, no secret key.
 //
 // Each phone knows its own beacon public key and the copy of the other's key it holds. Both compute a 6-digit code over those two keys (with their
-// generations) and a session nonce. Both phones show the same code when each holds the other's current key. A stale or substituted key on EITHER side
-// changes one of the two sets, so the codes differ, except for a chance match of about one in a million with 6 digits. The pair is sorted before it is
-// hashed, so neither phone's role matters.
+// generations), a session nonce and a ROLE (the phone that started the session is the 'starter', the phone that scanned the starter's QR, or typed what its screen shows, is the 'scanner').
+// The pair is sorted before it is hashed, so the two phones agree on each role's code when each holds the other's current key; the role is hashed too,
+// so the two roles' codes differ. A phone SHOWS the code of its own role and EXPECTS the code of the other role: the code it must be given is the one on
+// the OTHER phone's screen, and the code on its own screen does not match, except by the same one-in-a-million chance. A stale or substituted key on EITHER side changes one of the two sets, so the
+// codes differ, except for a chance match of about one in a million with 6 digits.
 //
 // A match shows that the two phones hold each other's current keys, up to a chance match of about one in a million per attempt with a 6-digit code. It does not prove who is holding either phone.
 //
@@ -14,7 +16,7 @@
 
 import { sha256 } from '@noble/hashes/sha2.js';
 
-export const CONFIRM_DOMAIN = 'svrnty:beacon-confirm:v1';
+export const CONFIRM_DOMAIN = 'svrnty:beacon-confirm:v2';
 export const KEY_BYTES = 32;
 export const NONCE_BYTES = 16;
 export const CODE_DIGITS = 6;
@@ -22,7 +24,12 @@ export const CODE_DIGITS = 6;
 /** One beacon key as the code sees it: its 32 canonical bytes and its generation (a positive safe integer). */
 export interface KeyView { pub: Uint8Array; gen: number }
 
-export type CodeRefusal = 'own-key' | 'held-key' | 'nonce' | 'reflected';
+/** The phone that started the session shows the starter's code; the phone that scanned the starter's QR (or typed what its screen shows) shows the scanner's. */
+export type ConfirmRole = 'starter' | 'scanner';
+export const otherRole = (r: ConfirmRole): ConfirmRole => (r === 'starter' ? 'scanner' : 'starter');
+const isRole = (r: unknown): r is ConfirmRole => r === 'starter' || r === 'scanner';
+
+export type CodeRefusal = 'own-key' | 'held-key' | 'nonce' | 'role' | 'reflected';
 export type ConfirmCodeResult = { ok: true; code: string } | { ok: false; reason: CodeRefusal };
 
 const isKey = (k: unknown): k is KeyView =>
@@ -60,16 +67,18 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
 const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => compareBytes(a, b) === 0;
 
 /**
- * The code this phone shows. `own` is this phone's own key, `held` the copy it holds of the other phone's key, `nonce` the session's 16 bytes.
- * Never throws; a refusal names the first thing wrong, in this order: own key, held key, nonce, reflection (the held key is this phone's own key).
+ * The code of ONE role. `own` is this phone's own key, `held` the copy it holds of the other phone's key, `nonce` the session's 16 bytes, `role` which phone's code
+ * this is: a phone shows confirmCode(..., its own role) and expects confirmCode(..., otherRole(its own role)).
+ * Never throws; a refusal names the first thing wrong, in this order: own key, held key, nonce, role, reflection (the held key is this phone's own key).
  */
-export function confirmCode(own: KeyView, held: KeyView, nonce: Uint8Array): ConfirmCodeResult {
+export function confirmCode(own: KeyView, held: KeyView, nonce: Uint8Array, role: ConfirmRole): ConfirmCodeResult {
   if (!isKey(own)) return { ok: false, reason: 'own-key' };
   if (!isKey(held)) return { ok: false, reason: 'held-key' };
   if (!(nonce instanceof Uint8Array) || nonce.length !== NONCE_BYTES) return { ok: false, reason: 'nonce' };
+  if (!isRole(role)) return { ok: false, reason: 'role' };
   if (sameBytes(own.pub, held.pub)) return { ok: false, reason: 'reflected' };
   const [first, second] = [pairBytes(own), pairBytes(held)].sort(compareBytes);
-  const input = new Uint8Array([...lp(new TextEncoder().encode(CONFIRM_DOMAIN)), ...lp(first), ...lp(second), ...lp(nonce)]);
+  const input = new Uint8Array([...lp(new TextEncoder().encode(CONFIRM_DOMAIN)), ...lp(new TextEncoder().encode(role)), ...lp(first), ...lp(second), ...lp(nonce)]);
   const d = sha256(input);
   const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
   const n = BigInt(dv.getUint32(0)) * BigInt(TWO_32) + BigInt(dv.getUint32(4));
