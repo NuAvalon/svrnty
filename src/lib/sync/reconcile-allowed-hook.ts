@@ -27,6 +27,7 @@ import { extractRawSign } from '@/lib/identity/raw-sign';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { allowedRowShouldExist, listAllowedSenders, reconcileAllowedForPeer, type PeerConsent } from './allowed-sync';
 import { requestDrain, type AllowedRevokeDeps, type AllowedRevokeIo } from './allowed-revoke';
+import { recordListRead } from './last-list-read';
 import { realAllowedRevokeDeps } from './allowed-revoke-real';
 
 export interface ReconcileAllowedHookArgs {
@@ -67,7 +68,7 @@ const GONE: PeerConsent = { trusted: false, openVisibility: false, blocked: fals
 /** The drain's I/O: the relay's own list, and the signed DELETE through reconcileAllowedForPeer (the ONLY path to removeAllowedSender): true only for a confirmed one. */
 function revokeIo(ownerFp: string, seed: Uint8Array, fetchImpl?: typeof fetch): AllowedRevokeIo {
   return {
-    list: () => listAllowedSenders({ ownerFp, senderFp: '', seed, fetchImpl }),
+    list: async () => recordListRead(ownerFp, await listAllowedSenders({ ownerFp, senderFp: '', seed, fetchImpl })),   // the last read is kept (in memory) for the owner's panel
     deleteRow: async (senderFp) => {
       const x = await reconcileAllowedForPeer({ ownerFp, senderFp, seed, consent: GONE, rowAtRelay: true, fetchImpl });
       return x.action === 'delete' && x.ok;
