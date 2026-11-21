@@ -396,29 +396,6 @@ export class TrustGraphManager {
   }
 
   /**
-   * Update mutual state from a sync signal.
-   */
-  async updateMutualState(
-    fingerprint: string,
-    theyTrustMe: boolean
-  ): Promise<TrustEdge> {
-    const graph = await this.loadGraph();
-    const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
-    if (idx === -1) throw new Error('Edge not found');
-
-    const edge = graph.edges[idx];
-    edge.mutual = {
-      they_trust_me: theyTrustMe,
-      last_sync: new Date().toISOString(),
-      reciprocal: edge.trusted && theyTrustMe,
-    };
-    edge.last_interaction = new Date().toISOString();
-
-    await this.saveGraph(graph);
-    return edge;
-  }
-
-  /**
    * Remove a contact entirely (not just break trust — remove from graph).
    */
   async removeEdge(fingerprint: string, reason: string): Promise<void> {
