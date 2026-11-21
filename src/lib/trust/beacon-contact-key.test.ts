@@ -184,10 +184,10 @@ const codeOnly = (t: string) => t.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)
 const rel = (p: string) => p.replace(/\\/g, '/').split('/src/').pop();
 const namersOf = (files: { path: string; text: string }[], re: RegExp) => files.filter((f) => re.test(codeOnly(f.text))).map((f) => rel(f.path)).sort();
 
-test('K13 only the card format, the card signer, the store type, the decision module, the confirm rule and the real-ports file of the key replacement (its compare-and-set write) name the contact\'s beacon fields in non-test source: a new consumer fails here until it is reviewed (the guard FIRES on a synthetic one, CONTROL)', () => {
+test('K13 only the card format, the card signer, the store type, the decision module, the confirm rule, the real-ports file of the key replacement (its compare-and-set write) and the real-ports file of the confirm glue name the contact\'s beacon fields in non-test source: a new consumer fails here until it is reviewed (the guard FIRES on a synthetic one, CONTROL)', () => {
   const RE = /beacon_public_key|beacon_key_generation/;
   assert.deepEqual(namersOf([{ path: '/x/src/lib/new-consumer.ts', text: 'const k = contact.beacon_public_key;' }, { path: '/x/src/lib/c.ts', text: '// beacon_public_key is the card field' }], RE), ['lib/new-consumer.ts']);
-  assert.deepEqual(namersOf(SRC, RE), ['lib/format/envelope.ts', 'lib/identity/client-store.ts', 'lib/identity/identity-card-sign.ts', 'lib/trust/beacon-confirmed.ts', 'lib/trust/beacon-contact-key.ts', 'lib/trust/beacon-key-intake-real.ts']);
+  assert.deepEqual(namersOf(SRC, RE), ['lib/format/envelope.ts', 'lib/identity/client-store.ts', 'lib/identity/identity-card-sign.ts', 'lib/trust/beacon-confirm-wiring.ts', 'lib/trust/beacon-confirmed.ts', 'lib/trust/beacon-contact-key.ts', 'lib/trust/beacon-key-intake-real.ts']);
 });
 
 test('K14 the decision never lets a replace write through `fields`: the replace verdict carries the key in `replace` with EMPTY fields, and across every input only add and backfill ever return fields', async () => {
