@@ -21,6 +21,7 @@ import {
   encodeAuthorityPubkeys,
   authorityCommitmentFromReveal,
   signRotationAuthority,
+  verifyRotationAuthority,
   mintCanonicalFingerprint,
 } from './fingerprint';
 import { signIdentityCard, verifySignedIdentityCard, buildSignedIdentityCard } from './identity-card-sign';
@@ -140,16 +141,18 @@ test('signed-input: tampering next_authority_commitment breaks the card signatur
   assert.equal(await verifySignedIdentityCard(tampered), false);
 });
 
-async function validRotation(opts?: { kind?: string; flipSig?: boolean; wrongAuth?: boolean }) {
+async function validRotation(opts?: { kind?: string; flipSig?: boolean; wrongAuth?: boolean; attacker?: boolean }) {
   const masterSecret = randomBytes(32);
   const pin = deriveNextAuthorityCommitment(masterSecret, 1);
   const authKp = deriveNextAuthorityKeypair(masterSecret, 1);
   const genesis = await makeOperational('ep0');
   const nextOp = await makeOperational('ep1');
   const nextPin = deriveNextAuthorityCommitment(masterSecret, 2);
+  // An attacker has an authority keypair of its OWN: perfectly valid, but not the one the identity pinned.
+  const signer = opts?.attacker ? deriveNextAuthorityKeypair(randomBytes(32), 1) : authKp;
   const revealed = opts?.wrongAuth
     ? encodeAuthorityPubkeys(randomBytes(32), randomBytes(2592))
-    : encodeAuthorityPubkeys(authKp.edPublic, authKp.dsaPublic);
+    : encodeAuthorityPubkeys(signer.edPublic, signer.dsaPublic);
   const fields = {
     durable_id: genesis.fingerprint,
     prior_epoch: 0,
@@ -159,7 +162,7 @@ async function validRotation(opts?: { kind?: string; flipSig?: boolean; wrongAut
     next_authority_commitment: nextPin,
   };
   const canonical = rotationSigningInput(fields);
-  let sig = signRotationAuthority(canonical, authKp.edSecret, authKp.dsaSecret);
+  let sig = signRotationAuthority(canonical, signer.edSecret, signer.dsaSecret);
   if (opts?.flipSig) sig = (sig.startsWith('ff') ? '00' : 'ff') + sig.slice(2);
 
   const successor: RotationSuccessorInput = {
@@ -196,6 +199,29 @@ test('rotation round-trip: mint pin → reveal K_auth → verifier ACCEPTS and a
 
 test('rotation negative: wrong K_auth (H mismatch) → REJECT', async () => {
   const { successor, known } = await validRotation({ wrongAuth: true });
+  await assert.rejects(
+    () => verifyRotationSuccessor(successor, known),
+    (e: unknown) => e instanceof ContactUpdateRejected && e.reason === 'rotation-commitment-mismatch',
+  );
+});
+
+test('rotation negative: an attacker revealing its OWN valid authority keys and signing with them → REJECT (only the pinned commitment stops it)', async () => {
+  const { successor, known } = await validRotation({ attacker: true });
+  const auth = successor.auth as { auth_pubkeys: { sign: string; pq_sig: string }; sig_by_authority: string };
+  // Control: the signature IS valid under the keys the attacker revealed (same signing input the verifier builds),
+  // so the only thing left to reject this successor is the comparison with the pinned commitment.
+  const signingInput = rotationSigningInput({
+    durable_id: successor.durable_id,
+    prior_epoch: successor.prior_epoch,
+    prior_authority_commitment: known.next_authority_commitment || '',
+    successor_epoch: successor.successor_epoch,
+    new_fingerprint: successor.new_fingerprint,
+    next_authority_commitment: successor.next_authority_commitment,
+  });
+  assert.equal(
+    verifyRotationAuthority(signingInput, auth.sig_by_authority, auth.auth_pubkeys.sign, auth.auth_pubkeys.pq_sig),
+    true,
+  );
   await assert.rejects(
     () => verifyRotationSuccessor(successor, known),
     (e: unknown) => e instanceof ContactUpdateRejected && e.reason === 'rotation-commitment-mismatch',
