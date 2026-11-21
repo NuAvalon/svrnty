@@ -7,9 +7,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import {
-  QrCode, Smartphone, Link2, Copy, Download, Check, Clock, Wifi,
+  QrCode, Smartphone, Link2, Copy, Download, Check, Clock, Wifi, Fingerprint,
 } from 'lucide-react';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
+import { MyFingerprintQr } from '@/components/verify/MyFingerprintQr';
+import { MY_QR_LABEL } from '@/components/verify/my-fingerprint-qr';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
 import { errorTag } from '@/lib/error-tag';
@@ -254,7 +256,7 @@ export function ContactShareDialog({
         ) : null}
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full mt-2">
-          <TabsList className="grid w-full grid-cols-4 bg-gray-900 border border-gray-800">
+          <TabsList className="grid w-full grid-cols-5 bg-gray-900 border border-gray-800">
             <TabsTrigger
               value="qr"
               className="data-[state=active]:bg-amber-500/10 data-[state=active]:text-amber-400 text-xs sm:text-sm"
@@ -284,6 +286,14 @@ export function ContactShareDialog({
             >
               <Copy className="h-4 w-4 mr-1 sm:mr-2" />
               Copy
+            </TabsTrigger>
+            <TabsTrigger
+              value="myqr"
+              data-testid="my-qr-tab"
+              className="data-[state=active]:bg-amber-500/10 data-[state=active]:text-amber-400 text-xs sm:text-sm"
+            >
+              <Fingerprint className="h-4 w-4 mr-1 sm:mr-2" />
+              {MY_QR_LABEL}
             </TabsTrigger>
           </TabsList>
 
@@ -501,6 +511,11 @@ export function ContactShareDialog({
                 The recipient can verify it came from you.
               </p>
             </div>
+          </TabsContent>
+
+          {/* My QR Tab — the owner's own fingerprint only, so a real card can be checked in person */}
+          <TabsContent value="myqr" className="mt-4">
+            <MyFingerprintQr fingerprint={fingerprint} />
           </TabsContent>
         </Tabs>
 
