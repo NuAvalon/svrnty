@@ -35,7 +35,7 @@ test('CG2 the only write goes through the port and only inside the contact lock;
 test('CG3 the hook is registered once, at creation, and does nothing but end the session', () => {
   assert.equal((GLUE.match(/onLock\(/g) ?? []).length, 2, 'the port declaration and the one registration');
   const create = GLUE.slice(GLUE.indexOf('export function createConfirmGlue'));
-  assert.ok(create.indexOf('ports.onLock(drop)') > 0 && create.indexOf('ports.onLock(drop)') < create.indexOf('async function readKeys'), 'registered once, before any session exists');
+  assert.ok(create.indexOf('ports.onLock(onLockDrop)') > 0 && create.indexOf('ports.onLock(onLockDrop)') < create.indexOf('async function readKeys'), 'registered once, before any session exists');
 });
 
 test('CG4 the wiring: strict own-key reader (never the creating one), the safety-write contact lock, the one writer, and the store hook; and nothing imports it yet', () => {
@@ -58,4 +58,20 @@ test('CG5 the glue is imported by the wiring only, and the session module by the
   const importing = (re: RegExp, self: RegExp): string[] => walk('src').concat(walk('app')).filter((f) => !/\.test\.(ts|tsx)$/.test(f) && !self.test(f) && re.test(readFileSync(f, 'utf8')));
   assert.deepEqual(importing(/from\s*'[^']*beacon-confirm-glue'/, /beacon-confirm-glue\.ts$/), ['src/lib/trust/beacon-confirm-wiring.ts']);
   assert.deepEqual(importing(/from\s*'[^']*beacon-confirm-session'/, /beacon-confirm-session\.ts$/), ['src/lib/trust/beacon-confirm-glue.ts']);
+});
+
+test('CG6 the session\'s two readers hand back raw nonce bytes, so only the glue imports them (and the session\'s own tests): no other module, and no re-export', () => {
+  const takes = /(?:import|export)\s*(?:type\s*)?\{[^}]*\b(?:readConfirmScan|readConfirmTyped)\b[^}]*\}\s*from\s*'[^']*beacon-confirm-session'/;
+  const files = walk('src').concat(walk('app')).filter((f) => !/beacon-confirm-session\.ts$/.test(f) && takes.test(readFileSync(f, 'utf8'))).sort();
+  assert.deepEqual(files, ['src/lib/trust/beacon-confirm-glue.ts', 'src/lib/trust/beacon-confirm-session.test.ts']);
+});
+
+test('CG7 the backstop for a join the guard could not key drops the session the join started before it refuses (no code can reach this branch today, so the shape is what is pinned)', () => {
+  const fn = GLUE.slice(GLUE.indexOf('function opened('));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  const nul = body.indexOf('key === null');
+  assert.ok(nul > 0, 'the null-key branch exists');
+  assert.ok(body.indexOf('r.session.drop()') > nul && body.indexOf('r.session.drop()') < body.indexOf("reason: 'invalid'"), 'it drops, then refuses as invalid');
+  assert.ok(body.indexOf("reason: 'invalid'") < body.indexOf('ok: true'), 'and only then does the accepted path return the session');
+  assert.equal((body.match(/r\.session\.drop\(\)/g) ?? []).length, 1);
 });
