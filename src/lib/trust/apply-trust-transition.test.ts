@@ -9,7 +9,8 @@
 // PSI intersection (#588), never a received affirm bit. These tests assert the RETAINED behavior AND the
 // removal itself:
 //   • local trust write (+ trust_history) is EMIT-ONLY — NO reciprocal / they_trust_me / mutual in the patch.
-//   • the blind satellite commit/revoke still fires (trust → commit, break → revoke), keyed on owner fp.
+//   • a trust or an untrust makes NO network request of its own: the call to /api/trust/commit|revoke is gone (it carried the owner's fingerprint and a
+//     hash that anyone holding both fingerprints can recompute). Only the injected reveal-set reconcile runs after the local write.
 //   • ★ REMOVAL PROOF: NOTHING is deposited to the peer's mailbox, and a peer poll flips NOTHING on their seat.
 
 import { test } from 'node:test';
@@ -48,17 +49,12 @@ function asContact(id: Id, over: Partial<HeadlessContact> = {}): HeadlessContact
   };
 }
 
-/** Mock relay: /envelope deposit, /queue, /ack — PLUS records /api/trust/commit|revoke calls. */
+/** Mock relay: /envelope deposit, /queue, /ack. */
 function mockRelay() {
   const boxes = new Map<string, Array<{ envelope_id: string; blob: string }>>();
-  const trustCalls: Array<{ op: string; body: any }> = [];
   let seq = 0;
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes('/api/trust/commit') || u.includes('/api/trust/revoke')) {
-      trustCalls.push({ op: u.includes('/commit') ? 'commit' : 'revoke', body: JSON.parse(String(init?.body ?? '{}')) });
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
     if (u.includes('/envelope')) {
       const { mailbox_id, blob } = JSON.parse(String(init?.body ?? '{}'));
       if (!boxes.has(mailbox_id)) boxes.set(mailbox_id, []);
@@ -77,7 +73,15 @@ function mockRelay() {
     }
     return new Response('nf', { status: 404 });
   }) as unknown as typeof fetch;
-  return { fetchImpl, boxes, trustCalls };
+  return { fetchImpl, boxes };
+}
+
+/** Runs `fn` with the GLOBAL fetch replaced by a recorder: a request made through the default fetch (not an injected one) is seen too. The urls come back even when `fn` throws. */
+async function withGlobalFetchSpy<T>(fn: () => Promise<T>): Promise<{ result?: T; error?: unknown; urls: string[] }> {
+  const urls: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => { urls.push(String(url)); return new Response('{}', { status: 200 }); }) as typeof fetch;
+  try { return { result: await fn(), urls }; } catch (error) { return { error, urls }; } finally { globalThis.fetch = real; }
 }
 
 /** Drive A's trust/break toggle through the CHOKEPOINT, capturing A's own local write patch(es). */
@@ -90,26 +94,25 @@ async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: Re
     // `stored` stands for the record the store holds AFTER the write: the satellite consent is read back from it.
     getContact: async () => { if (stored === 'throws') throw new Error('store unavailable'); return stored; },
     reconcile: async (a) => { consents.push(a.consent as PeerConsent); }, // the reveal-set reconcile seam: captured here
-    fetchImpl: relay.fetchImpl,
-    satelliteBase: '',
     now: () => FIXED_NOW,
   };
-  await applyTrustTransition(
+  const { urls, error } = await withGlobalFetchSpy(() => applyTrustTransition(
     { fingerprint: A.fp, publicKeyArmored: A.pub, pqKemPublicKey: A.kem, pqSigPublicKey: A.sig },
     { contactId: 'c_' + B.fp.slice(0, 8), fingerprint: B.fp, publicKeyArmored: B.pub, ...peerExtra },
     nextTrusted,
     deps,
-  );
-  return { patches, consents };
+  ));
+  if (error) throw error;
+  return { patches, consents, urls };
 }
 
-test('CHOKEPOINT: A trusts B → local EMIT-ONLY write + blind satellite COMMIT; ★ NO affirm deposited (removed #593), peer seat untouched', async () => {
+test('CHOKEPOINT: A trusts B → local EMIT-ONLY write, NO network request; ★ NO affirm deposited (removed), peer seat untouched', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
   const bStore = new HeadlessStore();
   bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted' })); // B independently trusts A
 
-  const { patches } = await toggleViaChokepoint(A, B, true, relay);
+  const { patches, urls } = await toggleViaChokepoint(A, B, true, relay);
 
   // (local) the chokepoint wrote A's trust of B.
   assert.equal(patches.length, 1, 'one local trust write');
@@ -121,9 +124,8 @@ test('CHOKEPOINT: A trusts B → local EMIT-ONLY write + blind satellite COMMIT;
   assert.equal('they_trust_me' in patches[0], false, 'sender write never sets they_trust_me');
   assert.equal('mutual' in patches[0], false, 'sender write never sets mutual');
 
-  // (satellite) a blind COMMIT fired (not revoke), keyed on the owner fp.
-  assert.deepEqual(relay.trustCalls.map((c) => c.op), ['commit']);
-  assert.equal(relay.trustCalls[0].body.fingerprint, A.fp);
+  // (network) the tap made no request of its own: nothing went to the satellite, nothing to the relay.
+  assert.deepEqual(urls, [], 'a trust tap makes no network request');
 
   // ★ REMOVAL PROOF (#593): the affirm deposit is GONE — NOTHING landed in B's mailbox.
   assert.equal(relay.boxes.get(deriveMailboxId(B.fp))?.length ?? 0, 0, 'no affirmation deposited to the peer');
@@ -136,14 +138,14 @@ test('CHOKEPOINT: A trusts B → local EMIT-ONLY write + blind satellite COMMIT;
   assert.equal(a.mutual?.reciprocal ?? false, false, 'peer seat: reciprocal never flips (mutual is PSI-only, #588)');
 });
 
-test('CHOKEPOINT: break direction — A breaks trust → local unverified write + blind satellite REVOKE; ★ no deposit', async () => {
+test('CHOKEPOINT: break direction — A breaks trust → local unverified write, NO network request; ★ no deposit', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
 
-  const { patches } = await toggleViaChokepoint(A, B, false, relay);
+  const { patches, urls } = await toggleViaChokepoint(A, B, false, relay);
   assert.equal(patches[0].trusted, false);
   assert.equal(patches[0].trust_level, 'unverified');
-  assert.deepEqual(relay.trustCalls.map((c) => c.op), ['revoke'], 'break → satellite revoke');
+  assert.deepEqual(urls, [], 'an untrust tap makes no network request');
 
   // ★ REMOVAL PROOF (#593): break also deposits no affirmation.
   assert.equal(relay.boxes.get(deriveMailboxId(B.fp))?.length ?? 0, 0, 'no break-affirmation deposited to the peer');
@@ -205,30 +207,25 @@ async function attempt(A: Id, B: Id, nextTrusted: boolean, held: Record<string, 
   const relay = mockRelay();
   const patches: Array<Record<string, unknown>> = [];
   const consents: PeerConsent[] = [];
-  let error: unknown = null;
-  try {
-    await applyTrustTransition(
-      { fingerprint: A.fp, publicKeyArmored: A.pub, pqKemPublicKey: A.kem, pqSigPublicKey: A.sig },
-      { contactId: 'c_' + B.fp.slice(0, 8), fingerprint: B.fp, publicKeyArmored: B.pub },
-      nextTrusted,
-      {
-        updateContact: async (_id, patch) => { patches.push(typeof patch === 'function' ? patch(held) : patch); },
-        getContact: async () => held as never,
-        reconcile: async (a) => { consents.push(a.consent as PeerConsent); },
-        fetchImpl: relay.fetchImpl,
-        satelliteBase: '',
-        now: () => FIXED_NOW,
-      },
-    );
-  } catch (e) {
-    error = e;
-  }
-  return { error, patches, consents, trustCalls: relay.trustCalls, boxes: relay.boxes };
+  const spied = await withGlobalFetchSpy(() => applyTrustTransition(
+    { fingerprint: A.fp, publicKeyArmored: A.pub, pqKemPublicKey: A.kem, pqSigPublicKey: A.sig },
+    { contactId: 'c_' + B.fp.slice(0, 8), fingerprint: B.fp, publicKeyArmored: B.pub },
+    nextTrusted,
+    {
+      updateContact: async (_id, patch) => { patches.push(typeof patch === 'function' ? patch(held) : patch); },
+      getContact: async () => held as never,
+      reconcile: async (a) => { consents.push(a.consent as PeerConsent); },
+      now: () => FIXED_NOW,
+    },
+  ));
+  const error = spied.error ?? null;
+  const urls = spied.urls;
+  return { error, patches, consents, urls, boxes: relay.boxes };
 }
 
 const NOTHING_RAN = (r: Awaited<ReturnType<typeof attempt>>) => {
   assert.equal(r.patches.length, 0, 'no local trust write');
-  assert.equal(r.trustCalls.length, 0, 'no satellite commit or revoke');
+  assert.equal(r.urls.length, 0, 'no network request');
   assert.equal(r.consents.length, 0, 'no reveal-set reconcile');
   assert.equal([...r.boxes.values()].flat().length, 0, 'nothing deposited anywhere');
 };
@@ -248,23 +245,23 @@ test('REFUSED: the top-level blocked flag is honoured the same way (both spellin
   NOTHING_RAN(r);
 });
 
-test('NEG: a contact that is NOT blocked is still trusted: local write, satellite commit, reconcile all run', async () => {
+test('NEG: a contact that is NOT blocked is still trusted: local write and reconcile run, and no satellite request is made', async () => {
   const [A, B] = [await mint(), await mint()];
   const r = await attempt(A, B, true, { trust_level: 'unverified', metadata: { blocked: false } });
   assert.equal(r.error, null);
   assert.equal(r.patches.length, 1);
   assert.equal(r.patches[0].trusted, true);
-  assert.deepEqual(r.trustCalls.map((c) => c.op), ['commit']);
+  assert.deepEqual(r.urls, [], 'no network request');
   assert.equal(r.consents.length, 1);
 });
 
-test('NEG: retracting trust on a blocked contact still works (the safe direction): break written, satellite REVOKE, reconcile', async () => {
+test('NEG: retracting trust on a blocked contact still works (the safe direction): break written and reconcile run, no satellite request', async () => {
   const [A, B] = [await mint(), await mint()];
   const r = await attempt(A, B, false, { trust_level: 'trusted', trusted: true, metadata: { blocked: true } });
   assert.equal(r.error, null);
   assert.equal(r.patches.length, 1);
   assert.equal(r.patches[0].trusted, false);
-  assert.deepEqual(r.trustCalls.map((c) => c.op), ['revoke']);
+  assert.deepEqual(r.urls, [], 'no network request');
   assert.equal(r.consents.length, 1);
 });
 
@@ -294,8 +291,42 @@ test('GUARD: the transition no longer reads blocked / openVisibility / perContac
   const src = readFileSync(new URL('./apply-trust-transition.ts', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
   assert.doesNotMatch(src, /peer\.(blocked|openVisibility|perContactPrivate|metadata|priorTrustHistory)/);
   assert.match(src, /const stored = await getContact\(peer\.contactId\);\s*if \(stored\) consent = consentFromRecord\(stored\);/);
-  // the read-back comes AFTER the local write and the satellite commit, never before (a read before would see the pre-write record)
+  // the read-back comes AFTER the local write, never before (a read before would see the pre-write record)
   const iWrite = src.indexOf('await withSafetyWrite(peer.contactId');
   const iRead = src.indexOf('await getContact(peer.contactId)');
   assert.ok(iWrite > 0 && iRead > iWrite, 'the consent is read back after the write');
+});
+
+test('GUARD: the transition holds no way to make a request: no fetch, beacon, XMLHttpRequest, WebSocket, EventSource, image beacon or /api/trust in its source (a call through a function captured at load never reaches the recorder, so the source is held too)', () => {
+  const strip = (x: string): string => x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
+  const src = strip(readFileSync(new URL('./apply-trust-transition.ts', import.meta.url), 'utf8'));
+  const ways: Array<[string, RegExp]> = [
+    ['fetch', /\bfetch\b/], ['sendBeacon', /sendBeacon/], ['XMLHttpRequest', /XMLHttpRequest/], ['WebSocket', /WebSocket/],
+    ['EventSource', /EventSource/], ['an image beacon', /new\s+Image\b/], ['the removed path', /\/api\/trust/],
+  ];
+  for (const [what, re] of ways) assert.doesNotMatch(src, re, what);
+});
+
+test('NEG: a Trust tap and an Untrust tap make no network request at all, through the global fetch or any other: only the local write and the reveal-set reconcile run', async () => {
+  for (const nextTrusted of [true, false]) {
+    const [A, B] = [await mint(), await mint()];
+    const r = await toggleViaChokepoint(A, B, nextTrusted, mockRelay());
+    assert.equal(r.patches.length, 1, 'the local write ran');
+    assert.equal(r.consents.length, 1, 'the reveal-set reconcile ran');
+    assert.deepEqual(r.urls, [], `no request (${nextTrusted ? 'trust' : 'untrust'})`);
+  }
+});
+
+test('NEG: no network request either when the stored record cannot be read after the write, or when the grant is refused', async () => {
+  for (const nextTrusted of [true, false]) {
+    const [A, B] = [await mint(), await mint()];
+    const r = await toggleViaChokepoint(A, B, nextTrusted, mockRelay(), {}, {}, 'throws');
+    assert.equal(r.patches.length, 1, 'the local write ran');
+    assert.deepEqual(r.urls, [], `no request when the read-back fails (${nextTrusted ? 'trust' : 'untrust'})`);
+  }
+  const [A, B] = [await mint(), await mint()];
+  const refused = await attempt(A, B, true, { trust_level: 'unverified', metadata: { blocked: true } });
+  assert.ok(refused.error instanceof Error, 'the grant to a blocked contact is refused');
+  assert.equal(refused.patches.length, 0, 'nothing was written');
+  assert.deepEqual(refused.urls, [], 'and no request was made on the way to the refusal');
 });
