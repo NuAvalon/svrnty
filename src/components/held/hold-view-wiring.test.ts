@@ -28,7 +28,8 @@ const specifiers = (src: string): string[] => {
 const imports = (rel: string): string[] => specifiers(read(rel));
 
 test('HW1 the folder is exactly these files (a new one must be added here on purpose, with a reason)', () => {
-  assert.deepEqual(FILES, ['HeldMessagesSection.tsx', 'HeldMessagesView.tsx', 'held-port.ts', 'hold-view-copy.ts', 'hold-view-model.ts']);
+  // HeldMessagesMount.tsx: the owner-keyed mount the app uses (the section keyed by owner, its section port made once per owner); see HW10.
+  assert.deepEqual(FILES, ['HeldMessagesMount.tsx', 'HeldMessagesSection.tsx', 'HeldMessagesView.tsx', 'held-port.ts', 'hold-view-copy.ts', 'hold-view-model.ts']);
 });
 
 test('HW2 SENDS NOTHING (imports): no file in the folder imports a send, relay, mailbox, ratchet, receipt, outbox or sync module; only held-port.ts touches a store, and only these four', () => {
@@ -102,8 +103,9 @@ test('HW5 where it is mounted: the view in the contact page and the section, the
   const all = [...walk('src'), ...walk('app')];
   const users = (name: string): string[] => all.filter((f) => !f.startsWith(`${DIR}/`) && new RegExp(`<${name}\\b`).test(code(f)));
   assert.deepEqual(users('HeldMessagesView'), ['src/components/ContactManagement.tsx']);
-  assert.deepEqual(users('HeldMessagesSection'), ['src/components/SoverentityFrontend.tsx']);
-  assert.deepEqual(all.filter((f) => !f.startsWith(`${DIR}/`) && /held\/held-port/.test(read(f))).sort(), ['src/components/ContactManagement.tsx', 'src/components/SoverentityFrontend.tsx']);
+  assert.deepEqual(users('HeldMessagesSection'), [], 'the section is used only inside this folder, by the owner-keyed mount');
+  assert.deepEqual(users('HeldMessagesMount'), ['src/components/SoverentityFrontend.tsx']);
+  assert.deepEqual(all.filter((f) => !f.startsWith(`${DIR}/`) && /held\/held-port/.test(read(f))).sort(), ['src/components/ContactManagement.tsx']);
 });
 
 test('HW6 DELETE defaults to CANCEL: both confirms put the focus on Cancel and never on Delete; moving has no confirm at all', () => {
@@ -142,4 +144,11 @@ test('HW9 NO LINE IS LEFT UNREVIEWED: no "not yet reviewed" marker remains, and 
   assert.ok(t.includes("copy.HOLD_VIEW_CONFIRM_CANCEL, 'Cancel'"), 'Cancel is pinned by value in the copy test');
   for (const n of exported.filter((x) => !EXCEPT.includes(x))) assert.ok(t.includes(`, copy.${n},`), `${n} is a hash-pinned row in the copy test`);
   assert.equal(t.includes(', copy.HOLD_VIEW_NOT_A_REAL_LINE,'), false, 'control: a line that is not there is not found');
+});
+
+test('HW10 the mount the app uses is KEYED by owner and makes its section port once per owner, so an open section cannot carry one owner\'s state to the next (the behaviour is run in a real browser by e2e/owner-switch.spec.ts); the frontend holds no bare section', () => {
+  const mount = code(`${DIR}/HeldMessagesMount.tsx`);
+  assert.match(mount, /<HeldMessagesSection key=\{ownerFingerprint\} /);
+  assert.match(mount, /useMemo\(\(\) => makeSectionPort\(ownerFingerprint\), \[makeSectionPort, ownerFingerprint\]\)/);
+  assert.doesNotMatch(code('src/components/SoverentityFrontend.tsx'), /<HeldMessagesSection\b/);
 });
