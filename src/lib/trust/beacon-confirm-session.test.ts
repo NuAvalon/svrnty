@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { confirmCode, NONCE_BYTES, type ConfirmRole, type KeyView, type SessionKeys } from './beacon-confirm-code';
-import { startConfirmSession, joinConfirmFromScan, joinConfirmFromTyped, SESSION_MS, MAX_ATTEMPTS, type ConfirmSession } from './beacon-confirm-session';
+import { startConfirmSession, joinConfirmFromScan, joinConfirmFromTyped, readConfirmScan, readConfirmTyped, SESSION_MS, MAX_ATTEMPTS, type ConfirmSession } from './beacon-confirm-session';
 import { parseInviteUrl } from '../invite/parseInviteUrl';
 
 const bytes = (n: number, fill: number): Uint8Array => new Uint8Array(n).fill(fill);
@@ -388,4 +388,25 @@ test('SX23 the FIRST call after the two minutes, even if it is ownCode, finds th
   { w.v = T0; m.v = 5_000; const a = open(); assert.equal(a.ownCode('bob').ok, true); w.v = T0 + SESSION_MS; assert.deepEqual(a.ownCode('bob'), { ok: false, reason: 'closed' }, 'wall clock'); }
   { w.v = T0; m.v = 5_000; const a = open(); m.v = 5_000 + SESSION_MS; assert.deepEqual(a.ownCode('bob'), { ok: false, reason: 'closed' }, 'second clock'); }
   { w.v = T0; m.v = 5_000; const a = open(); w.v = T0 + SESSION_MS; assert.deepEqual(a.enter('bob', '000000', KEYS_A), { kind: 'expired' }, 'enter first'); }
+});
+
+test('SX24 the two readers a join uses are exported and are the join\'s own: on every input they give the nonce a join would open, or the refusal it would give', () => {
+  const started = startConfirmSession('alice', KEYS_A, { random: () => bytes(NONCE_BYTES, 0x5a) });
+  assert.equal(started.ok, true);
+  const qr = (started as any).shown.qr as string, text = (started as any).shown.text as string;
+  const scans: unknown[] = [qr, qr + '\n', qr + ' ', ' ' + qr, qr.toLowerCase(), qr.slice(0, -1), qr.replace('confirm:1:', 'confirm:2:'), '', 'x', null, undefined, 5, {}, ['x'], 'svrnty-confirm:1:' + 'A'.repeat(26), 'svrnty-confirm:1:' + 'B'.repeat(26)];
+  const typeds: unknown[] = [text, text.toLowerCase(), text.replace(/ /g, '-'), text.replace(/ /g, ''), ' ' + text + ' ', text + '\n', text.replace(/ /g, '\t'), text.slice(0, -1), text + 'A', '', 'x', null, undefined, 5, {}, 'A'.repeat(26), 'B'.repeat(26), 'ı'.repeat(26), 'ſ'.repeat(26)];
+  for (const v of scans) {
+    const r = readConfirmScan(v), j = joinConfirmFromScan('alice', KEYS_B, v);
+    assert.equal(r instanceof Uint8Array, j.ok, `scan ${String(v)}`);
+    if (!(r instanceof Uint8Array)) assert.equal(r, (j as any).reason, `scan ${String(v)}`);
+  }
+  for (const v of typeds) {
+    const r = readConfirmTyped(v), j = joinConfirmFromTyped('alice', KEYS_B, v);
+    assert.equal(r instanceof Uint8Array, j.ok, `typed ${String(v)}`);
+    if (!(r instanceof Uint8Array)) assert.equal(r, (j as any).reason, `typed ${String(v)}`);
+  }
+  assert.deepEqual(Array.from(readConfirmScan(qr) as Uint8Array), Array.from(readConfirmTyped(text) as Uint8Array), 'the QR and the typed characters are the same 16 bytes');
+  assert.equal((readConfirmScan(qr) as Uint8Array).length, NONCE_BYTES);
+  assert.notEqual(readConfirmScan(qr), readConfirmScan(qr), 'a fresh array each time, so a caller may clear its own');
 });

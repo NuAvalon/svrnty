@@ -263,3 +263,208 @@ test('GL15 two starts that overlap: only the later one is installed, and the ear
   assert.equal((a.glue.ownCode('dave') as any).ok, true);
   assert.equal(a.w.nonces.length, 1, 'only one nonce was drawn: the interrupted start drew none');
 });
+
+// ---------- the same nonce is not joined twice ----------
+async function scannerAndQr(seedA = 0xa0) {
+  const a = phone(KA, KB, [seedA]);
+  const s = await a.glue.start('bob') as any;
+  assert.equal(s.ok, true);
+  const b = phone(KB, KA, []);
+  return { a, b, qr: s.shown.qr as string, text: s.shown.text as string };
+}
+
+test('GL16 joining the SAME QR a second time is refused, and it touches nothing: the live session, its code and its tries stay as they were', async () => {
+  const { b, qr } = await scannerAndQr();
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: true });
+  const code = (b.glue.ownCode('alice') as any).code;
+  assert.equal(((await b.glue.enter('alice', code === '000000' ? '000001' : '000000')) as any).kind, 'mismatch');   // one try spent
+  b.w.events.length = 0;
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: false, reason: 'already-used' });
+  assert.equal(b.glue.status(), 'open', 'the live session is untouched');
+  assert.equal((b.glue.ownCode('alice') as any).code, code);
+  assert.deepEqual(b.w.events, [], 'a refused re-join reads nothing and takes no lock');
+  assert.deepEqual(await b.glue.enter('alice', code === '000000' ? '000001' : '000000'), { kind: 'mismatch', attemptsLeft: 1 }, 'the tries were NOT reset by the re-join');
+});
+
+test('GL17 the same nonce typed after the scan, or scanned after it was typed, is the same nonce: refused either way (case, spaces and hyphens do not make a new one)', async () => {
+  const { b, qr, text } = await scannerAndQr();
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: true });
+  for (const again of [text, text.toLowerCase(), text.replace(/ /g, '-'), text.replace(/ /g, '')]) assert.deepEqual(await b.glue.joinFromTyped('alice', again), { ok: false, reason: 'already-used' }, again);
+  const c = await scannerAndQr(0xb0);
+  assert.deepEqual(await c.b.glue.joinFromTyped('alice', c.text), { ok: true });
+  assert.deepEqual(await c.b.glue.joinFromScan('alice', c.qr), { ok: false, reason: 'already-used' });
+});
+
+test('GL18 a fresh nonce is allowed, and a join that FAILED does not use its payload up', async () => {
+  const { b, qr } = await scannerAndQr();
+  const own = b.w.own;
+  b.w.own = undefined;
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: false, reason: 'keys-unreadable' });
+  b.w.own = own;
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: true }, 'the same QR works once the keys can be read');
+  const fresh = await scannerAndQr(0xc0);
+  assert.deepEqual(await b.glue.joinFromScan('alice', fresh.qr), { ok: true }, 'a different start gives a different nonce');
+});
+
+test('GL19 two joins of the same QR at once, with the first held at its key read: exactly one opens a session and the other is refused as already used (not as interrupted)', async () => {
+  const { b, qr } = await scannerAndQr();
+  let release!: () => void;
+  b.w.gates.push(new Promise<void>((r) => { release = r; }));   // the first join to reach the store waits here
+  const p1 = b.glue.joinFromScan('alice', qr), p2 = b.glue.joinFromScan('alice', qr);
+  await new Promise((r) => setTimeout(r, 30));   // both have hashed their input: one is in flight at the read, the other has met it
+  release();
+  const r = await Promise.all([p1, p2]);
+  assert.deepEqual(r.map((x: any) => (x.ok ? 'ok' : x.reason)).sort(), ['already-used', 'ok']);
+  assert.equal(b.glue.status(), 'open');
+});
+
+test('GL20 the memory is per contact and is cleared by a lock or a switch of account, never by an ordinary drop or a new session', async () => {
+  const { b, qr } = await scannerAndQr();
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: true });
+  b.glue.drop();
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: false, reason: 'already-used' }, 'an explicit drop does not forget it');
+  const other = await scannerAndQr(0xd0);
+  assert.deepEqual(await b.glue.joinFromScan('alice', other.qr), { ok: true }, 'a new session for a fresh nonce does not forget it either');
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: false, reason: 'already-used' });
+  assert.deepEqual(await b.glue.joinFromScan('carol', qr), { ok: true }, 'another contact is its own memory (the session code would differ anyway)');
+  b.w.hook!();
+  assert.deepEqual(await b.glue.joinFromScan('alice', qr), { ok: true }, 'a lock or a switch of account clears it');
+});
+
+test('GL21 a payload that is not a nonce at all is never remembered, and never refused as already used', async () => {
+  const { b, qr } = await scannerAndQr();
+  for (const junk of ['garbage', '', null, undefined, 42, 'https://example.test/c/AbC#k', qr.slice(0, -1)]) {
+    const r = await b.glue.joinFromScan('alice', junk as any) as any;
+    assert.equal(r.ok, false);
+    assert.notEqual(r.reason, 'already-used', JSON.stringify(junk));
+  }
+});
+
+test('GL22 a re-join of an EARLIER nonce during another live session is refused and that session is untouched (join A, join B, re-join A)', async () => {
+  const first = await scannerAndQr(0xa0);
+  const second = await scannerAndQr(0xb0);
+  const b = first.b;
+  assert.deepEqual(await b.glue.joinFromScan('alice', first.qr), { ok: true });
+  assert.deepEqual(await b.glue.joinFromScan('alice', second.qr), { ok: true });
+  const code = (b.glue.ownCode('alice') as any).code;
+  b.w.events.length = 0;
+  assert.deepEqual(await b.glue.joinFromScan('alice', first.qr), { ok: false, reason: 'already-used' });
+  assert.equal(b.glue.status(), 'open', 'the live session of the SECOND nonce is untouched');
+  assert.equal((b.glue.ownCode('alice') as any).code, code);
+  assert.deepEqual(b.w.events, []);
+});
+
+test('GL23 the memory is capped per contact: when it is full new joins are refused and an old nonce is NEVER evicted; a lock starts it again', async () => {
+  const CAP = 64;
+  const a = phone(KA, KB, Array.from({ length: CAP + 1 }, (_, i) => 0x01 + i));
+  const b = phone(KB, KA, []);
+  const qrs: string[] = [];
+  for (let i = 0; i < CAP + 1; i++) { const s = await a.glue.start('bob') as any; assert.equal(s.ok, true, `start ${i}`); qrs.push(s.shown.qr); }
+  for (let i = 0; i < CAP; i++) assert.deepEqual(await b.glue.joinFromScan('alice', qrs[i]), { ok: true }, `join ${i}`);
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[CAP]), { ok: false, reason: 'memory-full' }, 'the 65th is refused as FULL, not as a repeat: starting again would not help it');
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[0]), { ok: false, reason: 'already-used' }, 'the FIRST is still refused: nothing was evicted');
+  assert.deepEqual(await b.glue.joinFromScan('carol', qrs[CAP]), { ok: true }, 'another contact has its own memory');
+  b.w.hook!();
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[CAP]), { ok: true }, 'a lock empties the memory');
+});
+
+// The guard keys a join by its OWN reading of the input, separately from the session's parser. It is only sound while the two agree, so this runs both through the glue on the same inputs.
+const EXTRA = ['\n', '\r', '\t', ' ', '-', '_', ':', ' ', '​', 'A', 'a', '0', '1', '=', '\0'];
+const insertions = (s: string): string[] => EXTRA.flatMap((c) => Array.from({ length: s.length + 1 }, (_, i) => s.slice(0, i) + c + s.slice(i)));
+
+test('GL24 what the session accepts, the guard keys the same: every accepted form of a nonce is remembered as that nonce on both paths, and a form the session refuses remembers nothing', async () => {
+  const base = await scannerAndQr();
+  const forms = (qr: string, text: string) => ({
+    scan: [qr, qr.toLowerCase(), qr + '\n', qr + ' ', ' ' + qr, qr + 'A', 'x' + qr, qr.replace('confirm:1:', 'confirm:1: '), qr.slice(0, -1), ...insertions(qr)],
+    typed: [text, text.toLowerCase(), text.replace(/ /g, '-'), text.replace(/ /g, ''), text.replace(/ /g, '--'), text.replace(/ /g, ' - '), ' ' + text + ' ', text + '\n', text.replace(/ /g, '\t'), ...insertions(text)],
+  });
+  const { scan, typed } = forms(base.qr, base.text);
+  let accepted = 0, refused = 0;
+  for (const [path, list] of [['scan', scan], ['typed', typed]] as const) {
+    for (const v of list) {
+      const x = await scannerAndQr();
+      const first = await (path === 'scan' ? x.b.glue.joinFromScan('alice', v) : x.b.glue.joinFromTyped('alice', v));
+      if (first.ok) {
+        accepted++;
+        assert.deepEqual(await x.b.glue.joinFromScan('alice', x.qr), { ok: false, reason: 'already-used' }, `${path} ${JSON.stringify(v)} was accepted but is not remembered as the nonce`);
+        assert.deepEqual(await x.b.glue.joinFromTyped('alice', x.text), { ok: false, reason: 'already-used' }, `${path} ${JSON.stringify(v)} (typed twin)`);
+      } else {
+        refused++;
+        assert.deepEqual(await x.b.glue.joinFromScan('alice', x.qr), { ok: true }, `${path} ${JSON.stringify(v)} was refused (${(first as any).reason}) but used the nonce up`);
+      }
+    }
+  }
+  assert.ok(accepted >= 6 && refused > 300, `${accepted} accepted, ${refused} refused: the variants must exercise both sides`);
+});
+
+test('GL25 the session\'s own grammar, through the glue: a QR is accepted only exactly; typed characters in any case with spaces or hyphens between them are accepted; nothing else is', async () => {
+  const x = await scannerAndQr();
+  const yes = async (path: 'scan' | 'typed', v: string): Promise<boolean> => { const y = await scannerAndQr(); return (path === 'scan' ? await y.b.glue.joinFromScan('alice', v) : await y.b.glue.joinFromTyped('alice', v)).ok; };
+  assert.equal(await yes('scan', x.qr), true);
+  for (const v of [x.text, x.text.toLowerCase(), x.text.replace(/ /g, '-'), x.text.replace(/ /g, ''), x.text.replace(/ /g, ' - '), ' ' + x.text + '-']) assert.equal(await yes('typed', v), true, JSON.stringify(v));
+  for (const v of [x.qr + '\n', ' ' + x.qr, x.qr.toLowerCase(), x.qr + ' ']) assert.equal(await yes('scan', v), false, JSON.stringify(v));
+  for (const v of [x.text + '\n', x.text.replace(/ /g, '\t'), x.text.replace(/ /g, '_'), x.text + 'A', x.text.slice(0, -1)]) assert.equal(await yes('typed', v), false, JSON.stringify(v));
+});
+
+test('GL26 a typed look-alike of a letter (dotless i, long s) is the session\'s refusal and nothing else, whether or not the real nonce was already joined: the guard and the session read the text the same way', async () => {
+  let x: Awaited<ReturnType<typeof scannerAndQr>> | undefined;
+  for (let seed = 1; seed < 200 && !x; seed++) { const c = await scannerAndQr(seed); if (c.text.includes('I') && c.text.includes('S')) x = c; }
+  assert.ok(x, 'a nonce whose text holds both an I and an S');
+  const lookalikes = [x.text.replace('I', '\u0131'), x.text.replace('S', '\u017f'), x.text.replace(/I/g, '\u0131').replace(/S/g, '\u017f')];
+  for (const v of lookalikes) assert.deepEqual(await x.b.glue.joinFromTyped('alice', v), { ok: false, reason: 'malformed' }, `before: ${JSON.stringify(v)}`);
+  assert.deepEqual(await x.b.glue.joinFromScan('alice', x.qr), { ok: true });
+  for (const v of lookalikes) assert.deepEqual(await x.b.glue.joinFromTyped('alice', v), { ok: false, reason: 'malformed' }, `after: ${JSON.stringify(v)}`);
+  assert.deepEqual(await x.b.glue.joinFromTyped('alice', x.text), { ok: false, reason: 'already-used' }, 'the real text is still the used nonce');
+});
+
+test('GL27 the key covers the WHOLE nonce: nonces that share their first bytes are different joins, and none is refused as a repeat of another', async () => {
+  const x = nonce(0x40), y = nonce(0x40), z = nonce(0x40);
+  y[NONCE_BYTES - 1] ^= 0xff;   // differs from x only in the last byte
+  z[1] ^= 0xff;                 // differs from x only in the second byte
+  const a = phone(KA, KB, []); a.w.nonces = [x, y, z];
+  const b = phone(KB, KA, []);
+  const qrs: string[] = [];
+  for (let i = 0; i < 3; i++) { const s = await a.glue.start('bob') as any; assert.equal(s.ok, true, `start ${i}`); qrs.push(s.shown.qr); }
+  assert.notEqual(qrs[0], qrs[1]); assert.notEqual(qrs[0], qrs[2]); assert.notEqual(qrs[1], qrs[2]);
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[0]), { ok: true });
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[1]), { ok: true }, 'same first bytes, last byte differs: a new nonce');
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[2]), { ok: true }, 'same first byte, second byte differs: a new nonce');
+  assert.deepEqual(await b.glue.joinFromScan('alice', qrs[0]), { ok: false, reason: 'already-used' }, 'and the first is still a repeat');
+});
+
+test('GL28 an input the guard cannot key is the session\'s refusal and nothing else: a full memory and a join already in flight do not change what it reads as', async () => {
+  const prefix = (await scannerAndQr()).qr.slice(0, -26);   // the form's prefix, taken from a real QR: the fence lets no other module spell it out
+  const garbage: unknown[] = ['not a code', '', prefix, prefix + 'A'.repeat(25), 42, null];
+  const ref = phone(KB, KA, []);
+  const want: unknown[] = [];
+  for (const g of garbage) { want.push(await ref.glue.joinFromScan('alice', g)); want.push(await ref.glue.joinFromTyped('alice', g as string)); }
+  for (const w of want as any[]) { assert.equal(w.ok, false); assert.ok(w.reason !== 'already-used' && w.reason !== 'memory-full' && w.reason !== 'interrupted', JSON.stringify(w)); }
+
+  const CAP = 64;
+  const a = phone(KA, KB, Array.from({ length: CAP }, (_, i) => 0x01 + i));
+  const b = phone(KB, KA, []);
+  for (let i = 0; i < CAP; i++) { const s = await a.glue.start('bob') as any; assert.deepEqual(await b.glue.joinFromScan('alice', s.shown.qr), { ok: true }, `join ${i}`); }
+  const full: unknown[] = [];
+  for (const g of garbage) { full.push(await b.glue.joinFromScan('alice', g)); full.push(await b.glue.joinFromTyped('alice', g as string)); }
+  assert.deepEqual(full, want, 'with the memory full, garbage still reads as the session\'s refusal, not as "full"');
+
+  const c = phone(KB, KA, []);
+  let release!: () => void;
+  c.w.gates.push(new Promise<void>((r) => { release = r; }));
+  const first = c.glue.joinFromScan('alice', 'not a code');   // held at its key read
+  const second = await c.glue.joinFromScan('alice', 'not a code');
+  release();
+  assert.deepEqual(second, { ok: false, reason: 'interrupted' }, 'the first call began after this one took its epoch, so this one reads as interrupted: not a repeat, not full, not the session\'s refusal');
+  assert.deepEqual(await first, { ok: false, reason: 'not-confirm-qr' }, 'and the call that was held reads as the session\'s own refusal');
+});
+
+test('GL29 a QR the session refuses reads as the session\'s refusal whether or not its code was already joined: the guard reads a scan exactly as the session does', async () => {
+  const x = await scannerAndQr();
+  const forms = [x.qr.toLowerCase(), 'x' + x.qr, ' ' + x.qr, x.qr + 'A', x.qr + '\n', x.qr.replace('confirm:1:', 'confirm:1: '), x.qr.slice(0, -1), x.qr.replace('confirm:1:', 'confirm:2:')];
+  const before: any[] = [];
+  for (const v of forms) before.push(await x.b.glue.joinFromScan('alice', v));
+  for (const r of before) { assert.equal(r.ok, false); assert.ok(r.reason !== 'already-used', JSON.stringify(r)); }
+  assert.deepEqual(await x.b.glue.joinFromScan('alice', x.qr), { ok: true });
+  for (let i = 0; i < forms.length; i++) assert.deepEqual(await x.b.glue.joinFromScan('alice', forms[i]), before[i], `after: ${JSON.stringify(forms[i])}`);
+  assert.deepEqual(await x.b.glue.joinFromScan('alice', x.qr), { ok: false, reason: 'already-used' }, 'the exact QR is still the used nonce');
+});

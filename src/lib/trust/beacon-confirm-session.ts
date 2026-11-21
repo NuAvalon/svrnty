@@ -201,22 +201,28 @@ function join(contactId: unknown, keys: unknown, opts: SessionOptions | undefine
   return { ok: true, session: openSession('scanner', contactId, k.keys, nonce, clocks) };
 }
 
+/** The nonce a scanned text carries, or why it is not one: the QR must be exactly the confirm form. Pure, and a fresh array each time. A join reads a scan through this and so does the glue's re-join guard, so the two cannot disagree. */
+export function readConfirmScan(payload: unknown): Uint8Array | JoinRefusal {
+  const m = typeof payload === 'string' ? QR_FORM.exec(payload) : null;
+  return (m ? decode(m[1]) : null) ?? 'not-confirm-qr';
+}
+
 /** The phone that scans: the QR must be exactly the confirm form. */
 export function joinConfirmFromScan(contactId: string, keys: SessionKeys, payload: unknown, opts?: SessionOptions): JoinResult {
-  return join(contactId, keys, opts, () => {
-    const m = typeof payload === 'string' ? QR_FORM.exec(payload) : null;
-    return (m ? decode(m[1]) : null) ?? 'not-confirm-qr';
-  });
+  return join(contactId, keys, opts, () => readConfirmScan(payload));
+}
+
+/** The nonce that typed characters carry, or why they are not one: the characters read off the other screen, in any case, with spaces or hyphens between them and nothing else. Pure, and a fresh array each time. */
+export function readConfirmTyped(text: unknown): Uint8Array | JoinRefusal {
+  if (typeof text !== 'string') return 'malformed';
+  const flat = text.replace(/[ -]/g, '');
+  if (!/^[A-Za-z2-7]*$/.test(flat)) return 'malformed';
+  if (flat.length < TEXT_CHARS) return 'short';
+  if (flat.length > TEXT_CHARS) return 'malformed';
+  return decode(flat.toUpperCase()) ?? 'malformed';
 }
 
 /** The phone that types: the characters read off the other screen, in any case, with spaces or hyphens between them and nothing else. */
 export function joinConfirmFromTyped(contactId: string, keys: SessionKeys, text: unknown, opts?: SessionOptions): JoinResult {
-  return join(contactId, keys, opts, () => {
-    if (typeof text !== 'string') return 'malformed';
-    const flat = text.replace(/[ -]/g, '');
-    if (!/^[A-Za-z2-7]*$/.test(flat)) return 'malformed';
-    if (flat.length < TEXT_CHARS) return 'short';
-    if (flat.length > TEXT_CHARS) return 'malformed';
-    return decode(flat.toUpperCase()) ?? 'malformed';
-  });
+  return join(contactId, keys, opts, () => readConfirmTyped(text));
 }

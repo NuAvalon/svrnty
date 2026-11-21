@@ -20,9 +20,11 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test('CF1 the exports are exactly the three entry points, two constants and the named types: no raw-nonce entry, no getter, no re-export', () => {
+test('CF1 the exports are exactly the three entry points, the two pure readers a join uses, two constants and the named types: no getter of an open session\'s nonce, no re-export', () => {
   const values = [...SRC.matchAll(/^export (?:async )?(?:const|let|var|function|class) ([A-Za-z0-9_$]+)/gm)].map((m) => m[1]).sort();
-  assert.deepEqual(values, ['MAX_ATTEMPTS', 'SESSION_MS', 'joinConfirmFromScan', 'joinConfirmFromTyped', 'startConfirmSession']);
+  assert.deepEqual(values, ['MAX_ATTEMPTS', 'SESSION_MS', 'joinConfirmFromScan', 'joinConfirmFromTyped', 'readConfirmScan', 'readConfirmTyped', 'startConfirmSession']);
+  assert.match(SRC, /^export function readConfirmScan\(payload: unknown\): Uint8Array \| JoinRefusal \{/m, 'a reader takes the text it is given and nothing else');
+  assert.match(SRC, /^export function readConfirmTyped\(text: unknown\): Uint8Array \| JoinRefusal \{/m, 'a reader takes the text it is given and nothing else');
   const types = [...SRC.matchAll(/^export (?:type|interface) ([A-Za-z0-9_$]+)/gm)].map((m) => m[1]).sort();
   assert.deepEqual(types, ['ConfirmSession', 'EnterResult', 'JoinRefusal', 'JoinResult', 'OwnCode', 'SessionStatus', 'StartRefusal', 'StartResult']);
   assert.doesNotMatch(SRC, /^export\s*\{|^export\s*\*|^export default|module\.exports|\bexports\./m, 'no re-export, no default export');
