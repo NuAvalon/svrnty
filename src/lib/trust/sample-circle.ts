@@ -5,6 +5,7 @@
 // clusters (not radial-only), known vs trusted, and a pending introduction.
 
 import { addContact, getAllContacts, removeContact } from '@/lib/identity/client-store';
+import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 
 type SampleTrust = 'verified' | 'unverified';
 
@@ -219,6 +220,8 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
       verification: trusted
         ? { method: 'in_person', verified_at: now }
         : { method: 'none', verified_at: null },
+      // A trusted sample is an in-person verified add: it carries a real stamp bound to its own fingerprint, which is what the store's create gate reads.
+      ...(trusted && c.fingerprint ? { owner_verify: ownerVerifyPersistPatch({}, 'in_person', c.fingerprint).owner_verify } : {}),
       connection_status: c.pending_intro ? 'pending' : 'accepted',
       they_trust: c.they_trust,
       disclosed_circle: c.disclosed_circle,

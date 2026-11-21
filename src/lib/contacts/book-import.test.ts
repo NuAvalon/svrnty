@@ -87,8 +87,9 @@ test('NEG (c)+(d): one corrupted contact is refused and NAMED, the others are st
   assert.equal(importMessage(summary), 'Added 2, already in your contacts 0, not imported 1 of 3. Not imported: bob (its key does not match its fingerprint).');
 });
 
-test('NEG (a): a crafted file that says trusted, with an owner_verify stamp and a VALID binding, imports as UNVERIFIED with no stamp', async () => {
-  const crafted = { ...toImportedContact(mallory)!, name: 'Mom', trust_level: 'trusted', metadata: { owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z' }, connection_method: 'in_person' } };
+test('NEG (a): a crafted file that says trusted, with an owner_verify stamp carrying the key\'s own fingerprint and a VALID binding, imports as UNVERIFIED with no stamp', async () => {
+  // The strongest crafted stamp: it names the very key it is for, so even the store's bound check accepts it. Only the import's strip stops it.
+  const crafted = { ...toImportedContact(mallory)!, name: 'Mom', trust_level: 'trusted', metadata: { owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z', fingerprint: mallory.fingerprint }, connection_method: 'in_person' } };
   // CONTROL: handed to the store as it used to be (verbatim), this file WOULD have created a trusted contact. The test is about the import, not the store.
   const verbatim = store();
   await verbatim.add(crafted);

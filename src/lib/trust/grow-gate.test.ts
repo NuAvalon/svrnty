@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { ownerHasVerified } from '@/lib/trust/trust-recipe';
 import { test } from 'node:test';
 import {
   GATE_COPY,
@@ -69,6 +70,8 @@ test('buildAdmitRecord is Known, not trusted; provenance is owner-local', () => 
   assert.equal(rec.trusted, undefined);
   assert.equal(rec.name, 'Robert');
   assert.equal(rec.owner_verify?.method, 'in_person');
+  assert.equal(rec.owner_verify?.fingerprint, rec.fingerprint.toLowerCase(), 'the stamp is for the arrival\'s own key');
+  assert.equal(ownerHasVerified(rec), true, 'and it counts for that key');
   assert.equal((rec.metadata as { grow_invite_nonce?: string }).grow_invite_nonce, 'CODE1');
   assert.equal((rec.metadata as { grow_mint_channel?: string }).grow_mint_channel, 'in_person');
   assert.deepEqual(rec.tags, ['core']);

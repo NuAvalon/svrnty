@@ -154,7 +154,7 @@ export function buildAdmitRecord(
     grow_invite_nonce: arrival.inviteNonce,
     grow_mint_channel: arrival.mintChannel,
   };
-  const verifyPatch = opts.verify ? ownerVerifyPersistPatch(localMeta, opts.verify) : null;
+  const verifyPatch = opts.verify ? ownerVerifyPersistPatch(localMeta, opts.verify, arrival.fingerprint) : null;
   const rec: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'> = {
     name,
     fingerprint: arrival.fingerprint,

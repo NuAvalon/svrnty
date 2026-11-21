@@ -6,7 +6,7 @@
 
 import type { ContactRecord } from '@/lib/identity/client-store';
 import { linkToSvrntyPatch } from '@/lib/contacts/contact-lane';
-import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
+import { currentFingerprintOf, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import { distressWentPersistPatch } from '@/lib/trust/distress';
 
 type Patch = Partial<ContactRecord>;
@@ -24,9 +24,12 @@ export function editFormPatch(
   };
 }
 
-/** Record an owner-local verification on top of the metadata the held record carries. */
+/**
+ * Record an owner-local verification on top of the metadata the held record carries. The fingerprint of the key checked is the HELD record's own
+ * (the store's record, inside the compare-and-swap), never one a screen or a scan carried.
+ */
 export function ownerVerifyHeldPatch(fresh: ContactRecord, method: 'in_person' | 'other_channel'): Patch {
-  return ownerVerifyPersistPatch(fresh.metadata, method) as unknown as Patch;
+  return ownerVerifyPersistPatch(fresh.metadata, method, currentFingerprintOf(fresh)) as unknown as Patch;
 }
 
 /**

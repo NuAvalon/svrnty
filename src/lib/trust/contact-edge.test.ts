@@ -2,6 +2,7 @@
 // The projection carries pq to the edge — the end-to-end half of the "PQ-keys-dropped-on-every-edge".
 // Run: npx tsx --test src/lib/trust/contact-edge.test.ts
 import { test } from 'node:test';
+import { ownerHasVerified } from './trust-recipe';
 import assert from 'node:assert/strict';
 import { contactRecordToEdge } from './contact-edge';
 
@@ -34,9 +35,24 @@ test('carries owner_verify from metadata for the trust prereq', () => {
     fingerprint: 'fp4',
     name: 'Eli',
     public_key: 'PK4',
-    metadata: { owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z', method: 'in_person' } },
+    metadata: { owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z', method: 'in_person', fingerprint: 'fp4' } },
   });
   assert.equal(edge.owner_verify?.method, 'in_person');
+  assert.equal(ownerHasVerified(edge), true, 'the edge shape (peer_fingerprint) is checked against the stamp\'s own key');
+});
+
+test('a stamp on the record is checked against the record\'s CURRENT key: another key, or no fingerprint on the stamp, does not count', () => {
+  const stamp = (fingerprint?: string) => ({ owner_verified_at: '2026-01-01T00:00:00.000Z', method: 'in_person', ...(fingerprint ? { fingerprint } : {}) });
+  const edgeFor = (fp: string, s: unknown) => contactRecordToEdge({ id: 'v', fingerprint: fp, name: 'Eli', public_key: 'PK4', metadata: { owner_verify: s } });
+  assert.equal(ownerHasVerified(edgeFor('fp4', stamp('fp4'))), true);
+  assert.equal(ownerHasVerified(edgeFor('fp5', stamp('fp4'))), false, 'a stamp for another key');
+  assert.equal(ownerHasVerified(edgeFor('fp4', stamp())), false, 'a legacy stamp: it never said which key');
+});
+
+test('a keyless demo row\'s edge is checked against its stand-in (the fallback the projection already makes)', () => {
+  const edge = contactRecordToEdge({ id: 'd1', name: 'Demo', public_key: '', metadata: { sample_fingerprint: 'standin', owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z', method: 'in_person', fingerprint: 'standin' } } } as never);
+  assert.equal(edge.peer_fingerprint, 'standin');
+  assert.equal(ownerHasVerified(edge), true);
 });
 
 test('carries they_trust and open_visibility for witnessed peer springs', () => {
