@@ -6,14 +6,15 @@
 // drifted — the map path forgot the satellite commit AND the emit; the list path forgot trust_history
 // (Flint floor-verify #173014). That fork IS the bug class, so every trust/break transition routes HERE.
 //
-// Order: (1) local trust write (+ trust_history + #111 open-vis clear on untrust), (2) blind satellite
-// commit/revoke, (3) PSI reveal-set reconcile (#572).
+// Order: (1) local trust write (+ trust_history, and the open-visibility clear on untrust), (2) PSI reveal-set
+// reconcile. This function makes no request of its own; the reconcile below updates the satellite's allowed-senders
+// list on dev builds.
 //
 // NO MUTUAL IS ASSERTED HERE. The device-held affirm-wire (deposit→consume→reciprocal flip) was REMOVED
 // (#593, Peter do-no-harm ruling): a device-held `they_trust_me` bit is false security (defeated by
 // inspection). Mutual is now DISCOVERED via the blind PSI intersection (#588) — never a stored bit from a
-// received affirmation. This chokepoint records only the OWNER's own sovereign trust (their book) + the
-// blind satellite commit; it writes NOTHING to reciprocal / they_trust_me.
+// received affirmation. This chokepoint records only the OWNER's own sovereign trust (their book);
+// it writes NOTHING to reciprocal / they_trust_me, and it makes no request of its own.
 
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { updateContact as realUpdateContact, getContact as realGetContact } from '@/lib/identity/client-store';
@@ -62,16 +63,8 @@ export interface TrustTransitionDeps {
   /** injectable for tests; defaults to reconcileAllowedOnConsentChange. Fire-and-forget (return
    *  ignored) — the arg shape is pinned to the real hook, the result is not. */
   reconcile?: (args: Parameters<typeof reconcileAllowedOnConsentChange>[0]) => unknown;
-  fetchImpl?: typeof fetch;
-  /** satellite base (default '' → same-origin /api/trust/*). */
-  satelliteBase?: string;
   /** timestamp source (default new Date().toISOString()); injectable for deterministic tests. */
   now?: () => string;
-}
-
-async function sha256Hex(input: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export async function applyTrustTransition(
@@ -83,7 +76,6 @@ export async function applyTrustTransition(
   const updateContact = deps.updateContact ?? realUpdateContact;
   const reconcile = deps.reconcile ?? reconcileAllowedOnConsentChange;
   const getContact = deps.getContact ?? realGetContact;
-  const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ? deps.now() : new Date().toISOString();
 
   // (1) LOCAL trust write. trust_history append + #111 survivor-safety: untrust clears open_visibility
@@ -98,7 +90,7 @@ export async function applyTrustTransition(
   // A trust change is a write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
   await withSafetyWrite(peer.contactId, () => updateContact(peer.contactId, (existing: Record<string, unknown>) => {
     // A GRANT is refused for a contact the record held WHEN THE WRITE RUNS calls blocked (never the caller's copy), so no entry point,
-    // button or future shortcut can add trust to someone the owner blocked. Throwing here writes nothing, and steps (2) and (3) never run.
+    // button or future shortcut can add trust to someone the owner blocked. Throwing here writes nothing, and step (2) never runs.
     if (nextTrusted && existing && !admitContact(existing)) throw new TrustRefusedError();
     const md = (existing.metadata ?? {}) as Record<string, unknown>;
     return {
@@ -119,21 +111,7 @@ export async function applyTrustTransition(
     };
   }));
 
-  // (2) SATELLITE blind trust commitment — the satellite never sees WHO you trust (sorted-fp hash).
-  if (peer.fingerprint) {
-    try {
-      const fps = [owner.fingerprint, peer.fingerprint].sort();
-      const commitment_hash = await sha256Hex(fps.join('') + 'trust-v1');
-      const base = deps.satelliteBase ?? '';
-      await fetchImpl(`${base}/api/trust/${nextTrusted ? 'commit' : 'revoke'}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: owner.fingerprint, commitment_hash }),
-      });
-    } catch { /* satellite offline — local trust still works */ }
-  }
-
-  // (3) PSI reveal-set reconcile (#572) — fire-and-forget, fail-soft (gated dark pre-flip).
+  // (2) PSI reveal-set reconcile — fire-and-forget, fail-soft (gated dark pre-flip).
   // The consent is read back from the STORED record after the write, not taken from fields the caller carried (a screen or snapshot copy): a
   // contact blocked since the caller's copy was taken reconciles as blocked, and an untrust reconciles from the cleared open_visibility. If the
   // contact is gone, or the read fails, the consent is none (the row is removed): the privacy-safe direction, never an add.
@@ -150,6 +128,6 @@ export async function applyTrustTransition(
     consent,
   });
 
-  // (4) [REMOVED #593] The EMIT-ONLY affirm deposit (sendTrustAffirmToPeer) is gone — mutual is no longer
-  // asserted from a device-held received bit; it is discovered via the blind PSI intersection (#588).
+  // (3) [REMOVED] The EMIT-ONLY affirm deposit (sendTrustAffirmToPeer) is gone — mutual is no longer
+  // asserted from a device-held received bit; it is discovered via the blind PSI intersection.
 }
