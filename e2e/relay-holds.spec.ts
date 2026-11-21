@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { seedAliceWithBob } from './fixtures/deposit-note';
+import { isDevBuild } from '../src/lib/satellite/satellite-base-url';
 
 // The harness is injected with addScriptTag, which the page's script policy refuses, as it should.
 test.use({ bypassCSP: true });
@@ -13,6 +14,10 @@ test.use({ bypassCSP: true });
  *  - REPAIR: exactly one signed POST for the row shown, then the relay lists the person and the panel says so; a contact blocked AFTER the panel was opened sends NOTHING (no add, and no new read of the relay) and says there is nothing to repair.
  *  - NO FINGERPRINT is anywhere in the panel's text or markup, with a row shown or not (the listed stranger in B3, the contact in B2). On a phone the panel fits the screen. The warning is above every Repair button.
  * The panel is shown only while the discovery gate is live (a dev build: the domain starts with "dev."); it is on when the build sets the public domain variable to a dev. domain.
+ * WHERE THE CASES RUN: B1 to B6 need the gate live, so they run on a dev-domain build and are SKIPPED, with the reason stated, on any build where the gate is dark (CI's e2e build has no dev domain). One probe per
+ * worker decides this before any case sets itself up, so a skipped case costs nothing. A run that says the gate must be live (E2E_EXPECT_PSI_GATE set) FAILS instead of skipping, so a skip is never silent. B7 is
+ * the other half: on any build where the gate is dark it runs and asserts that the panel is ABSENT and nothing asked the relay for a list; on a production build (E2E_PROD) it also fails if the panel is shown.
+ * The probe's result is also compared with what the run EXPECTS (EXPECTED_GATE below): on a CI build with no dev domain the gate must be dark, so a panel shown there FAILS B7 and every panel case, instead of the panel cases running and B7 skipping; and the other way, under CI with a dev domain the gate must be live, so a missing panel fails the panel cases.
  */
 const PASS = 'e2e-passphrase-1234';
 const bundle = (file: string): string =>
@@ -61,10 +66,20 @@ async function setup(page: Page) {
 }
 
 /** Identity tab -> Actions -> Lenses & vault: the panel that holds the entry. Returns the section (closed). */
-async function openLensesSection(page: Page) {
+async function openLensesAndProbe(page: Page): Promise<boolean> {
   await page.getByRole('tab', { name: 'Identity', exact: true }).click();
   await page.getByTestId('card-actions-toggle').click();
   await page.getByRole('menuitem', { name: 'Lenses & vault' }).click();
+  // The Held messages section beside the panel renders whether or not the gate is live, so it anchors "this screen has rendered"; the panel gets a short grace so a slow first render is not read as absent.
+  await expect(page.getByTestId('held-section')).toBeVisible({ timeout: 15_000 });
+  return page.getByTestId('relay-holds-section').waitFor({ state: 'visible', timeout: 4_000 }).then(() => true, () => false);
+}
+async function openLensesSection(page: Page) {
+  if (!(await openLensesAndProbe(page))) {
+    // A run that says the gate must be live fails here; any other run skips, and the dark-gate case (B7) still runs on this build.
+    expect(EXPECTED_GATE, 'the discovery gate is dark in this build, but this run expects it live (E2E_EXPECT_PSI_GATE is set, or CI with a dev domain)').not.toBe('live');
+    test.skip(true, 'the discovery gate is dark in this build (not a dev-domain build), so the panel is not shown; B7 asserts that it is absent');
+  }
   const section = page.getByTestId('relay-holds-section');
   await expect(section).toBeVisible({ timeout: 15_000 });
   return section;
@@ -86,9 +101,36 @@ const ALL_MATCH = 'The relay lists exactly the people your contacts allow.';
 const STRANGER = 'c'.repeat(64);
 
 const PROD = !!process.env.E2E_PROD;   // a production build: the domain is not "dev.", so the discovery gate is dark and the panel is not shown
+// What this run EXPECTS of the discovery gate, so that a probe that disagrees FAILS instead of being accepted. The gate's one input is the build's public domain (a "dev." domain, by the same isDevBuild the app uses).
+//   live    : E2E_EXPECT_PSI_GATE is set, or CI is set and this process's own domain is a dev one.
+//   dark    : CI is set and this process's own domain is not a dev one.
+//   unknown : CI is not set (a local run can reuse a server started with another environment): either result is accepted.
+// Under CI the server is started from this process's environment, so this process's domain is the one the build was made with.
+const EXPECTED_GATE: 'live' | 'dark' | 'unknown' = process.env.E2E_EXPECT_PSI_GATE ? 'live' : !process.env.CI ? 'unknown' : isDevBuild(process.env.NEXT_PUBLIC_SVRNTY_DOMAIN) ? 'live' : 'dark';
+
+let gateLive: boolean | undefined;   // set once per worker by the probe in beforeAll below
 
 test.describe('relay holds panel', () => {
   test.skip(PROD, 'needs the dev domain: the panel is shown only while the discovery gate is live (B7 covers the dark gate)');
+  test.beforeAll(async ({ browser, baseURL }) => {
+    test.setTimeout(120_000);
+    const ctx = await browser.newContext({ baseURL, bypassCSP: true });
+    try {
+      const page = await ctx.newPage();
+      await genesis(page, 'Alice Probe');
+      gateLive = await openLensesAndProbe(page);
+    } finally {
+      await ctx.close();
+    }
+    // A run that says the gate must be live fails here, for every case in this group; any other run skips them (see beforeEach).
+    if (!gateLive) expect(EXPECTED_GATE, 'the discovery gate is dark in this build, but this run expects it live (E2E_EXPECT_PSI_GATE is set, or CI with a dev domain)').not.toBe('live');
+    // The other direction: a CI build with no dev domain must have the gate dark. A panel shown there means the gate was opened by mistake, so every case in this group fails with that reason.
+    if (gateLive) expect(EXPECTED_GATE, 'the panel is shown on a build where the discovery gate must be dark (CI, no dev domain): the gate was opened ungated').not.toBe('dark');
+  });
+  test.beforeEach(() => {
+    test.skip(gateLive === false, 'the discovery gate is dark in this build (not a dev-domain build), so the panel is not shown; B7 asserts that it is absent');
+    test.slow();   // each case creates an identity and seeds a contact: 8 to 45 s on a busy host against the 30 s default, so the limit is tripled
+  });
   test('B1 the entry carries no digit; OPENING MAKES NO REQUEST; with no good read it says it could not check, never an empty list, and offers no Repair', async ({ page }) => {
     const relay = await mockRelay(page, { getStatus: 500 });
     await setup(page);
@@ -186,17 +228,18 @@ test.describe('relay holds panel', () => {
   });
 });
 
-test.describe('relay holds panel in a production build', () => {
-  test.skip(!PROD, 'only in a production build, where the discovery gate is dark');
-
+test.describe('relay holds panel while the discovery gate is dark', () => {
   test('B7 while the gate is DARK the panel is not shown: the Held messages entry beside it is, mine is not, and nothing asks the relay for a list', async ({ page }) => {
     const relay = await mockRelay(page);
     await genesis(page, 'Alice Dark');
-    await page.getByRole('tab', { name: 'Identity', exact: true }).click();
-    await page.getByTestId('card-actions-toggle').click();
-    await page.getByRole('menuitem', { name: 'Lenses & vault' }).click();
-    await expect(page.getByTestId('held-section')).toBeVisible({ timeout: 15_000 });
+    if (await openLensesAndProbe(page)) {
+      // The gate is live here (a dev-domain build): B1 to B6 cover the panel. A PRODUCTION build must never show it.
+      expect(PROD, 'a production build shows the relay-holds panel: it must stay dark there').toBe(false);
+      expect(EXPECTED_GATE, 'the panel is shown on a build where the discovery gate must be dark (CI, no dev domain): the gate was opened ungated').not.toBe('dark');
+      test.skip(true, 'the discovery gate is live in this build, so B1 to B6 cover the panel');
+    }
     await expect(page.getByTestId('relay-holds-section')).toHaveCount(0);
+    await expect(page.getByTestId('relay-holds-entry')).toHaveCount(0);
     await page.waitForTimeout(2000);
     expect(relay.seen.length, 'a dark gate still asked the relay for something').toBe(0);
   });

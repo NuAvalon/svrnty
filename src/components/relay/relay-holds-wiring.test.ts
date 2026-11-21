@@ -66,3 +66,11 @@ test('RHW7 the mount the app uses is KEYED by owner and makes its port once per 
   assert.match(mount, /useMemo\(\(\) => makePort\(ownerFingerprint\), \[makePort, ownerFingerprint\]\)/);
   assert.doesNotMatch(strip(FRONT), /<RelayHoldsSection\b/);
 });
+
+test('RHW8 THE GATE IS NOT BYPASSED: the section\'s default gate is the PSI gate itself (not a literal), the mount adds no default of its own and hands the gate through untouched, and the app mounts the panel with no gate of its own', () => {
+  assert.match(COMPONENT, /export function RelayHoldsSection\(\{ port, gate = isPSIDiscoveryLive \}: RelayHoldsSectionProps\)/, 'the default gate is isPSIDiscoveryLive');
+  const mount = strip(readFileSync(`${DIR}/RelayHoldsMount.tsx`, 'utf8'));
+  assert.match(mount, /export function RelayHoldsMount\(\{ ownerFingerprint, makePort = makeRelayHoldsPort, gate \}: RelayHoldsMountProps\)/, 'the mount has no default gate');
+  assert.match(mount, /<RelayHoldsSection key=\{ownerFingerprint\} port=\{port\} gate=\{gate\} \/>/, 'the mount hands the gate through untouched');
+  assert.match(strip(FRONT), /<RelayHoldsMount ownerFingerprint=\{identity\.identity\.fingerprint\} \/>/, 'the app passes the owner and no gate');
+});
