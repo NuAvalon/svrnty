@@ -43,11 +43,11 @@ test('CF3 it touches nothing that can carry the nonce off the screen or make it 
   assert.equal((SRC.match(/performance\.now/g) ?? []).length, 1, 'the second clock is injected too; performance.now is only the default');
 });
 
-test('CF4 the confirm form and the invite path do not know each other: neither imports the other, and the module is not imported by any app file yet', () => {
+test('CF4 the confirm form and the invite path do not know each other: neither imports the other, and the only file that imports the module is the glue', () => {
   const inviteDir = readdirSync('src/lib/invite').filter((n) => /\.(ts|tsx)$/.test(n) && !/\.test\./.test(n));
   for (const n of inviteDir) assert.doesNotMatch(readFileSync(join('src/lib/invite', n), 'utf8'), /beacon-confirm|svrnty-confirm/, `the invite module ${n} does not mention the confirm form`);
   const importers = walk('src').concat(walk('app')).filter((f) => !/\.test\.(ts|tsx)$/.test(f) && f !== FILE && /beacon-confirm-session/.test(readFileSync(f, 'utf8')));
-  assert.deepEqual(importers, [], 'dark: nothing outside the tests imports the session module (the store glue adds one importer, on purpose, with its own review)');
+  assert.deepEqual(importers, ['src/lib/trust/beacon-confirm-glue.ts'], 'dark: the glue is the one importer of the session module, and nothing else outside the tests imports it');
 });
 
 test('CF5 the confirm QR form lives in one place, and no other module can build or read it', () => {
