@@ -19,6 +19,7 @@ import {
   storeIdentity,
 } from '@/lib/identity/client-store';
 import { seedSampleCircle } from '@/lib/trust/sample-circle';
+import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 
 /** Full extra vaults — they show under Switch identity. */
 export const LINKED_DEMO_VAULTS = [
@@ -77,6 +78,8 @@ async function addLiving(
     verification: extra.trusted
       ? { method: 'in_person', verified_at: now }
       : { method: 'none', verified_at: null },
+    // A trusted demo contact is an in-person verified add: a real stamp bound to its own fingerprint, which the store's create gate reads.
+    ...(extra.trusted ? { owner_verify: ownerVerifyPersistPatch({}, 'in_person', peer.fingerprint).owner_verify } : {}),
     connection_status: 'accepted',
     metadata: {
       demo_linked: true,

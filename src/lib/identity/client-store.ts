@@ -32,7 +32,7 @@ import { beaconPairId } from '../trust/beacon-pair-id';
 import type { BeaconStorePort, LatchPort, PairConfirmedPort } from '../crypto/beacon-client';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
-import { ownerHasVerified } from '../trust/trust-recipe';
+import { trustGrantRefused } from '../trust/trust-recipe';
 import { assertFingerprintUnchanged, ContactUpdateRefused } from './contact-identity';
 import { DbUpgradeBlocked } from '../db-upgrade-blocked';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
@@ -1980,7 +1980,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   // sample) passes. Fail-closed.
   {
     const addTrusted = record.trust_level === 'trusted' || record.trust_level === 'verified' || (record as { trusted?: boolean }).trusted === true;
-    if (addTrusted && !ownerHasVerified(record as Parameters<typeof ownerHasVerified>[0])) {
+    if (trustGrantRefused(false, addTrusted, record as Parameters<typeof trustGrantRefused>[2])) {
       throw new ContactRefused('verify-before-trust', 'verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
     }
   }
@@ -2063,12 +2063,12 @@ export async function finalizeContactUpdate(existing: ContactRecord, next: Conta
   // block the unverified/known → trusted PROMOTION unless a REAL owner-verification backs it. Every
   // promotion path (bulk-select Trust, TrustMap toggle, card dialog, import-update, future) funnels
   // through updateContact, so gating here is by-construction — no caller can bypass. Reads the REAL
-  // owner-verify (ownerHasVerified → owner_verified_at w/ in_person|other_channel), NEVER the top-level
+  // owner-verify (trustGrantRefused → ownerHasVerified: a stamp for THIS key, in_person|other_channel), NEVER the top-level
   // trusted-since stamp. Fail-closed. Non-regression: only the TRANSITION is gated (re-saving an already-
   // trusted contact, or un-trusting, passes). This is Peter's pt5 "resistance between known and trusted".
   const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
   const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
-  if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
+  if (trustGrantRefused(wasTrusted, nowTrusted, next as Parameters<typeof trustGrantRefused>[2])) {
     throw new ContactUpdateRefused('verify-before-trust', 'verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
   }
   return next;
