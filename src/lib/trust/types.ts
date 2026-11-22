@@ -47,6 +47,8 @@ export interface TrustEdge {
   owner_verify?: {
     owner_verified_at: string;
     method: 'in_person' | 'other_channel';
+    /** The key you checked (lowercase). Absent on a stamp from before this field: that stamp does not count for a new Trust grant. */
+    fingerprint?: string;
   };
   // Mutual state
   mutual: {

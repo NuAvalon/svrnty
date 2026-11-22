@@ -83,23 +83,68 @@ export type OwnerLocalVerify = {
   /** You confirmed this key is the person you mean. Private to this device. */
   owner_verified_at: string;
   method: 'in_person' | 'other_channel';
+  /**
+   * The fingerprint of the key you checked (lowercase). It is written once, from the stored record, when you confirm. A stamp from before this
+   * field existed has none: it says nothing about WHICH key was checked, so it does not count for a new Trust grant, and nothing fills it in later.
+   */
+  fingerprint?: string;
 };
 
 const META_KEY = 'owner_verify';
 
+/** The one form every fingerprint compare uses: trimmed, lowercase. Anything that is not a string is "none". */
+function fingerprintKey(v: unknown): string {
+  return typeof v === 'string' ? v.trim().toLowerCase() : '';
+}
+
+/**
+ * THE comparison between a stamp and the key it is checked against. Both Trust sinks (create and promote) and every screen reach it through
+ * ownerHasVerified, so there is nowhere for them to drift. Length-strict, because it is plain equality. A stamp with no fingerprint (legacy), a
+ * record with no fingerprint, or two different fingerprints never match.
+ */
+export function stampMatchesKey(stamp: OwnerLocalVerify | undefined, currentFingerprint: unknown): boolean {
+  const checked = fingerprintKey(stamp?.fingerprint);
+  const current = fingerprintKey(currentFingerprint);
+  return !!stamp?.owner_verified_at && checked !== '' && current !== '' && checked === current;
+}
+
+/**
+ * The key a contact is checked against: the record's `fingerprint`, else the edge's `peer_fingerprint`, else the stand-in a keyless demo row carries
+ * (the store drops the real field on a keyless row, and the edge projection already falls back to `metadata.sample_fingerprint`). Never the
+ * contact's id: an id is not a key. A real fingerprint always wins over the stand-in.
+ */
+export function currentFingerprintOf(source: {
+  fingerprint?: string | null;
+  peer_fingerprint?: string | null;
+  metadata?: Record<string, unknown>;
+}): string {
+  const standIn = source.metadata?.sample_fingerprint;
+  return source.fingerprint || source.peer_fingerprint || (typeof standIn === 'string' ? standIn : '') || '';
+}
+
+/**
+ * Verified at the contact's CURRENT key (currentFingerprintOf). The old
+ * `verification` record is not read: it never said which key was checked (Email / QR / mutual_vouch were never "I made sure it's them" either).
+ */
 export function ownerHasVerified(source: {
+  fingerprint?: string | null;
+  peer_fingerprint?: string | null;
   verification?: { verified_at?: string | null; method?: string };
   metadata?: Record<string, unknown>;
   owner_verify?: OwnerLocalVerify;
 }): boolean {
-  if (source.owner_verify?.owner_verified_at) return true;
-  const meta = source.metadata?.[META_KEY] as OwnerLocalVerify | undefined;
-  if (meta?.owner_verified_at) return true;
-  const v = source.verification;
-  // Migration only: earlier glass wrote the ritual into verification.
-  // Email / QR / mutual_vouch are not "I made sure it's them."
-  if (v?.verified_at && (v.method === 'in_person' || v.method === 'other_channel')) return true;
-  return false;
+  const current = currentFingerprintOf(source);
+  const inMeta = source.metadata?.[META_KEY] as OwnerLocalVerify | undefined;
+  return stampMatchesKey(source.owner_verify, current) || stampMatchesKey(inMeta, current);
+}
+
+/**
+ * The verify-before-trust decision, used by BOTH store sinks (create and promote), so they cannot drift. A Trust GRANT (not trusted before, trusted
+ * now) needs a stamp for the record's current key. A contact that was already trusted passes untouched (nothing is revoked or re-checked), and so does
+ * un-trusting. A record that was never trusted and is not trusted now passes too.
+ */
+export function trustGrantRefused(wasTrusted: boolean, nowTrusted: boolean, record: Parameters<typeof ownerHasVerified>[0]): boolean {
+  return nowTrusted && !wasTrusted && !ownerHasVerified(record);
 }
 
 export function canGrantTrust(source: Parameters<typeof ownerHasVerified>[0] & { trusted?: boolean }): {
@@ -123,12 +168,16 @@ export function formatFingerprintForVerify(fp: string): string {
 export function buildOwnerVerifyMeta(
   existing: Record<string, unknown> | undefined,
   method: OwnerLocalVerify['method'],
+  fingerprint: string,
 ): Record<string, unknown> {
+  const checked = fingerprintKey(fingerprint);
+  if (!checked) throw new Error('an owner verification needs the fingerprint it is for');
   return {
     ...(existing || {}),
     [META_KEY]: {
       owner_verified_at: new Date().toISOString(),
       method,
+      fingerprint: checked,
     } satisfies OwnerLocalVerify,
   };
 }
@@ -137,8 +186,9 @@ export function buildOwnerVerifyMeta(
 export function ownerVerifyPersistPatch(
   existing: Record<string, unknown> | undefined,
   method: OwnerLocalVerify['method'],
+  fingerprint: string,
 ): { metadata: Record<string, unknown>; owner_verify: OwnerLocalVerify } {
-  const metadata = buildOwnerVerifyMeta(existing, method);
+  const metadata = buildOwnerVerifyMeta(existing, method, fingerprint);
   return {
     metadata,
     owner_verify: metadata[META_KEY] as OwnerLocalVerify,

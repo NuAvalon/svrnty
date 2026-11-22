@@ -31,7 +31,7 @@ const casSrc = readFileSync(new URL('./contact-cas.ts', import.meta.url), 'utf8'
 test('updateContact gates the unverified→trusted PROMOTION on a real owner-verify (fail-closed)', () => {
   const body = gateBody();
   assert.match(body, /verify-before-trust/, 'pt5 gate marker must be present');
-  assert.match(body, /ownerHasVerified\(/, 'must check the real owner-verify');
+  assert.match(body, /trustGrantRefused\(wasTrusted, nowTrusted, next/, 'must check the real owner-verify, through the ONE decision both sinks share');
   assert.match(body, /wasTrusted/, 'must gate the TRANSITION only (re-saving an already-trusted contact passes — non-regression)');
   assert.match(body, /throw new ContactUpdateRefused\('verify-before-trust', /, 'must throw (fail-closed) on an unverified promotion, typed so a screen can tell a refusal from a failure');
 });
@@ -51,7 +51,7 @@ test('EVERY contact update path reaches that gate: updateContact and updateConta
 test('addContact gates CREATING a trusted contact on a real owner-verify (fail-closed)', () => {
   const body = bodyOf('addContact');
   assert.match(body, /verify-before-trust/, 'pt5 gate marker must be present on the create path');
-  assert.match(body, /ownerHasVerified\(/, 'must check the real owner-verify on create');
+  assert.match(body, /trustGrantRefused\(false, addTrusted, record/, 'must check the real owner-verify on create, through the ONE decision both sinks share');
   assert.match(body, /throw new Error\(/, 'must throw (fail-closed) on an unverified trusted-create');
 });
 
@@ -59,6 +59,6 @@ test('the gate reads the REAL owner-verify (ownerHasVerified), NOT the top-level
   // ownerHasVerified (trust-recipe) reads owner_verified_at / verification.verified_at(method in_person|
   // other_channel) — NEVER the top-level contact.verified_at a bare trust-toggle auto-stamps. The gate
   // must not be satisfiable by that stamp.
-  assert.match(src, /import \{ ownerHasVerified \} from '\.\.\/trust\/trust-recipe'/, 'imports the real verify predicate');
+  assert.match(src, /import \{ trustGrantRefused \} from '\.\.\/trust\/trust-recipe'/, 'imports the one shared decision (which reads the real verify predicate)');
   assert.doesNotMatch(gateBody(), /\.verified_at/, 'the promotion gate must not read a top-level verified_at stamp');
 });

@@ -50,6 +50,20 @@ test('verify: records the method on top of the held metadata', () => {
   assert.match(ov.owner_verified_at, /^\d{4}-\d\d-\d\dT/);
 });
 
+test('verify: the stamp is for the HELD record\'s own key (the store\'s, lowercase), and a record with no key cannot be verified', () => {
+  const fp = 'AB'.repeat(32);
+  const p = ownerVerifyHeldPatch(rec({ fingerprint: fp }), 'in_person');
+  assert.equal((p as unknown as { owner_verify: { fingerprint: string } }).owner_verify.fingerprint, fp.toLowerCase());
+  assert.equal((meta(p).owner_verify as { fingerprint: string }).fingerprint, fp.toLowerCase());
+  assert.throws(() => ownerVerifyHeldPatch(rec({ fingerprint: undefined }), 'in_person'), /fingerprint/);
+});
+
+test('verify: a keyless demo row is stamped with its stand-in fingerprint (the store drops the real field on keyless rows)', () => {
+  const standIn = '7e51a00000000000000000000000000000000008';
+  const p = ownerVerifyHeldPatch(rec({ fingerprint: undefined, metadata: { sample_fingerprint: standIn } }), 'other_channel');
+  assert.equal((p as unknown as { owner_verify: { fingerprint: string } }).owner_verify.fingerprint, standIn);
+});
+
 test('verify: a setting changed since the copy was taken survives', () => {
   const held = rec({ metadata: { share_settings: { per_contact_private: true } } });
   assert.deepEqual(meta(ownerVerifyHeldPatch(held, 'other_channel')).share_settings, { per_contact_private: true });
