@@ -28,7 +28,7 @@ async function openShareQrTab(page: Page) {
   await page.getByTestId('share-identity-from-card').click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible({ timeout: 10_000 });
-  await dialog.getByRole('tab', { name: /qr/i }).click();
+  await dialog.getByRole('tab', { name: /^qr( code)?$/i }).click();
   return dialog;
 }
 
