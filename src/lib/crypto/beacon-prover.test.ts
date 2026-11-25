@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { deriveSignals, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, defaultRandomBytes, ProverRefused, type DepositKeys } from './beacon-prover';
+import { deriveSignals, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, defaultRandomBytes, retryAfterReject, ProverRefused, type DepositKeys } from './beacon-prover';
 import * as wire from './beacon-wire.mjs';   // namespace import: the epoch constants are asserted below (Athena adds them to the module)
 const refusedWith = (reason: string) => (e: unknown) => e instanceof ProverRefused && e.reason === reason;
 import { authMessage, parseDeposit, serializeDeposit } from './beacon-wire.mjs';
@@ -60,6 +60,41 @@ refuse('x >= the subgroup order', 'x-range', (k) => ({ ...k, x: L }));
 refuse('an epoch >= the field order', 'epoch-range', (k) => ({ ...k, epoch: P_FIELD }));
 refuse('a negative epoch', 'epoch-range', (k) => ({ ...k, epoch: -BigInt('1') }));
 refuse('a one-time key that is not 32 bytes', 'pk-length', (k) => ({ ...k, oneTimePk: new Uint8Array(31) }));
+
+// A counterpart that is not a pair of bigints must be a ProverRefused, never a TypeError (a caller that catches only ProverRefused would crash).
+for (const [name, bad] of [['undefined', undefined], ['null', null], ['a string', 'ab'], ['a one-element array', [BigInt('1')]], ['a three-element array', [BigInt('1'), BigInt('2'), BigInt('3')]], ['a plain object', { 0: BigInt('1'), 1: BigInt('2') }]] as const) {
+  refuse(`a counterpart that is not a pair: ${name}`, 'y-off-curve', (k) => ({ ...k, counterpartY: bad as any }));
+}
+
+// ---- the lazy library load: a failed load must not be cached for the rest of the session ----
+test('retryAfterReject: a REJECTED load is retried on the next call (not cached forever)', async () => {
+  let calls = 0;
+  const load = retryAfterReject(async () => { calls++; if (calls === 1) throw new Error('chunk failed'); return { ok: calls }; });
+  await assert.rejects(() => load(), /chunk failed/);
+  assert.deepEqual(await load(), { ok: 2 });
+  assert.equal(calls, 2);
+});
+test('retryAfterReject: a SUCCESSFUL load is cached (loaded once, same object, also for concurrent callers)', async () => {
+  let calls = 0;
+  const load = retryAfterReject(async () => { calls++; return { n: calls }; });
+  const [a, b] = await Promise.all([load(), load()]);
+  assert.equal(a, b);
+  assert.equal(await load(), a);
+  assert.equal(calls, 1);
+});
+test('retryAfterReject: concurrent callers of one failing load share ONE attempt, and the next call after it retries', async () => {
+  let calls = 0;
+  const load = retryAfterReject(async () => { calls++; if (calls === 1) throw new Error('x'); return calls; });
+  const r = await Promise.allSettled([load(), load()]);
+  assert.deepEqual(r.map((x) => x.status), ['rejected', 'rejected']);
+  assert.equal(calls, 1);
+  assert.equal(await load(), 2);
+});
+test('WIRING: the curve loader is built with retryAfterReject, not a bare cached promise', () => {
+  const src = readFileSync(new URL('./beacon-prover.ts', import.meta.url), 'utf8');
+  assert.match(src, /const loadCurve = retryAfterReject\(/);
+  assert.doesNotMatch(src, /libs \?\?=/);
+});
 
 // ---- the deposit on the wire: needs the throwaway proving files ----
 const PROBE = process.env.BEACON_THROWAWAY_DIR ?? '/app/shared/outbox/apollo/588_phone_probe_20261107';
